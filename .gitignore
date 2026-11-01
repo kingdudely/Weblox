@@ -1,0 +1,5 @@
+.cache/
+*.wasm
+*.log
+*.jsonl
+node_modules/
