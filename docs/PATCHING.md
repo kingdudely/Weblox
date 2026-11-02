@@ -138,59 +138,39 @@ and note its ten parameters, of which the last three must not be zero
 (`connectionAttempts`, `connectionAttemptDelay`, `socketIndex`), or the call
 traps with divide-by-zero.
 
-## Host + shell (legacy path)
+## Host + staging
 
-Kept until the IWA is the only target. The module, the ring and the RUPP fields
-are identical in both; only the datagram seam differs.
-
-```
-cargo build --manifest-path app/rkhost/Cargo.toml
-cargo build --manifest-path app/src-tauri/Cargo.toml
-
-app/src-tauri/target/debug/raknet-client \
-  --place 13569002876 \
-  --wasm host/extension/WebClient.patched.wasm \
-  --engine-dir /tmp/opencode/rw \
-  --cookie ~/cookie.txt
-```
-
-The shell sets the two WebKitGTK requirements itself
-(`JSC_useSharedArrayBuffer=1`, `RKHOST_COEP=require-corp`); `rkhost` serves the
-page with COOP/COEP so `SharedArrayBuffer` exists.
-
-Debugging without a console: the page streams its console to `/__log` and posts
-`{coi, sab, jspi, wasm, stats}` to `/__client`, both served by `rkhost`. The
-bridge prints the first datagrams in each direction with full hex, plus a RUPP
-payload-id histogram every 500 sends, which is how the retransmit storm was
-diagnosed.
-
-## Isolated Web App
-
-The current path. Same patched module, same ring, same RUPP — the seam is a
-`UDPSocket` instead of a WebSocket, and the join is done by a
-`<controlledframe>` instead of the Rust proxy.
+The server is a plain file server; the module never passes through it as a
+special case.
 
 ```
-./tools/run_iwa.sh                      # install once, then open
-PLACE=12345 ./tools/run_iwa.sh
+./tools/build_patched.sh <stock.wasm> build/WebClient.patched.wasm
+./tools/stage_engine.sh                 # wasm + glue + prelude + /abi.js
+./app/rkhost/target/debug/rkhost --root iwa --port 8770
 ```
 
 What still matters when the module is rebuilt:
 
-* `--abi` output (`build/WebClient.patched.ring.json`) is served as `/abi.js`.
+* `--abi` output (`build/WebClient.patched.ring.json`) becomes `iwa/abi.js`.
   If the ring layout moves in `tools/patch.py`, the page picks it up with no
   edit — do not reintroduce a second copy of the offsets in JS.
-* `--wasm` is served at `/engine/WebClient.wasm`; `--cdn-base` must point at the
-  matching `version-<hash>-RobloxWebClient` directory, or every engine asset
-  403s and the client silently runs on default flags.
-* `rkhost --iwa` prepends the worker prelude to `WebClient.js` so workers load
-  `rbx-net.js`. Without it the engine's worker fetches bypass the frame.
+* `stage_engine.sh` prepends `tools/worker-prelude.js` to `WebClient.js`. The
+  engine points its workers straight at that file ("Redirecting WebWorker to
+  primary script"), so the prelude is the only place `rbx-net.js` gets installed
+  inside a worker. It also has to create the worker realm's own Trusted Types
+  policy first, or `importScripts` throws and every worker silently fetches
+  unauthenticated.
+* `stage_engine.sh` copies `WebClient.wasm`, `WasmPlayer.js`,
+  `WebClient.metadata.json` and `audio-processor-fast.js`. The last one is easy
+  to miss: it lives at the deployment root, not under `content/`, and without it
+  the engine's audio worker fails and the failure surfaces as an unrelated
+  `TypeError` inside `WebClient.js`.
 * The engine only picks RakNet if `FFlagUseRbxTransportClient3` is `"False"`.
   `iwa/rbx-net.js` rewrites that flag in the `WebClientApp` settings response.
 
 Console access: `--remote-debugging-port=9222`, then attach to the `app` target
-(`curl 127.0.0.1:9222/json`). The old `/__log` and `/__client` endpoints are
-unused — the IWA CSP has no localhost in `connect-src`, so the page cannot post
-to them.
+(`curl 127.0.0.1:9222/json`). Any `MISSING engine/...` line in the server output
+means the content mirror is short: re-run `tools/mirror_engine.py --capture`
+against that log and then `tools/mirror_engine.py`.
 
 Details, API shapes and traps: **[IWA.md](IWA.md)**.

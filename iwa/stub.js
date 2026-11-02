@@ -1,10 +1,18 @@
-// stub.js — worker bootstrap.
+// stub.js — the worker entry the loader builds from `workerStubUrl`.
 //
-// The engine creates its workers by pointing them straight at WebClient.js, so
-// this file is only a fallback for the paths that do ask for it. Route
-// roblox.com through the frame, then load the glue from /engine, which the app
-// server serves instead of the CDN.
-(() => {
-  importScripts(location.origin + "/rbx-net.js");
-  importScripts(location.origin + "/engine/WebClient.js");
+// WasmPlayer points this at stub.js with `?src=<glue>`, and the glue carries
+// tools/worker-prelude.js in front of it, which is what installs rbx-net.js in
+// the worker. The policy here is the worker's own realm: a Trusted Types policy
+// does not cross realms, and importScripts is a sink in this one.
+;
+(function () {
+  if (typeof trustedTypes !== "undefined") {
+    try {
+      trustedTypes.createPolicy("default", { createScriptURL: (url) => url });
+    } catch (e) {
+      // already defined
+    }
+  }
+  const src = new URL(location.href).searchParams.get("src");
+  importScripts(src || location.origin + "/engine/WebClient.js");
 })();

@@ -5,7 +5,9 @@
 node_modules/
 __pycache__/
 
-host/extension/*.wasm
+# staged engine bundle: rebuilt by tools/mirror_engine.py + tools/stage_engine.sh.
+# tools/engine.paths is the tracked source of truth for what it should contain.
+iwa/engine/
 
 # rust build output
 **/target/

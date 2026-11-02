@@ -3,29 +3,23 @@
 // The engine runs on isolated-app://, which is cross-origin to everything
 // Roblox: it cannot attach .ROBLOSECURITY and Roblox's CORS configs do not
 // list that origin. The controlled frame is a real www.roblox.com context with
-// the cookie in its jar, so this file redirects the hosts below to it and
-// rebuilds a normal Response. Assets on rbxcdn are not in the list: they are
-// public and CORS-open, so they keep going straight out.
+// the cookie in its jar, so this file redirects roblox.com to it and rebuilds a
+// normal Response.
+//
+// The rule is the suffix, not a list of hosts. A list is a thing to maintain and
+// to be wrong about: every host that is not on it reaches the network on its own
+// and dies in a preflight, which is exactly the noise a list generates. Anything
+// under roblox.com can be served by the frame, including the telemetry beacons —
+// they are fire-and-forget and cost one round trip.
+//
+// clientsettings is the one exception and is handled before this: it is public,
+// CORS-open, and carries the flag that selects RakNet.
 //
 // Workers cannot reach the frame, so they reach the page over a
 // BroadcastChannel instead of borrowing the engine's own postMessage protocol.
 (() => {
   if (self.__rbxNet) return;
   self.__rbxNet = 1;
-
-  const HOSTS = new Set([
-    "gamejoin.roblox.com", "assetgame.roblox.com", "www.roblox.com",
-    "apis.roblox.com",
-    "assetdelivery.roblox.com", "users.roblox.com", "economy.roblox.com",
-    "games.roblox.com", "thumbnails.roblox.com", "locale.roblox.com",
-    "avatar.roblox.com", "accountsettings.roblox.com", "auth.roblox.com",
-    "tracing.roblox.com", "ecsv2.roblox.com", "ephemeralcounters.api.roblox.com",
-    "gameinternationalization.roblox.com", "develop.roblox.com", "groups.roblox.com",
-    "presence.roblox.com", "voice.roblox.com", "chat.roblox.com",
-    "friends.roblox.com", "badges.roblox.com", "inventory.roblox.com",
-    "catalog.roblox.com", "accountinformation.roblox.com", "trades.roblox.com",
-    "metrics.roblox.com", "realtime.roblox.com", "notifications.roblox.com",
-  ]);
 
   const base = (typeof location !== "undefined" && location.origin) || "https://localhost";
   const isPage = typeof document !== "undefined";
@@ -38,7 +32,24 @@
     }
   }
 
-  const isRoblox = (url) => HOSTS.has(hostOf(url));
+  // Direct: hosts that do not want the cookie, and answer with
+  // `access-control-allow-origin: *` so the app origin may read them anyway.
+  //
+  // contentdelivery matters most: it serves multi-megabyte signed blobs, and
+  // crossing one through the frame means base64-encoding it into a string, into
+  // another realm, and back — several megabytes of garbage per asset, which is
+  // enough to run a 2 GB wasm heap into an allocation failure.
+  const DIRECT = new Set([
+    "clientsettings.roblox.com",
+    "clientsettingscdn.roblox.com",
+    "contentdelivery.roblox.com",
+  ]);
+
+  const isRoblox = (url) => {
+    const host = hostOf(url);
+    if (DIRECT.has(host)) return false;
+    return host === "roblox.com" || host.endsWith(".roblox.com");
+  };
 
   // ------------------------------------------------------------ transport ---
   const CHANNEL_NAME = "rbxnet";
@@ -59,8 +70,14 @@
       if (msg.kind === "req" && isPage && self.__rbxAuth) {
         self.__rbxAuth
           .request(msg.url, msg.init)
-          .then((res) => channel.postMessage({ kind: "res", id: msg.id, res }))
-          .catch((e) => channel.postMessage({ kind: "res", id: msg.id, error: String(e) }));
+          .then((res) => {
+            note(msg.url, msg.init && msg.init.method, res.status, "worker");
+            channel.postMessage({ kind: "res", id: msg.id, res });
+          })
+          .catch((e) => {
+            note(msg.url, msg.init && msg.init.method, 0, "worker", e && e.message);
+            channel.postMessage({ kind: "res", id: msg.id, error: String(e) });
+          });
       } else if (msg.kind === "res") {
         const resolve = waiting.get(msg.id);
         if (resolve) {
@@ -127,8 +144,20 @@
     });
   }
 
+  // ------------------------------------------------------------ telemetry ---
+  // A bounded record of every roblox.com call the app makes, which is how the
+  // host list below was trimmed and how a missing one gets noticed. Workers
+  // have their own `self`; their calls are recorded here, on the page, where
+  // the frame actually serves them.
   const recent = [];
-  self.__rbxNetLog = recent;
+  if (typeof self !== "undefined") self.__rbxNetLog = recent;
+
+  function note(url, method, status, via, error) {
+    const entry = { url: String(url), method: method || "GET", status: status | 0, via: via || "page" };
+    if (error) entry.error = String(error);
+    recent.push(entry);
+    if (recent.length > 300) recent.shift();
+  }
 
   async function rbxRequest(url, init) {
     const encoded = await encodeInit(init);
@@ -136,12 +165,10 @@
     try {
       res = isPage && self.__rbxAuth ? await self.__rbxAuth.request(url, encoded) : await viaChannel(url, encoded);
     } catch (e) {
-      recent.push({ url, method: encoded.method, error: String(e) });
-      if (recent.length > 200) recent.shift();
+      note(url, encoded.method, 0, isPage ? "page" : "worker", e && e.message);
       throw e;
     }
-    recent.push({ url, method: encoded.method, status: res.status });
-    if (recent.length > 200) recent.shift();
+    note(url, encoded.method, res.status, isPage ? "page" : "worker");
     return res;
   }
 
@@ -181,11 +208,36 @@
     });
   }
 
+  // Everything that is not routed through the frame is fetched by the app
+  // origin itself. Those hosts all answer `access-control-allow-origin: *`,
+  // and a wildcard is only legal on an uncredentialed request — so the
+  // engine's `withCredentials` has to be dropped, not passed along.
+  function uncredentialed(init) {
+    const out = { ...(init || {}) };
+    out.credentials = "omit";
+    return out;
+  }
+
+  const looksLikeAsset = (url) => {
+    const host = hostOf(url);
+    return DIRECT.has(host);
+  };
+
   const origFetch = self.fetch;
   self.fetch = function (input, init) {
     const url = typeof input === "string" ? input : input && input.url;
     if (url && SETTINGS_RE.test(new URL(url, base).href)) return settingsOverride(new URL(url, base).href, init);
-    if (!url || !isRoblox(url)) return origFetch.call(self, input, init);
+    if (!url || !isRoblox(url)) {
+      const pass = init || undefined;
+      if (url && looksLikeAsset(url)) {
+        const opts = uncredentialed(pass);
+        return origFetch.call(self, input, opts).then((res) => {
+          note(url, opts.method, res.status, "direct");
+          return res;
+        });
+      }
+      return origFetch.call(self, input, pass);
+    }
     const opts = init || (input && input.url && !(input instanceof Request) ? undefined : input);
     // A Request body has to be read before it can cross the channel.
     const run = input instanceof Request && !init ? input.text().then((text) => ({ ...(opts || {}), body: text })) : Promise.resolve(opts || {});
@@ -204,6 +256,10 @@
         this.statusText = "";
         this.response = null;
         this.responseText = "";
+        // The engine reads `responseURL.length` on every readyState 2, so this
+        // has to be a string even when the request never left the page.
+        this.responseURL = "";
+        this.responseXML = null;
         this.responseType = "";
         this.withCredentials = false;
         this.timeout = 0;
@@ -224,8 +280,12 @@
         if (!this._robox) {
           this._real = new OrigXHR();
           const real = this._real;
-          real.onload = () => this._syncFromReal();
+          // readystatechange, not load: the engine reads assets from the state
+          // machine, and load alone arrives after it has given up.
+          real.onreadystatechange = () => this._syncFromReal();
           real.onerror = () => this._fail();
+          real.ontimeout = () => this._fire("timeout");
+          real.onprogress = (e) => this._fire("progress");
           real.open(...arguments);
           return;
         }
@@ -256,12 +316,23 @@
       }
 
       send(body) {
-        if (this._real) return this._real.send(body);
+        if (this._real) {
+          const real = this._real;
+          // These are configured after open() and before send(), so they have
+          // to be copied onto the real XHR here. responseType especially: the
+          // engine loads every asset as an arraybuffer.
+          real.responseType = this.responseType;
+          real.timeout = this.timeout;
+          // A wildcard-CORS host rejects a credentialed request outright.
+          real.withCredentials = looksLikeAsset(this._url) ? false : this.withCredentials;
+          return real.send(body);
+        }
         rbxRequest(this._url, { method: this._method || "GET", headers: this._headers, body })
           .then((res) => {
             if (this._aborted) return;
             const bytes = res.body ? b64ToBytes(res.body) : new Uint8Array(0);
             this.status = res.status;
+            this.responseURL = res.url || this._url;
             this._resHeaders = new Headers(res.headers || {});
             this.readyState = 4;
             if (this.responseType === "arraybuffer") this.response = bytes.buffer;
@@ -272,18 +343,26 @@
             }
             this._fire("readystatechange");
             this._fire("load");
-            if (typeof this.onload === "function") this.onload({ target: this });
           })
           .catch((e) => this._fail(e));
       }
 
       _syncFromReal() {
         const r = this._real;
-        this.status = r.status;
-        this.response = r.response;
-        this.responseText = r.responseText;
         this.readyState = r.readyState;
-        if (typeof this.onload === "function") this.onload({ target: this });
+        this.status = r.status;
+        this.statusText = r.statusText;
+        this.responseURL = r.responseURL || this._url;
+        this.response = r.response;
+        // Reading responseText throws once responseType is anything but "" or
+        // "text" — which is every asset in this client.
+        try {
+          this.responseText = r.responseType === "" || r.responseType === "text" ? r.responseText : "";
+        } catch (e) {
+          this.responseText = "";
+        }
+        this._fire("readystatechange");
+        if (r.readyState === 4) this._fire("load");
       }
 
       _fail(e) {
@@ -345,5 +424,5 @@
     });
   }
 
-  self.__rbxNetHosts = [...HOSTS];
+  self.__rbxNetRule = "*.roblox.com";
 })();

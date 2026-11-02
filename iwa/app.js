@@ -14,7 +14,11 @@
     console.log("[app] " + m);
   };
   window.__onEngineLoadingStatus = say;
-  addEventListener("error", (e) => say("error: " + (e.message || e)));
+  // Errors go to the console, not the HUD: the engine raises benign ones during
+  // boot and they would otherwise replace the line that says where the
+  // transport landed.
+  addEventListener("error", (e) => console.error("[app] window error:", e.message || e));
+  addEventListener("unhandledrejection", (e) => console.error("[app] rejection:", e.reason));
 
   const params = new URLSearchParams(location.search);
   const placeId = params.get("placeId") || params.get("place") || "13569002876";
@@ -50,7 +54,7 @@
 
     // Only now: the ring has to be pointing somewhere before RakNet wakes up.
     const s = document.createElement("script");
-    s.src = __tt.url("/engine/WasmPlayer.js");
+    s.src = "/engine/WasmPlayer.js";
     s.onerror = () => say("engine failed to load");
     document.body.appendChild(s);
   }

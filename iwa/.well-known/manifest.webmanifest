@@ -2,7 +2,7 @@
   "name": "Weblox",
   "short_name": "Weblox",
   "description": "Roblox web client over RakNet.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
@@ -14,6 +14,10 @@
   "permissions_policy": {
     "cross-origin-isolated": ["self"],
     "direct-sockets": ["self"],
-    "controlled-frame": ["self"]
+    "controlled-frame": ["self"],
+    "fullscreen": ["self"],
+    "gamepad": ["self"],
+    "screen-wake-lock": ["self"],
+    "autoplay": ["self"]
   }
 }

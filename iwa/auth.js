@@ -257,13 +257,27 @@
           body = new Uint8Array(bin.length);
           for (let i = 0; i < bin.length; i++) body[i] = bin.charCodeAt(i);
         }
-        const r = await fetch(c.url, {
+        const send = (credentials) => fetch(c.url, {
           method: c.method || 'GET',
-          credentials: 'include',
+          credentials,
           headers: c.headers || {},
           body,
           redirect: c.redirect || 'follow'
         });
+        let r;
+        try {
+          r = await send('include');
+        } catch (e) {
+          // A host that answers 'access-control-allow-origin: *' cannot be read
+          // on a credentialed request — the browser rejects the pair outright,
+          // which is what made every avatar, decal and animation missing. The
+          // content CDN signs its URLs, so the cookie was never needed there.
+          try {
+            r = await send('omit');
+          } catch (e2) {
+            throw new Error(c.url + ': ' + e2.message);
+          }
+        }
         const buf = await r.arrayBuffer();
         const bytes = new Uint8Array(buf);
         let b64 = '';
