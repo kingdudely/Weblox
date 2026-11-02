@@ -199,11 +199,129 @@ def replace_functions(buf, new_bodies):
     return bytes(out)
 
 
+# ------------------------------------------------------------- sections ----
+
+def find_section(buf, want):
+    """Return (id_offset, payload_start, payload_len) for a section id."""
+    pos = 8
+    while pos < len(buf):
+        id_off = pos
+        sid = buf[pos]
+        pos += 1
+        size, pos = read_uleb(buf, pos)
+        if sid == want:
+            return id_off, pos, size
+        pos += size
+    raise SystemExit("no section %d" % want)
+
+
+def replace_section(buf, sid, payload):
+    """Rebuild one section with a new payload; everything else is copied."""
+    id_off, start, size = find_section(buf, sid)
+    out = bytearray(buf[:id_off])
+    out.append(sid)
+    out += uleb(len(payload))
+    out += payload
+    out += buf[start + size:]
+    return bytes(out)
+
+
+def rename_imports(buf, renames):
+    """renames: {func_import_index: new_field_name}. Rebuilds section 2.
+
+    Function import indices are positional, so renaming never shifts any
+    function index — that is the whole reason we reuse imports instead of
+    appending new ones (appending would renumber the other 167k functions).
+    """
+    id_off, start, size = find_section(buf, 2)
+    pos = start
+    count, pos = read_uleb(buf, pos)
+    out = bytearray()
+    out += uleb(count)
+    fidx = 0
+    for _ in range(count):
+        mlen, pos2 = read_uleb(buf, pos)
+        module = buf[pos2:pos2 + mlen]
+        pos = pos2 + mlen
+        flen, pos2 = read_uleb(buf, pos)
+        field = buf[pos2:pos2 + flen]
+        pos = pos2 + flen
+        kind = buf[pos]
+        entry = bytearray()
+        entry += uleb(len(module)) + module
+        if kind == 0 and fidx in renames:
+            field = renames[fidx].encode()
+        entry += uleb(len(field)) + field
+        entry.append(kind)
+        pos += 1
+        if kind == 0:
+            v, pos = read_uleb(buf, pos)
+            entry += uleb(v)
+            fidx += 1
+        elif kind == 1:
+            entry += buf[pos:pos + 1]
+            pos += 1
+            fl = buf[pos]
+            entry += bytes([fl])
+            pos += 1
+            v, pos = read_uleb(buf, pos)
+            entry += uleb(v)
+            if fl & 1:
+                v, pos = read_uleb(buf, pos)
+                entry += uleb(v)
+        elif kind == 2:
+            fl = buf[pos]
+            entry += bytes([fl])
+            pos += 1
+            v, pos = read_uleb(buf, pos)
+            entry += uleb(v)
+            if fl & 1:
+                v, pos = read_uleb(buf, pos)
+                entry += uleb(v)
+        elif kind == 3:
+            entry += buf[pos:pos + 2]
+            pos += 2
+        elif kind == 4:
+            v, pos = read_uleb(buf, pos)
+            entry += uleb(v)
+        else:
+            raise SystemExit("unknown import kind %#x" % kind)
+        out += entry
+    return replace_section(buf, 2, bytes(out))
+
+
+def body_splice_prefix(body, prefix):
+    """Insert instructions after a body's local declarations."""
+    pos = 0
+    ngroups, pos = read_uleb(body, pos)
+    for _ in range(ngroups):
+        _, pos = read_uleb(body, pos)
+        pos += 1
+    return body[:pos] + prefix + body[pos:]
+
+
+def func_body(buf, idx):
+    imported = count_imported_funcs(buf)
+    _, code_start, code_size = find_code(buf)
+    _, bodies = code_bodies(buf, code_start, code_size)
+    off, ln = bodies[idx - imported]
+    return off, ln, buf[off:off + ln]
+
+
 # ---------------------------------------------------------------- patches ----
 # Function indices are resolved by tools/wasm_scan.py + shape analysis.
 # Keep them in one place so a rebuild only needs a re-resolve pass.
 
 MALLOC = 163490          # exports: func[163490] <malloc>
+
+# Two imports the web client never uses (Emscripten's websocket API — Studio
+# networking only). Repurposed in place: renaming an existing import keeps every
+# function index stable, which appending a new import would not.
+WS_SEND_BINARY = 202     # (i32 sockid, i32 ptr, i32 len) -> i32
+WS_CLOSE        = 201    # (i32 sockid, i32 code, i32 reason) -> i32
+
+CONSOLE_LOG = 246        # env.emscripten_console_log(ptr) -> void, unused import
+MARKER_STR  = 953724     # long log string; suffix at +k marks trace slot k
 GETADDRINFO = 301        # (i32)->i32, writes NULL to *arg and returns EAI_FAIL
 
 # Control block: the bridge writes the peer address here before the join.
@@ -272,6 +390,22 @@ def patch_nofd():
     return a.body()
 
 
+def patch_udp_send():
+    """func[127931](buf, len, sockaddr, &err) -> i32: hand the datagram to JS.
+
+    RakNet's send wrapper keeps exactly what a real sendto() needs, so the body
+    becomes a call into the repurposed import. The glue reads the sockaddr out
+    of linear memory itself, so only the pointer crosses the boundary.
+    """
+    a = Asm()
+    a.local_get(3).i32_const(0).i32_store(2, 0)   # *err = 0
+    a.local_get(2)                                 # sockaddr ptr
+    a.local_get(0)                                 # buf
+    a.local_get(1)                                 # len
+    a.call(WS_SEND_BINARY)
+    return a.body()
+
+
 # Byte-level edits inside an existing body: (func_index, pattern_hex, replacement_hex).
 # Used when the change is "neutralise one instruction", not "replace a function".
 BYTE_PATCHES = {
@@ -285,6 +419,7 @@ BYTE_PATCHES = {
 
 PATCHES = {
     "getaddrinfo": (GETADDRINFO, patch_getaddrinfo),
+    "udp_send": (127931, patch_udp_send),
     "nosocket": (ENOSYS_STUB, patch_nosocket),
     "nofd": (EBADF_STUB, patch_nofd),
 }
@@ -316,6 +451,11 @@ def main(argv):
         changed[name] = body.replace(pat, rep)
         print("byte-patch %-10s func[%d]: %d site(s), %d -> %d B"
               % (name, idx, n, len(body), len(changed[name])))
+    renames = {}
+    for i in range(len(argv) - 2):
+        if argv[i] == "--rename-import":
+            renames[int(argv[i + 1])] = argv[i + 2]
+    trace = [int(argv[i + 1]) for i in range(len(argv) - 1) if argv[i] == "--trace"]
     print("imported funcs: %d" % imported)
     new = {}
     for n in names:
@@ -331,7 +471,19 @@ def main(argv):
     for name in byte_names:
         idx, _, _ = BYTE_PATCHES[name]
         new[idx - imported] = changed[name]
+    for k, idx in enumerate(trace):
+        defined = idx - imported
+        body = new.get(defined)
+        if body is None:
+            _, _, body = func_body(buf, idx)
+        mark = Asm().i32_const(MARKER_STR + k).call(CONSOLE_LOG)
+        new[defined] = body_splice_prefix(body, bytes(mark.b))
+        print("trace[%2d]      -> func[%d] marker +%d" % (k, idx, k))
     out = replace_functions(buf, new)
+    if renames:
+        out = rename_imports(out, renames)
+        for i, n in sorted(renames.items()):
+            print("import[%d] renamed -> %s" % (i, n))
     open(dst, "wb").write(out)
     print("wrote %s (%d -> %d bytes)" % (dst, len(buf), len(out)))
     return 0

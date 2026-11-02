@@ -54,6 +54,15 @@ async function wsUrl() { for (let i = 0; i < 120; i++) { try { const r = await f
   const S = at.sessionId;
   await send("Page.enable", {}, S); await send("Runtime.enable", {}, S);
   await send("Network.enable", {}, S);
+  on("Network.requestWillBeSent", (p) => {
+    const u = p.request && p.request.url || "";
+    if (/WebClient\.(js|wasm)/.test(u)) log({ k: "req", url: u.slice(-70), redir: !!(p.redirectResponse) });
+  });
+  on("Network.responseReceived", (p) => {
+    const u = p.response && p.response.url || "";
+    if (/WebClient\.(js|wasm)/.test(u)) log({ k: "res", url: u.slice(-60), status: p.response.status, from: p.response.fromDiskCache ? "cache" : "" });
+  });
+  on("Network.loadingFailed", (p) => log({ k: "netfail", id: p.requestId, err: p.errorText, blocked: p.blockedReason || "" }));
   await send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, S);
   if (HOOK) await send("Page.addScriptToEvaluateOnNewDocument", { source: HOOK }, S).catch((e) => log({ k: "initerscript", e: String(e).slice(0,200) }));
   await send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }, S);
@@ -66,7 +75,13 @@ async function wsUrl() { for (let i = 0; i < 120; i++) { try { const r = await f
   log({ k: "nav", url: URL_ARG });
   await send("Page.navigate", { url: URL_ARG }, S);
   const end = Date.now() + SECONDS * 1000;
-  while (Date.now() < end) { await sleep(3000); const st = await send("Runtime.evaluate", { expression: "JSON.stringify({t:document.title,c:document.querySelectorAll('canvas').length})", returnByValue: true }, S).catch(() => null); if (st && st.result && st.result.value) log({ k: "page", ...JSON.parse(st.result.value) }); }
+  while (Date.now() < end) { await sleep(3000);
+    if (Date.now() > end - 12000) {
+      try {
+        const r = await send("Runtime.evaluate", { expression: "JSON.stringify({udp:typeof globalThis.__rkUdp, boot:globalThis.__rkBoot||null, ws:typeof WebSocket})", returnByValue: true }, S);
+        log({ k: "probe", v: r && r.result && r.result.value });
+      } catch (_) {}
+    } const st = await send("Runtime.evaluate", { expression: "JSON.stringify({t:document.title,c:document.querySelectorAll('canvas').length})", returnByValue: true }, S).catch(() => null); if (st && st.result && st.result.value) log({ k: "page", ...JSON.parse(st.result.value) }); }
   const shot = await send("Page.captureScreenshot", { format: "png" }, S).catch(() => null);
   if (shot) fs.writeFileSync("/tmp/opencode/tap.png", Buffer.from(shot.data, "base64"));
   w.close(); kill(); await sleep(300); process.exit(0);
