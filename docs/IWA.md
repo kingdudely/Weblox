@@ -143,7 +143,11 @@ dev-mode proxy forwards to the server.
   Cosmetic; the game renders. Fix is to route thumbnails through the frame or
   to a blob.
 * **No packaging yet.** Dev-mode install is per-machine and flag-gated. Signing
-  a web bundle is the only path to something installable by someone else.
+  a web bundle is the only path to something installable by someone else. A
+  bundle also has to solve `engineBase`: the engine loads `WebClient.js`,
+  `WasmPlayer.js` and its `content/` tree relative to one base, and CSP
+  `script-src 'self'` means the JS has to be inside the bundle — so either bundle
+  the content tree too, or serve it from a base the policy allows.
 * **The old path still exists.** `host/`, the rkhost WebSocket bridge and
   `app/src-tauri` are untouched and still work; they are dead weight once the
   IWA is the only target.

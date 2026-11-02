@@ -47,12 +47,15 @@ if [ -z "$id" ]; then
     --install-isolated-web-app-from-url="http://127.0.0.1:$port/" \
     --no-first-run --no-default-browser-check about:blank \
     >/dev/null 2>&1 &
+  installer=$!
   for _ in $(seq 1 30); do
     sleep 1
     id="$(app_id)"
     [ -n "$id" ] && break
   done
-  pkill -f "user-data-dir=$profile" 2>/dev/null || true
+  # Only the instance we started: the profile path is in this script's own
+  # command line too, so a pkill -f pattern would take the shell with it.
+  kill "$installer" 2>/dev/null || true
   sleep 2
 fi
 
