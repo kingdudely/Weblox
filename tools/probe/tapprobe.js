@@ -5,15 +5,16 @@ const UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Geck
 const a = (n, d) => { const i = process.argv.indexOf("--" + n); const v = process.argv[i + 1]; return i === -1 ? d : (v && !v.startsWith("--") ? v : true); };
 const URL_ARG = a("url", "about:blank"), SECONDS = Number(a("seconds", 75));
 const OUT = a("out", "/tmp/opencode/tap.jsonl"), COOKIE = a("cookie", "/home/john/Boblox/run/cookie.txt");
-const HOOK = fs.readFileSync(a("hook", "/tmp/opencode/tap.js"), "utf8");
+const HOOK_PATH = a("hook", null);
+const HOOK = HOOK_PATH ? fs.readFileSync(HOOK_PATH, "utf8") : null;
+const EXT = a("ext", null);
 const PORT = a("port", 9334);
 try { fs.unlinkSync(OUT); } catch (_) {}
 const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), "cdpt-"));
 const chrome = spawn("google-chrome", ["--new-window", "--remote-debugging-port=" + PORT, "--user-data-dir=" + PROFILE,
   "--no-first-run", "--no-default-browser-check", "--disable-dev-shm-usage", "--no-sandbox",
   "--autoplay-policy=no-user-gesture-required", "--ignore-certificate-errors",
-  "--disable-features=DisableLoadExtensionCommandLineSwitch",
-  "--load-extension=" + (a("ext", "") || ""), "--disable-extensions-except=" + (a("ext", "") || ""), "--user-agent=" + UA, "--window-size=1280,800", "about:blank"],
+  "--enable-unsafe-extension-debugging", "--user-agent=" + UA, "--window-size=1280,800", "about:blank"],
   { stdio: ["ignore", "ignore", "ignore"] });
 const kill = () => { try { chrome.kill("SIGTERM"); } catch (_) {} };
 process.on("exit", kill);
@@ -42,7 +43,7 @@ async function wsUrl() { for (let i = 0; i < 120; i++) { try { const r = await f
     log({ k: "target", type: t.type, url: String(t.url).slice(0, 160) });
     try { await send("Runtime.enable", {}, sid); } catch (_) {}
     const isWorker = /worker/i.test(t.type);
-    if (isWorker) {
+    if (isWorker && HOOK) {
       try { await send("Runtime.evaluate", { expression: HOOK, awaitPromise: false }, sid); } catch (e) { log({ k: "hookerr", e: String(e).slice(0, 300) }); }
       log({ k: "hooked", type: t.type, url: String(t.url).slice(0, 160) });
     }
@@ -54,10 +55,14 @@ async function wsUrl() { for (let i = 0; i < 120; i++) { try { const r = await f
   await send("Page.enable", {}, S); await send("Runtime.enable", {}, S);
   await send("Network.enable", {}, S);
   await send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, S);
-  await send("Page.addScriptToEvaluateOnNewDocument", { source: HOOK }, S).catch((e) => log({ k: "initerscript", e: String(e).slice(0,200) }));
+  if (HOOK) await send("Page.addScriptToEvaluateOnNewDocument", { source: HOOK }, S).catch((e) => log({ k: "initerscript", e: String(e).slice(0,200) }));
   await send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }, S);
   const val = fs.readFileSync(COOKIE, "utf8").trim();
   try { const c = await send("Network.setCookie", { name: ".ROBLOSECURITY", value: val, domain: ".roblox.com", path: "/", secure: true, httpOnly: true, sameSite: "Lax", expires: Math.floor(Date.now() / 1000) + 30 * 86400 }, S); log({ k: "cookie", ok: !!(c && c.success) }); } catch (e) { log({ k: "cookie", ok: false }); }
+  if (EXT) {
+    try { const r = await send("Extensions.loadUnpacked", { path: EXT }); log({ k: "ext", id: r.id }); }
+    catch (e) { log({ k: "extfail", e: String(e).slice(0, 200) }); }
+  }
   log({ k: "nav", url: URL_ARG });
   await send("Page.navigate", { url: URL_ARG }, S);
   const end = Date.now() + SECONDS * 1000;

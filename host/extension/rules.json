@@ -1,0 +1,21 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "redirect",
+      "redirect": {
+        "extensionPath": "/WebClient.patched.wasm"
+      }
+    },
+    "condition": {
+      "urlFilter": "WebClient.wasm",
+      "resourceTypes": [
+        "xmlhttprequest",
+        "other",
+        "script",
+        "media"
+      ]
+    }
+  }
+]
