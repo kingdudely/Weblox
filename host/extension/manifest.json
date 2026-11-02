@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "RakNet Wasm Client",
+  "version": "0.1",
+  "description": "Loads a locally patched WebClient.wasm into play.roblox.com and forces the RakNet transport.",
+  "content_scripts": [
+    {
+      "matches": ["https://play.roblox.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "world": "ISOLATED"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["inject.js", "WebClient.patched.wasm"],
+      "matches": ["https://play.roblox.com/*"]
+    }
+  ]
+}

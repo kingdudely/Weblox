@@ -4,3 +4,4 @@
 *.jsonl
 node_modules/
 __pycache__/
+build/*.wasm

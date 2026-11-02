@@ -11,7 +11,9 @@ try { fs.unlinkSync(OUT); } catch (_) {}
 const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), "cdpt-"));
 const chrome = spawn("google-chrome", ["--new-window", "--remote-debugging-port=" + PORT, "--user-data-dir=" + PROFILE,
   "--no-first-run", "--no-default-browser-check", "--disable-dev-shm-usage", "--no-sandbox",
-  "--autoplay-policy=no-user-gesture-required", "--ignore-certificate-errors", "--user-agent=" + UA, "--window-size=1280,800", "about:blank"],
+  "--autoplay-policy=no-user-gesture-required", "--ignore-certificate-errors",
+  "--disable-features=DisableLoadExtensionCommandLineSwitch",
+  "--load-extension=" + (a("ext", "") || ""), "--disable-extensions-except=" + (a("ext", "") || ""), "--user-agent=" + UA, "--window-size=1280,800", "about:blank"],
   { stdio: ["ignore", "ignore", "ignore"] });
 const kill = () => { try { chrome.kill("SIGTERM"); } catch (_) {} };
 process.on("exit", kill);

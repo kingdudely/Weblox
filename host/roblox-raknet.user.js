@@ -1,34 +1,36 @@
 // ==UserScript==
 // @name         Roblox Web Client -> RakNet (patched engine)
 // @namespace    raknet-wasm-client
-// @version      0.1
-// @description  Loads a locally patched WebClient.wasm into play.roblox.com and forces the RakNet transport.
+// @version      0.2
+// @description  Feeds play.roblox.com a locally patched WebClient.wasm and forces the RakNet transport.
 // @match        https://play.roblox.com/*
 // @run-at       document-start
 // @grant        GM_xmlhttpRequest
 // @connect      127.0.0.1
 // ==/UserScript==
 
-// Why this exists:
-//   The engine ships with WebTransport (RbxTransport) selected. RakNet is
-//   compiled in but its libc socket layer is stubbed out, so it dies at
-//   getaddrinfo. We serve a patched module from a local server and hand it to
-//   the engine in place of the CDN copy. Everything else - join, assets,
-//   challenge, rendering - stays the real client.
+// WHAT THIS DOES
+//   The web client ships with WebTransport (RbxTransport) selected. RakNet is
+//   compiled in but its libc socket layer is stubbed, so it dies at getaddrinfo.
+//   This script swaps in a patched module (built by tools/patch.py) and flips
+//   the transport flag. Join, assets, challenge and rendering stay the real
+//   client - nothing is reimplemented.
 //
-// Setup: install Tampermonkey, then run the local module server:
-//     python3 tools/serve_wasm.py --file WebClient.patched.wasm --port 8765
-// GM_xmlhttpRequest is what makes this work: page JS cannot fetch loopback
-// from an https origin (mixed content) and the CDN copy is CORS-locked, but a
-// userscript can. Tampermonkey is doing real work here, not just packaging.
+// EXPECTED RESULT (current patch set: getaddrinfo + 2 errno stubs)
+//   Before: getaddrinfo(...) failed:Error code - -4
+//   After : RakNet Socket bound to invalid (privileged) port: 0
+//   That difference proves the patched module is running. It will not join yet.
 (() => {
   if (globalThis.__rbxRaknetHook) return;
   globalThis.__rbxRaknetHook = 1;
 
-  const CANDIDATES = ["https://127.0.0.1:8765/WebClient.wasm", "https://127.0.0.1:8765/engine/WebClient.wasm", "http://127.0.0.1:8765/WebClient.wasm"];
+  const CANDIDATES = [
+    "http://127.0.0.1:8765/WebClient.wasm",
+    "http://127.0.0.1:8765/engine/WebClient.wasm",
+  ];
+  const hasGM = typeof GM_xmlhttpRequest === "function";
 
-  // ---------------------------------------------------------------- flags --
-  // Force the RakNet branch: the web client defaults to RbxTransport.
+  // -------------------------------------------------------------- 1. flags --
   const origFetch = self.fetch;
   self.fetch = function (input, init) {
     const url = typeof input === "string" ? input : (input && input.url) || "";
@@ -48,56 +50,47 @@
     return p;
   };
 
-  // ----------------------------------------------------------- wasm bytes --
-  let patched = null;              // Promise<WebAssembly.Module>
-  const load = () => {
-    if (patched) return patched;
-    patched = (async () => {
-      let buf = null, last = null;
-      for (const url of CANDIDATES) {
-        try {
-          buf = await new Promise((res, rej) => {
-            if (typeof GM_xmlhttpRequest === "function") {
-              GM_xmlhttpRequest({
-                method: "GET", url, responseType: "arraybuffer",
-                onload: (r) => (r.status === 200 ? res(r.response) : rej(new Error("HTTP " + r.status))),
-                onerror: rej,
-              });
-            } else {
-              fetch(url).then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error("HTTP " + r.status)))).then(res, rej);
-            }
-          });
-          break;
-        } catch (e) { last = e; }
-      }
-      if (!buf) throw last || new Error("no local module");
-      const mod = await WebAssembly.compile(buf);
-      console.log("[raknet] patched engine compiled (" + buf.byteLength + " B)");
-      return mod;
-    })();
-    patched.catch((e) => console.warn("[raknet] patched engine unavailable:", e && e.message));
-    return patched;
-  };
-  load();
+  // --------------------------------------------------------- 2. wasm bytes --
+  function getBytes(url) {
+    if (hasGM) {
+      return new Promise((res, rej) => GM_xmlhttpRequest({
+        method: "GET", url, responseType: "arraybuffer",
+        onload: (r) => (r.status === 200 ? res(r.response) : rej(new Error("HTTP " + r.status))),
+        onerror: () => rej(new Error("network")), ontimeout: () => rej(new Error("timeout")),
+      }));
+    }
+    return origFetch.call(self, url).then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error("HTTP " + r.status))));
+  }
 
-  // Swap the module the engine compiles/instantiates.
+  const ready = (async () => {
+    let firstErr = null;
+    for (const url of CANDIDATES) {
+      try {
+        const buf = await getBytes(url);
+        const mod = await WebAssembly.compile(buf);
+        console.log("[raknet] patched engine compiled: " + url + " (" + buf.byteLength + " B)");
+        return mod;
+      } catch (e) { firstErr = firstErr || e; }
+    }
+    throw firstErr || new Error("no local module");
+  })();
+  ready.catch((e) => console.warn("[raknet] patched engine unavailable:", e && e.message,
+    "- is tools/serve_wasm.py running on 127.0.0.1:8765?"));
+
+  // -------------------------------------------------- 3. module substitution --
   const oInstantiate = WebAssembly.instantiate;
-  const oStreaming = WebAssembly.instantiateStreaming;
+  const oCompileStreaming = WebAssembly.compileStreaming;
 
-  // Always instantiate OUR module, whatever the engine asked for: the CDN copy
-  // and ours have identical structure, ours is the patched one.
-  WebAssembly.instantiate = function (mod, imports) {
-    return load().then((m) => oInstantiate.call(WebAssembly, m, imports));
+  WebAssembly.instantiate = function (m, imports) {
+    return ready.then((mod) => oInstantiate.call(WebAssembly, mod, imports));
+  };
+  WebAssembly.instantiateStreaming = function (src, imports) {
+    try { src && src.catch && src.catch(() => {}); } catch (e) {}
+    return ready.then((mod) => oInstantiate.call(WebAssembly, mod, imports));
+  };
+  WebAssembly.compileStreaming = function () {
+    return ready.then((mod) => mod);
   };
 
-  WebAssembly.instantiateStreaming = function (source, imports) {
-    return load().then((m) => {
-      source && source.catch && source.catch(() => {});
-      return oInstantiate.call(WebAssembly, m, imports);
-    });
-  };
-
-  // Emscripten prefers instantiateStreaming when it can, but if the module is
-  // precompiled by the page it calls instantiate(module, imports) - handled above.
-  console.log("[raknet] hook installed");
+  console.log("[raknet] hook installed (GM_xmlhttpRequest=" + hasGM + ")");
 })();
