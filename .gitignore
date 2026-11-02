@@ -6,3 +6,6 @@ node_modules/
 __pycache__/
 
 host/extension/*.wasm
+
+# rust build output
+**/target/

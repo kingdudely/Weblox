@@ -10,22 +10,31 @@ it with its own code; we only supply datagrams.
 
 ---
 
-## Status (2026-11-03)
+## Status (2026-11-02)
 
-The engine boots, selects RakNet, and now gets through name resolution, socket
-option setup and `bind`. It stops because the socket it is given is a lie: the
-wasm's libc has no socket backend, so `getsockname` reports port 0 and RakNet
-refuses to continue.
+The engine joins over **real RakNet UDP** from a self-hosted desktop shell. No
+extension, no Chrome flag, no node/python bridge: `app/rkhost` serves the page,
+proxies the Roblox APIs, owns the UDP socket, and the Tauri window at
+`app/src-tauri` is just the shell around it.
+
+Measured live against place `13569002876`:
+
+```
+udp rx 32 B  <- 128.116.32.33:57651    Reply1 (7e + magic + guid8 + mtu 1200)
+udp rx 158 B <- 128.116.32.33:57651    Reply2 (7d, RUPP 23, TLV1 subtype 2)
+… 3410 datagrams / 1.07 MB down, 3166 up, 0 engine failures over 90 s
+```
 
 | Step | State | Where |
 | --- | --- | --- |
-| Engine boots and joins an enrolled place over WebTransport | works (upstream) | — |
-| RakNet transport selection inside the wasm | **works** | `--flags FFlagUseRbxTransportClient3=False` |
-| `getaddrinfo` | **patched** (`func[301]`) | `tools/patch.py` |
-| `setsockopt` / `bind` fd validation | **patched** (`func[298]`, `func[299]`) | `tools/patch.py` |
-| `getsockname` reports a usable port | **blocked** — returns port 0 | next |
-| Datagram ring (tx/rx) | not started | — |
-| Host page + local bridge | not started | — |
+| Engine boots in WebKitGTK **and** Chrome | **works** | `app/src-tauri`, `app/rkhost` |
+| `SharedArrayBuffer` under WebKit | **works** — needs `JSC_useSharedArrayBuffer=1` + COEP `require-corp` | `app/src-tauri/src/main.rs` |
+| Web Audio init | **works** — `maxChannelCount` clamp | `host/ring.js` |
+| RakNet transport selection + `RakPeer::Connect` | **works — the engine does it itself** | — |
+| Datagram ring (tx/rx) | **works** | `tools/patch.py`, `host/ring.js` |
+| RUPP token / TLV2 | **works** — rewritten in the page on the way out | `host/ring.js` |
+| Join over RakNet | **works** — 1 MB+ replicated in the first 90 s | — |
+| Tauri shell | **builds and runs** | `app/src-tauri` |
 
 Full evidence, verbatim logs and retractions: **[docs/FINDINGS.md](docs/FINDINGS.md)**.
 Operational manual for patches: **[docs/PATCHING.md](docs/PATCHING.md)**.

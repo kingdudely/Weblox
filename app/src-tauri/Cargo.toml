@@ -1,0 +1,17 @@
+[package]
+name = "raknet-client"
+version = "0.1.0"
+edition = "2021"
+description = "Desktop shell for the RakNet-spliced Roblox web client"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+rkhost = { path = "../rkhost" }
+
+[profile.release]
+opt-level = 2
+lto = "thin"

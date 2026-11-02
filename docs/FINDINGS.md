@@ -7,6 +7,73 @@ sha256 `d72c52618f5c153c9b17a97e…`) on 2026-11-01.
 
 ---
 
+## 0. Live RakNet session from a desktop shell (2026-11-02)
+
+Place `13569002876`, Tauri/WebKitGTK front end, `app/rkhost` as the host. The
+engine sent its own `OpenConnectionRequest1`, received `Reply1` and `Reply2`, and
+then exchanged **3410 datagrams / 1.07 MB** down and **3166** up in the first
+90 s with no engine failure. Four independent blockers had to fall, and each one
+looks like a different bug:
+
+**a. WebKitGTK gates `SharedArrayBuffer` behind a JSC option.** The engine is
+built with pthreads, so Emscripten creates `new WebAssembly.Memory({shared:true})`
+and needs a `SharedArrayBuffer` to exist at all. In WebKitGTK 2.54 the global is
+absent until `JSC_useSharedArrayBuffer=1` is in the environment of the web
+process. Cross-origin isolation is also required, and WebKit only understands
+the original COEP value — `credentialless` is ignored, `require-corp` works:
+
+```
+JSC_useSharedArrayBuffer=1   (WebProcess inherits it from the UI process)
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+Probe result in the window: `crossOriginIsolated=true`, `SharedArrayBuffer`=true,
+`WebAssembly.Suspending`=true.
+
+**b. `AudioDestinationNode.maxChannelCount` is `0` on this box**, even with
+PipeWire running and a real card present. Per spec that means the channel count
+may not be changed, and Emscripten's WebAudio backend does
+
+```js
+mContext.destination.channelCount = mContext.destination.maxChannelCount
+```
+
+outside any try. `NotSupportedError: Channel count cannot be 0` escapes
+`main_loop_iteration` and the join never starts. Every *other* node accepts
+`channelCount = 2`; only the destination write fails. Clamping the reported value
+to 2 and absorbing the write works — verified in `MiniBrowser`: the worklet module
+loads, `new AudioWorkletNode(ctx, name, {outputChannelCount:[2]})` builds, connects.
+
+**c. `gamejoin.roblox.com` must be asked with the native User-Agent.** With the
+web UA the join succeeds but hands back a session the RakNet edge never answers,
+and `NetStackTokenValue` arrives as 32 hex chars. With
+`User-Agent: Roblox/WinInet` (plus `Requester: Client`) the same account, place
+and machine gets a session that replies. Tokens then arrive **base64** — both
+shapes are in the wild, so decode either.
+
+**d. RUPP framing rules, all four of them.** The engine's own RakNet emits
+correct RUPP, so the page only has to correct two fields on the way out:
+
+| field | must contain |
+| --- | --- |
+| TLV1 subtype 1 (handshake) | `NetStackTokenValue` (the join token) |
+| TLV1 subtype 2 (established) | the 16-byte token the server issues in `Reply2` |
+| TLV2 on subtype-1 datagrams | `MachineAddress : NetStackPort` |
+| TLV2 on subtype-2 datagrams | `MachineAddress : ServerConnections[0].Port` |
+
+Get the subtype-2 TLV2 wrong and the edge silently drops every established-session
+datagram: the server keeps re-sending `Reply2` with a fresh session token and the
+client retransmits into the void. That is the exact signature observed before the
+fix (4274 sends, 8 receives).
+
+**e. Do not inject `RakPeer::Connect`.** An earlier version called `func[127655]`
+from the `select` stub. With the transport selection resolved
+(`FFlagUseRbxTransportClient3=False`) the engine calls it itself with the right
+arguments and the right parsed join fields. The injected call was redundant and
+trapped with divide-by-zero because several of its ten parameters were zeros.
+`CONNECT_ON_SELECT` in `tools/patch.py` now defaults to `False` and keeps the code
+only as a diagnostic.
+
 ## 1. RakNet is compiled in and reachable at runtime
 
 With `FFlagUseRbxTransportClient3=False` injected into the preloaded client

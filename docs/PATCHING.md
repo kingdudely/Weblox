@@ -118,3 +118,45 @@ The errno stubs are recognisable by shape too: `call <__errno_location>; i32.con
   `instantiateStreaming` silently falls back (slower, but works).
 - `--flags` values go into the `WebClientApp` settings response as strings:
   `FFlagUseRbxTransportClient3=False`.
+
+## Rebuilding the module
+
+`tools/build_patched.sh <stock.wasm> <out.wasm>` runs the full flag set and
+validates the result:
+
+```
+--patch getaddrinfo --patch nosocket --patch nofd --patch udp_send
+--byte-patch portsub --transport --stash-peer
+```
+
+Takes ~4 s on this machine and does not renumber function indices.
+
+`CONNECT_ON_SELECT` in `tools/patch.py` is off by default. Leave it off: the
+engine's `NetworkClient` calls `RakPeer::Connect` itself once the transport
+selection is RakNet. The stub variant exists only to bisect a broken connect —
+and note its ten parameters, of which the last three must not be zero
+(`connectionAttempts`, `connectionAttemptDelay`, `socketIndex`), or the call
+traps with divide-by-zero.
+
+## Host + shell
+
+```
+cargo build --manifest-path app/rkhost/Cargo.toml
+cargo build --manifest-path app/src-tauri/Cargo.toml
+
+app/src-tauri/target/debug/raknet-client \
+  --place 13569002876 \
+  --wasm host/extension/WebClient.patched.wasm \
+  --engine-dir /tmp/opencode/rw \
+  --cookie ~/cookie.txt
+```
+
+The shell sets the two WebKitGTK requirements itself
+(`JSC_useSharedArrayBuffer=1`, `RKHOST_COEP=require-corp`); `rkhost` serves the
+page with COOP/COEP so `SharedArrayBuffer` exists.
+
+Debugging without a console: the page streams its console to `/__log` and posts
+`{coi, sab, jspi, wasm, stats}` to `/__client`, both served by `rkhost`. The
+bridge prints the first datagrams in each direction with full hex, plus a RUPP
+payload-id histogram every 500 sends, which is how the retransmit storm was
+diagnosed.

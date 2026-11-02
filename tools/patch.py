@@ -488,37 +488,41 @@ def patch_udp_send():
 
 
 def fn_select():
-    """select() replacement: service connects, then report readable.
+    """select() replacement: optionally service connects, then report readable.
 
     The recv loop's only blocking point was select(); a bare `return 1` would
     spin a core. memory.atomic.wait32 is available because the module is built
     with shared memory, and the page wakes it with Atomics.notify when a
     datagram arrives, so the idle cost is one futex park.
 
-    It also carries the connect request: this thread is the only one we own that
-    runs often, and it already owns the RakPeer pointer (RING_PEER), so a
-    pending RING_CREQ is turned into a RakPeer::Connect here.
+    CONNECT_ON_SELECT also lets this stub issue RakPeer::Connect, because this
+    thread is the only one we own that runs often and it already holds the peer
+    pointer. Turn it off to let the engine's own NetworkClient drive RakNet.
     """
     a = Asm()
     a.i32_const(RING_SELECTS)
     a.i32_const(RING_SELECTS).atomic_load(2, 0).i32_const(1).i32_add()
     a.atomic_store(2, 0)
 
-    # local 0 = peer
-    a.i32_const(RING_PEER).i32_load(2, 0).local_set(0)
-    a.local_get(0).if_()
-    a.i32_const(RING_CREQ).i32_load(2, 0).if_()
-    a.i32_const(RING_CREQ).i32_const(0).i32_store(2, 0)
-    a.local_get(0)
-    a.i32_const(RING_HOST)
-    a.i32_const(RING_PORT).i32_load(2, 0)
-    for _ in range(CONNECT_ARITY - 3):
-        a.i32_const(0)
-    a.call(RAKPEER_CONNECT)
-    a.local_set(1)
-    a.i32_const(RING_CRES).local_get(1).i32_store(2, 0)
-    a.end()
-    a.end()
+    if CONNECT_ON_SELECT:
+        a.i32_const(RING_PEER).i32_load(2, 0).local_set(0)
+        a.local_get(0).if_()
+        a.i32_const(RING_CREQ).i32_load(2, 0).if_()
+        a.i32_const(RING_CREQ).i32_const(0).i32_store(2, 0)
+        a.local_get(0)
+        a.i32_const(RING_HOST)
+        a.i32_const(RING_PORT).i32_load(2, 0)
+        # RakPeer::Connect(host, remotePort, passwordData, passwordDataLength,
+        #                  remotePublicKey, timeOut, connectionAttempts,
+        #                  connectionAttemptDelay, socketIndex[, mtu])
+        for v in CONNECT_DEFAULTS:
+            a.i32_const(v)
+        a.i32_const(RING_CRES).i32_const(-12345).i32_store(2, 0)
+        a.call(RAKPEER_CONNECT)
+        a.local_set(1)
+        a.i32_const(RING_CRES).local_get(1).i32_store(2, 0)
+        a.end()
+        a.end()
 
     a.i32_const(RING_RX_HEAD).atomic_load(2, 0)
     a.i32_const(RING_RX_TAIL).atomic_load(2, 0)
@@ -594,6 +598,11 @@ def patch_stash_peer():
 # passwords/public keys/socket index, none of which apply here.
 RAKPEER_CONNECT = 127655
 CONNECT_ARITY = 10
+# args 3..10 of RakPeer::Connect, after (host, remotePort)
+CONNECT_DEFAULTS = [0, 0, 0, 0, 12, 500, 0]
+# Set false to let the engine drive RakNet itself; true splices a Connect into
+# the recv loop's select() stub.
+CONNECT_ON_SELECT = False
 
 RECV_SITE = (127685, "200110aa02")
 SELECT_SITE = (127685, "37031010aa02")
