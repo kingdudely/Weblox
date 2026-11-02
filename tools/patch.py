@@ -272,6 +272,17 @@ def patch_nofd():
     return a.body()
 
 
+# Byte-level edits inside an existing body: (func_index, pattern_hex, replacement_hex).
+# Used when the change is "neutralise one instruction", not "replace a function".
+BYTE_PATCHES = {
+    # func[127810] checks the socket's bound port against a global threshold and
+    # aborts the join when it is too low. getsockname() writes nothing in this
+    # build, so the port reads 0 and the check always trips. Replacing the
+    # loaded threshold with 0 turns `if (port < threshold)` into `if (port < 0)`,
+    # which can never fire.
+    "portsub": (127810, "41ace5f203280200", "4100"),
+}
+
 PATCHES = {
     "getaddrinfo": (GETADDRINFO, patch_getaddrinfo),
     "nosocket": (ENOSYS_STUB, patch_nosocket),
@@ -287,6 +298,24 @@ def main(argv):
     names = [argv[i + 1] for i in range(len(argv) - 1) if argv[i] == "--patch"]
     buf = open(src, "rb").read()
     imported = count_imported_funcs(buf)
+    changed = {}
+    byte_names = [argv[i + 1] for i in range(len(argv) - 1) if argv[i] == "--byte-patch"]
+    for name in byte_names:
+        if name not in BYTE_PATCHES:
+            raise SystemExit("unknown byte patch %r" % name)
+        idx, pat_hex, rep_hex = BYTE_PATCHES[name]
+        pat = bytes.fromhex(pat_hex)
+        rep = bytes.fromhex(rep_hex)
+        code_start, code_size = find_code(buf)[1], find_code(buf)[2]
+        count, bodies = code_bodies(buf, code_start, code_size)
+        off, ln = bodies[idx - imported]
+        body = buf[off:off + ln]
+        n = body.count(pat)
+        if n == 0:
+            raise SystemExit("byte patch %r: pattern not found in func[%d]" % (name, idx))
+        changed[name] = body.replace(pat, rep)
+        print("byte-patch %-10s func[%d]: %d site(s), %d -> %d B"
+              % (name, idx, n, len(body), len(changed[name])))
     print("imported funcs: %d" % imported)
     new = {}
     for n in names:
@@ -299,6 +328,9 @@ def main(argv):
         new[defined] = fn()
         print("patch %-12s -> func[%d] (defined #%d) body %d B"
               % (n, idx, defined, len(new[defined])))
+    for name in byte_names:
+        idx, _, _ = BYTE_PATCHES[name]
+        new[idx - imported] = changed[name]
     out = replace_functions(buf, new)
     open(dst, "wb").write(out)
     print("wrote %s (%d -> %d bytes)" % (dst, len(buf), len(out)))

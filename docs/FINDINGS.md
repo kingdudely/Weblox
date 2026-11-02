@@ -179,7 +179,46 @@ must return a descriptor the rest of the call chain agrees on, or the whole
 socket layer must be replaced at RakNet's own abstraction (which avoids musl's
 fd table, `errno`, `fd_set` and `sockaddr` entirely). Preference: the latter.
 
-## 8. Retracted / corrected
+## 9. Port check cleared — RakNet opens its socket
+
+`func[127810]` holds the privileged-port string and the check:
+
+```
+call 127498              ; port from the socket
+i32.const 8172204        ; threshold global
+i32.load 2 0
+i32.lt_s                 ; if (port < threshold) -> log + abort
+if
+```
+
+`getsockname` writes nothing in this build, so the port is always 0 and the
+comparison always trips. Neutralising the *loaded threshold* turns it into
+`if (port < 0)`, which can never fire — an 8-byte pattern replaced by 2,
+scoped to one function (`--byte-patch portsub`).
+
+Result, live, stock page, extension only:
+
+```
+Transport selection: useRbxTransportEnabled=false, selectedTransport=RakNet
+binding socket on inaddr_any:0
+[pthread] thread #14 created
+[pthread] thread #15 created
+```
+
+The privileged-port error is gone and RakNet now owns a socket with its recv and
+update threads running. What remains is byte movement: `sendto`/`recvfrom` are
+still stubs, so the transport sends nothing and hears nothing back.
+
+Patch set at this point — four edits total:
+
+| # | target | change |
+| --- | --- | --- |
+| 1 | `func[301]` | `getaddrinfo` returns a synthetic `addrinfo` |
+| 2 | `func[299]` | ENOSYS catch-all returns 0 |
+| 3 | `func[298]` | EBADF validator returns 0 |
+| 4 | `func[127810]` (8 B) | port threshold comparison neutralised |
+
+## 10. Retracted / corrected
 
 - "The wasm's RakNet code is dead because there are no sockets." — wrong. The
   code runs; it is the socket backend that is missing (§1).
