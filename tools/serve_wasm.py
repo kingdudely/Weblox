@@ -13,6 +13,7 @@ import functools
 import http.server
 import os
 import socketserver
+import ssl
 import sys
 
 FIXED = None
@@ -56,12 +57,22 @@ def main():
     ap.add_argument("--file", required=True)
     ap.add_argument("--dir", default=".")
     ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--tls", action="store_true")
+    ap.add_argument("--cert", default="/tmp/opencode/cert.pem")
+    ap.add_argument("--key", default="/tmp/opencode/key.pem")
     a = ap.parse_args()
 
     FIXED = os.path.abspath(a.file)
     handler = functools.partial(Handler, directory=os.path.abspath(a.dir))
-    socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("127.0.0.1", a.port), handler) as httpd:
+    socketserver.ThreadingTCPServer.allow_reuse_address = True
+    class _Srv(socketserver.ThreadingTCPServer):
+        daemon_threads = True
+
+    with _Srv(("127.0.0.1", a.port), handler) as httpd:
+        if a.tls:
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(a.cert, a.key)
+            httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
         sys.stderr.write("[srv] http://127.0.0.1:%d/WebClient.wasm -> %s\n" % (a.port, FIXED))
         httpd.serve_forever()
 

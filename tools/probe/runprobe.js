@@ -21,6 +21,8 @@ const COOKIE = a("cookie", "/home/john/Boblox/run/cookie.txt");
 const WASM_URL = a("wasm-url", "http://127.0.0.1:8765/WebClient.wasm");
 const FLAGS = a("flags", "FFlagUseRbxTransportClient3=False");
 const PORT = Number(a("port", 9335));
+const WASM_FILE = a("wasm-file", null);
+let B64 = null;
 const HOOK = a("hook", null) ? fs.readFileSync(a("hook"), "utf8") : null;
 
 try { fs.unlinkSync(OUT); } catch (_) {}
@@ -53,7 +55,7 @@ const chrome = spawn("google-chrome", [
   "--new-window", "--remote-debugging-port=" + PORT, "--user-data-dir=" + PROFILE,
   "--no-first-run", "--no-default-browser-check", "--disable-dev-shm-usage", "--no-sandbox",
   "--autoplay-policy=no-user-gesture-required", "--user-agent=" + UA,
-  "--window-size=1280,800", "about:blank",
+  "--ignore-certificate-errors", "--window-size=1280,800", "about:blank",
 ], { stdio: ["ignore", "ignore", "ignore"] });
 const kill = () => { try { chrome.kill("SIGTERM"); } catch (_) {} };
 process.on("exit", kill);
@@ -79,7 +81,7 @@ async function wsUrl() {
   const send = (method, params, sid) => {
     const i = ++id; const p = { id: i, method, params: params || {} }; if (sid) p.sessionId = sid;
     w.send(JSON.stringify(p));
-    return new Promise((res, rej) => { pend.set(i, { res, rej }); setTimeout(() => { if (pend.delete(i)) rej(new Error("timeout " + method)); }, 30000).unref(); });
+    return new Promise((res, rej) => { pend.set(i, { res, rej }); setTimeout(() => { if (pend.delete(i)) rej(new Error("timeout " + method)); }, 180000).unref(); });
   };
   const on = (m, f) => { if (!h.has(m)) h.set(m, []); h.get(m).push(f); };
 
@@ -93,14 +95,37 @@ async function wsUrl() {
     log({ k: "exc", s: String((d.exception && d.exception.description) || d.text || "").slice(0, 500) });
   });
 
+  on("Network.requestWillBeSent", (p) => {
+    const u = p.request.url;
+    if (/gamejoin|join-game|WebClient\.|metadata\.json|settings|qdmux|rbxcdn/.test(u)) log({ k: "req", u: u.slice(0, 140) });
+  });
+  on("Network.responseReceived", (p) => {
+    const u = p.response.url;
+    if (/gamejoin|join-game|WebClient\.|metadata\.json|settings/.test(u)) log({ k: "res", u: u.slice(0, 140), st: p.response.status });
+  });
+  on("Network.loadingFailed", (p) => log({ k: "netfail", e: p.errorText, blocked: p.blockedReason, cors: p.corsErrorStatus && p.corsErrorStatus.corsError }));
+
   let wasmHits = 0;
   on("Fetch.requestPaused", async (p, sid) => {
     const u = p.request.url;
     try {
       if (/WebClient\.wasm/.test(u)) {
         wasmHits++;
-        log({ k: "wasm", n: wasmHits, from: u.slice(0, 120), to: WASM_URL });
-        await send("Fetch.continueRequest", { requestId: p.requestId, url: WASM_URL }, sid);
+        if (WASM_FILE) {
+          if (!B64) { const zlib = require("zlib"); B64 = fs.readFileSync(WASM_FILE).toString("base64"); log({ k: "wasm", n: wasmHits, bytes: B64.length, mode: "fulfill-gzip" }); }
+          await send("Fetch.fulfillRequest", {
+            requestId: p.requestId, responseCode: 200,
+            responseHeaders: [
+              { name: "Content-Type", value: "application/wasm" },
+              { name: "Access-Control-Allow-Origin", value: "*" },
+              { name: "Cross-Origin-Resource-Policy", value: "cross-origin" },
+            ],
+            body: B64,
+          }, sid);
+        } else {
+          log({ k: "wasm", n: wasmHits, from: u.slice(0, 100), to: WASM_URL });
+          await send("Fetch.continueRequest", { requestId: p.requestId, url: WASM_URL }, sid);
+        }
       } else {
         await send("Fetch.continueRequest", { requestId: p.requestId }, sid);
       }
@@ -116,10 +141,8 @@ async function wsUrl() {
     try { await send("Runtime.runIfWaitingForDebugger", {}, sid); } catch (_) {}
   });
 
-  const { targetInfos } = await send("Target.getTargets", {});
-  const page = targetInfos.find((t) => t.type === "page");
-  if (!page) throw new Error("no page target");
-  const at = await send("Target.attachToTarget", { targetId: page.targetId, flatten: true });
+  const t = await send("Target.createTarget", { url: "about:blank" });
+  const at = await send("Target.attachToTarget", { targetId: t.targetId, flatten: true });
   const S = at.sessionId;
   await send("Page.enable", {}, S);
   await send("Runtime.enable", {}, S);
