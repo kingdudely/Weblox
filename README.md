@@ -12,10 +12,18 @@ it with its own code; we only supply datagrams.
 
 ## Status (2026-11-02)
 
-The engine joins over **real RakNet UDP** from a self-hosted desktop shell. No
-extension, no Chrome flag, no node/python bridge: `app/rkhost` serves the page,
-proxies the Roblox APIs, owns the UDP socket, and the Tauri window at
-`app/src-tauri` is just the shell around it.
+**The app now runs as a Chrome Isolated Web App** — pure JS + wasm, no Tauri, no
+helper process, no WebSocket bridge, no UDP relay. `UDPSocket` carries RakNet,
+`<controlledframe>` performs the authenticated join, and `python3
+tools/build_patched.sh` is still the only thing that touches the module.
+See **[docs/IWA.md](docs/IWA.md)**.
+
+```
+tx 1856 datagrams   rx 2220 datagrams   850 KB replicated in 55 s   (place 13569002876)
+```
+
+The older desktop-shell path (`host/`, the rkhost UDP bridge, `app/src-tauri`)
+still works and is kept until the IWA is the only target.
 
 Measured live against place `13569002876`:
 
@@ -35,6 +43,7 @@ udp rx 158 B <- 128.116.32.33:57651    Reply2 (7d, RUPP 23, TLV1 subtype 2)
 | RUPP token / TLV2 | **works** — rewritten in the page on the way out | `host/ring.js` |
 | Join over RakNet | **works** — 1 MB+ replicated in the first 90 s | — |
 | Tauri shell | **builds and runs** | `app/src-tauri` |
+| **IWA: capabilities + join + RakNet + render** | **works** | `iwa/`, `docs/IWA.md` |
 
 Full evidence, verbatim logs and retractions: **[docs/FINDINGS.md](docs/FINDINGS.md)**.
 Operational manual for patches: **[docs/PATCHING.md](docs/PATCHING.md)**.

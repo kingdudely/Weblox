@@ -1,23 +1,10 @@
-// stub.js — engine worker bootstrap for the self-hosted client.
+// stub.js — worker bootstrap.
 //
-// Rewrites roblox.com API calls to our own origin (see proxy-hook.js), then
-// loads the engine glue from our own /engine directory instead of the CDN.
+// The engine creates its workers by pointing them straight at WebClient.js, so
+// this file is only a fallback for the paths that do ask for it. It rewrites
+// roblox.com calls through our own origin (proxy-hook.js) and then loads the
+// glue from /engine instead of the CDN.
 (() => {
-  // Same clamp as ring.js; the engine's glue is loaded here too.
-  try {
-    if (typeof AudioDestinationNode !== "undefined") {
-      const dst = AudioDestinationNode.prototype;
-      const node = typeof AudioNode !== "undefined" ? AudioNode.prototype : null;
-      const count = node && Object.getOwnPropertyDescriptor(node, "channelCount");
-      Object.defineProperty(dst, "maxChannelCount", { configurable: true, get: () => 2 });
-      Object.defineProperty(dst, "channelCount", {
-        configurable: true,
-        get() { return count && count.get ? count.get.call(this) : 2; },
-        set() {},
-      });
-    }
-  } catch (e) {}
-
   const here = location.origin;
   importScripts(here + "/proxy-hook.js");
   importScripts(here + "/engine/WebClient.js");

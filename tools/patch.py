@@ -450,6 +450,29 @@ RING_END = RING_RX0 + RING_N * RING_SLOT
 
 MAX_DATAGRAM = 1500
 
+# The page must not hardcode a second copy of the layout above. `--abi` writes
+# the offsets out as JSON; rkhost injects it into the served page.
+def ring_abi():
+    return {
+        "base": RING_BASE,
+        "magic": RING_MAGIC - RING_BASE,
+        "txHead": RING_TX_HEAD - RING_BASE,
+        "txTail": RING_TX_TAIL - RING_BASE,
+        "rxHead": RING_RX_HEAD - RING_BASE,
+        "rxTail": RING_RX_TAIL - RING_BASE,
+        "wake": RING_WAKE - RING_BASE,
+        "selects": RING_SELECTS - RING_BASE,
+        "recvd": RING_RECVD - RING_BASE,
+        "addr": RING_ADDR - RING_BASE,
+        "peer": RING_PEER - RING_BASE,
+        "updates": RING_UPDATES - RING_BASE,
+        "slot": RING_SLOT,
+        "slots": RING_N,
+        "tx0": RING_TX0 - RING_BASE,
+        "rx0": RING_RX0 - RING_BASE,
+        "maxDatagram": MAX_DATAGRAM,
+    }
+
 
 def patch_udp_send():
     """func[127931](buf, len, sockaddr, &err) -> i32: queue the datagram.
@@ -805,6 +828,16 @@ def main(argv):
                 func_body(out, UPDATE_LOOP)[2], patch_stash_peer())})
     open(dst, "wb").write(out)
     print("wrote %s (%d -> %d bytes)" % (dst, len(buf), len(out)))
+
+    if "--abi" in argv:
+        i = argv.index("--abi")
+        path = argv[i + 1] if i + 1 < len(argv) else None
+        if not path:
+            raise SystemExit("--abi needs a path")
+        import json
+        with open(path, "w") as f:
+            json.dump(ring_abi(), f, separators=(",", ":"))
+        print("wrote %s (ring ABI)" % path)
     return 0
 
 

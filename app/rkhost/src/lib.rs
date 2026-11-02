@@ -20,6 +20,8 @@ use std::time::Duration;
 
 use serde_json::json;
 
+mod rupp;
+
 pub const DEFAULT_PORT: u16 = 8765;
 pub const DEFAULT_BRIDGE_PORT: u16 = 37999;
 
@@ -27,8 +29,19 @@ const NATIVE_UA: &str = "Roblox/WinInet";
 const WEB_UA: &str = "Roblox/Web Unknown (8192MB; 1366x768; 96x96; 1366x768; ; Linux) \
 Browser/Chrome/155.0.0.0 RobloxApp/0.745.0.7451145 (GlobalDist; RobloxDirectDownload)";
 
+/// Datagram dumps and RUPP id histograms are diagnosis tools, not default
+/// output: `RKHOST_TRACE=1`.
+fn trace() -> bool {
+    std::env::var_os("RKHOST_TRACE").is_some()
+}
+
 struct Cfg {
     root: PathBuf,
+    /// Send the Isolated Web App security policy on every response.
+    iwa: bool,
+    /// JSON text of the ring ABI, injected into the page and served at
+    /// /ring.json so nothing else has to hardcode the layout.
+    abi: String,
     engine_dir: PathBuf,
     wasm: Option<PathBuf>,
     cookie: Mutex<String>,
@@ -61,6 +74,12 @@ pub struct Options {
     pub cookie: Option<String>,
     pub cookie_file: Option<PathBuf>,
     pub cdn_base: Option<String>,
+    /// Ring layout written by tools/patch.py. Defaults to the wasm's
+    /// `.ring.json` neighbour; the page reads it injected as `window.__rkAbi`.
+    pub abi: Option<PathBuf>,
+    /// Serve `root` as an Isolated Web App: the IWA CSP, the manifest at
+    /// /.well-known/manifest.webmanifest, and every file under root.
+    pub iwa: bool,
 }
 
 impl Default for Options {
@@ -74,6 +93,8 @@ impl Default for Options {
             cookie: None,
             cookie_file: None,
             cdn_base: None,
+            abi: None,
+            iwa: false,
         }
     }
 }
@@ -95,6 +116,8 @@ impl Options {
                 "--cookie" => o.cookie_file = it.next().map(PathBuf::from),
                 "--cookie-value" => o.cookie = it.next(),
                 "--cdn-base" => o.cdn_base = it.next(),
+                "--ring-abi" => o.abi = it.next().map(PathBuf::from),
+                "--iwa" => o.iwa = true,
                 other => eprintln!("unknown arg {other}"),
             }
         }
@@ -107,7 +130,14 @@ impl Options {
                 .and_then(|p| std::fs::read_to_string(p).ok())
                 .map(|s| s.trim().to_string())
         });
-        let cdn_base = self.cdn_base.unwrap_or_else(|| {
+        let abi = self
+        .abi
+        .or_else(|| self.wasm.as_ref().map(|w| w.with_extension("ring.json")))
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "null".to_string());
+    let cdn_base = self.cdn_base.unwrap_or_else(|| {
             let version = self
                 .engine_dir
                 .file_name()
@@ -117,10 +147,12 @@ impl Options {
         });
         Cfg {
             root: self.root,
+            iwa: self.iwa,
             engine_dir: self.engine_dir,
             wasm: self.wasm,
             cookie: Mutex::new(cookie.unwrap_or_default()),
             cdn_base,
+            abi,
             peer: Mutex::new(None),
             client: Mutex::new(None),
             rupp_token: Mutex::new(None),
@@ -159,15 +191,6 @@ impl Running {
         *self.cfg.cookie.lock().unwrap() = value.trim().to_string();
     }
 
-    /// The UDMUX endpoint the join response named, once it has been seen.
-    pub fn peer(&self) -> Option<(String, u16)> {
-        self.cfg.peer.lock().unwrap().clone()
-    }
-
-    /// Last JSON snapshot posted by the page (ring stats, engine console tail).
-    pub fn client_report(&self) -> Option<String> {
-        self.cfg.client.lock().unwrap().clone()
-    }
 }
 
 /// Bind both listeners up front, so a port clash surfaces before a window opens.
@@ -175,6 +198,7 @@ pub fn start(opts: Options) -> Running {
     let http_port = opts.port;
     let bridge_port = opts.bridge_port;
     let cfg = Arc::new(opts.into_cfg());
+    IWA.store(cfg.iwa, std::sync::atomic::Ordering::Relaxed);
 
     let server = tiny_http::Server::http(("127.0.0.1", http_port)).expect("bind http");
     let bridge = TcpListener::bind(("127.0.0.1", bridge_port)).expect("bind bridge");
@@ -219,6 +243,14 @@ fn handle(cfg: Arc<Cfg>, mut req: tiny_http::Request) -> std::io::Result<()> {
     let path = req.url().split('?').next().unwrap_or("/").to_string();
     let method = req.method().clone();
 
+    // IWA CSP forbids inline script, so the ABI arrives as a file.
+    if path == "/abi.js" {
+        let body = format!("window.__rkAbi = {};\n", cfg.abi);
+        return send(req, 200, "text/javascript", body.into_bytes());
+    }
+    if path == "/ring.json" {
+        return send(req, 200, "application/json", cfg.abi.clone().into_bytes());
+    }
     if path == "/__status" {
         let has = !cfg.cookie.lock().unwrap().is_empty();
         return send_json(req, 200, json!({ "cookie": has }));
@@ -284,18 +316,52 @@ fn handle(cfg: Arc<Cfg>, mut req: tiny_http::Request) -> std::io::Result<()> {
         return proxy(cfg, req, &target);
     }
 
+    if cfg.iwa {
+        if method != tiny_http::Method::Get {
+            return send(req, 405, "text/plain", b"method not allowed".to_vec());
+        }
+        let rel = path.trim_start_matches('/');
+        if rel.split('/').any(|seg| seg == "..") {
+            return send(req, 400, "text/plain", b"bad path".to_vec());
+        }
+        let file = if rel.is_empty() || rel.ends_with('/') {
+            cfg.root.join(rel).join("index.html")
+        } else {
+            cfg.root.join(rel)
+        };
+        if !file.is_file() {
+            return send(req, 404, "text/plain", b"not found".to_vec());
+        }
+        let mut body = std::fs::read(&file)?;
+        if file.file_name().map(|n| n == "index.html").unwrap_or(false) {
+            body = inject_abi(&body, &cfg.abi);
+        }
+        return send(req, 200, ctype(&file), body);
+    }
+
     let file = match path.as_str() {
         "/" | "/index.html" => cfg.root.join("index.html"),
         "/ring.js" => cfg.root.join("ring.js"),
+        "/input.js" => cfg.root.join("input.js"),
         "/proxy-hook.js" => cfg.root.join("proxy-hook.js"),
         "/stub.js" => cfg.root.join("stub.js"),
         _ => PathBuf::new(),
     };
     if file.is_file() && method == tiny_http::Method::Get {
-        let body = std::fs::read(&file)?;
+        let mut body = std::fs::read(&file)?;
+        if path == "/" || path == "/index.html" {
+            body = inject_abi(&body, &cfg.abi);
+        }
         return send(req, 200, ctype(&file), body);
     }
     send(req, 404, "text/plain", b"not found".to_vec())
+}
+
+/// Hand the page the ring layout patch.py produced, so the offsets exist in
+/// exactly one place.
+fn inject_abi(html: &[u8], abi: &str) -> Vec<u8> {
+    const MARKER: &str = "__WEBLOX_RING_ABI__";
+    String::from_utf8_lossy(html).replace(MARKER, abi).into_bytes()
 }
 
 /// The engine creates its workers by pointing them straight at WebClient.js
@@ -303,6 +369,8 @@ fn handle(cfg: Arc<Cfg>, mut req: tiny_http::Request) -> std::io::Result<()> {
 /// them and proxy-hook.js would never load there. Prepend it where the engine
 /// glue is served; the page context skips it because importScripts is absent.
 const WORKER_PRELUDE: &str = ";(function(){try{if(typeof importScripts==='function')importScripts(location.origin+'/proxy-hook.js')}catch(e){}})();\n";
+/// The same seam, but routing roblox.com through the frame instead of a proxy.
+const WORKER_PRELUDE_IWA: &str = ";(function(){try{if(typeof importScripts==='function'){var u=location.origin+'/rbx-net.js';if(typeof trustedTypes!=='undefined'){u=trustedTypes.createPolicy('weblox-worker-'+Math.random().toString(36).slice(2),{createScriptURL:function(x){return x}}).createScriptURL(u)}importScripts(u)}}catch(e){console.error('prelude: '+e)}})();\n";
 
 fn engine(cfg: Arc<Cfg>, req: tiny_http::Request, rel: &str) -> std::io::Result<()> {
     let rel = rel.split('?').next().unwrap_or(rel);
@@ -317,7 +385,8 @@ fn engine(cfg: Arc<Cfg>, req: tiny_http::Request, rel: &str) -> std::io::Result<
     if local.is_file() {
         let body = std::fs::read(&local)?;
         if rel == "WebClient.js" {
-            let mut with_prelude = WORKER_PRELUDE.as_bytes().to_vec();
+            let prelude = if cfg.iwa { WORKER_PRELUDE_IWA } else { WORKER_PRELUDE };
+            let mut with_prelude = prelude.as_bytes().to_vec();
             with_prelude.extend_from_slice(&body);
             return send(req, 200, "text/javascript", with_prelude);
         }
@@ -509,22 +578,6 @@ fn b64_16(s: &str) -> Option<[u8; 16]> {
     Some(arr)
 }
 
-fn grab(text: &str, key: &str) -> Option<String> {
-    let at = text.find(key)? + key.len();
-    let rest = &text[at..];
-    let rest = rest.trim_start().strip_prefix(':')?.trim_start();
-    let rest = rest.strip_prefix('"')?;
-    let end = rest.find('"')?;
-    Some(rest[..end].to_string())
-}
-
-fn grab_number(text: &str, key: &str) -> Option<String> {
-    let at = text.find(key)? + key.len();
-    let rest = text[at..].trim_start().strip_prefix(':')?.trim_start();
-    let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
-    Some(rest[..end].to_string())
-}
-
 fn ctype(p: &Path) -> &'static str {
     match p.extension().and_then(|e| e.to_str()).unwrap_or("") {
         "js" => "text/javascript",
@@ -532,19 +585,15 @@ fn ctype(p: &Path) -> &'static str {
         "json" => "application/json",
         "html" => "text/html; charset=utf-8",
         "css" => "text/css",
+        "webmanifest" => "application/manifest+json",
+        "png" => "image/png",
+        "svg" => "image/svg+xml",
         _ => "application/octet-stream",
     }
 }
 
-/// Chrome wants `credentialless` (blob workers survive it); WebKit only knows
-/// `require-corp`. Selectable so both can be measured without a rebuild.
-fn coep() -> &'static str {
-    match std::env::var("RKHOST_COEP").ok().as_deref() {
-        Some("require-corp") | Some("require") => "require-corp",
-        Some("none") => "unsafe-none",
-        _ => "credentialless",
-    }
-}
+/// Set once at startup; `send` has no access to the Cfg.
+static IWA: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 fn send(req: tiny_http::Request, status: u16, ctype: &str, body: Vec<u8>) -> std::io::Result<()> {
     use tiny_http::{Header, Response};
@@ -552,9 +601,25 @@ fn send(req: tiny_http::Request, status: u16, ctype: &str, body: Vec<u8>) -> std
         .with_status_code(status)
         .with_header(Header::from_bytes("content-type", ctype).unwrap());
     // Required for SharedArrayBuffer: the engine's pthread memory is shared.
+    // Under --iwa, add the policy Chrome insists on for an installed app.
+    if IWA.load(std::sync::atomic::Ordering::Relaxed) {
+        resp = resp.with_header(
+            Header::from_bytes(
+                "content-security-policy",
+                "base-uri 'none'; default-src 'self'; object-src 'none'; \
+frame-src 'self' https: blob: data:; connect-src 'self' https: wss: blob: data:; \
+script-src 'self' 'wasm-unsafe-eval'; img-src 'self' https: blob: data:; \
+media-src 'self' https: blob: data:; font-src 'self' blob: data:; \
+style-src 'self' 'unsafe-inline'; require-trusted-types-for 'script'; \
+frame-ancestors 'self'",
+            )
+            .unwrap(),
+        );
+    }
     for (k, v) in [
         ("cross-origin-opener-policy", "same-origin"),
-        ("cross-origin-embedder-policy", coep()),
+        // Only `require-corp` is understood by WebKit; Chromium accepts it too.
+        ("cross-origin-embedder-policy", "require-corp"),
         ("cross-origin-resource-policy", "same-origin"),
         ("cache-control", "no-store"),
     ] {
@@ -582,24 +647,44 @@ fn bridge_accept(cfg: Arc<Cfg>, listener: TcpListener) {
     }
 }
 
-fn serve_ws(cfg: Arc<Cfg>, stream: TcpStream) -> anyhow_like::Result<()> {
+fn serve_ws(cfg: Arc<Cfg>, stream: TcpStream) -> bridge::Result<()> {
     stream.set_read_timeout(Some(Duration::from_millis(5)))?;
     let mut ws = tungstenite::accept(stream).map_err(|e| e.to_string())?;
     let udp = UdpSocket::bind("0.0.0.0:0")?;
     udp.set_read_timeout(Some(Duration::from_millis(5)))?;
     println!("engine connected to bridge");
 
+    // The socket target comes from the join script, which may be parsed after
+    // this connection is up, so it is resolved lazily below.
     let mut dest: Option<SocketAddr> = None;
+    let mut rupp = rupp::Rupp::new();
     let mut rx = [0u8; 2048];
     let mut stats = (0u64, 0u64);
     let mut hist: std::collections::BTreeMap<u8, u32> = std::collections::BTreeMap::new();
 
     loop {
+        rupp.refresh(&cfg);
+        if dest.is_none() {
+            dest = cfg
+                .peer
+                .lock()
+                .unwrap()
+                .as_ref()
+                .and_then(|(ip, port)| format!("{ip}:{port}").parse().ok());
+            if let Some(d) = dest {
+                println!("destination -> {d}");
+            }
+        }
         match ws.read() {
-            Ok(tungstenite::Message::Binary(buf)) => {
+            Ok(tungstenite::Message::Binary(mut buf)) => {
                 if let Some(d) = dest {
+                    rupp.stamp(&mut buf);
+                    if trace() && stats.0 < 4 {
+                        let head: String = buf.iter().take(40).map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ");
+                        println!("send {} B -> {} head=[{}]", buf.len(), d, head);
+                    }
                     let _ = udp.send_to(&buf, d);
-                    if stats.0 < 6 {
+                    if trace() && stats.0 < 6 {
                         let head: String = buf.iter().take(48).map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ");
                         println!("udp tx {} B -> {} head=[{}]", buf.len(), d, head);
                     }
@@ -610,32 +695,15 @@ fn serve_ws(cfg: Arc<Cfg>, stream: TcpStream) -> anyhow_like::Result<()> {
                     } else {
                         buf.first().copied().unwrap_or(0)
                     };
-                    if id == 0x78 && !hist.contains_key(&0x78) {
-                        let total = ((buf[2] as usize) << 8) | buf[3] as usize;
-                        let body = &buf[total.min(buf.len())..];
-                        let hex: String = body.iter().take(64).map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ");
-                        println!("first Req2: total={} payload={} B head=[{}]", total, body.len(), hex);
-                    }
                     *hist.entry(id).or_insert(0) += 1;
-                    if stats.0 % 500 == 0 {
+                    if trace() && stats.0 % 500 == 0 {
                         let keys: Vec<String> = hist.iter().map(|(k, v)| format!("{k:02x}:{v}")).collect();
                         println!("udp ids [{}]", keys.join(" "));
                     }
                     stats.0 += 1;
                 }
             }
-            Ok(tungstenite::Message::Text(txt)) => {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
-                    if v.get("t").and_then(|t| t.as_str()) == Some("dest") {
-                        if let Some(s) = v.get("v").and_then(|x| x.as_str()) {
-                            if let Ok(a) = s.parse::<SocketAddr>() {
-                                println!("destination set -> {a}");
-                                dest = Some(a);
-                            }
-                        }
-                    }
-                }
-            }
+            Ok(tungstenite::Message::Text(_)) => {}
             Ok(tungstenite::Message::Close(_)) => break,
             Ok(_) => {}
             Err(tungstenite::Error::Io(ref e))
@@ -648,14 +716,15 @@ fn serve_ws(cfg: Arc<Cfg>, stream: TcpStream) -> anyhow_like::Result<()> {
             if dest.is_none() {
                 dest = Some(from);
             }
-            if stats.1 < 12 {
+            rupp.learn(&rx[..n]);
+            if trace() && stats.1 < 12 {
                 let head: String = rx[..n.min(40)].iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ");
                 println!("udp rx {} B <- {} head=[{}]", n, from, head);
             }
             let _ = ws.send(tungstenite::Message::Binary(rx[..n].to_vec()));
             stats.1 += 1;
         }
-        if stats.0 + stats.1 > 0 && (stats.0 + stats.1) % 500 == 0 {
+        if trace() && stats.0 + stats.1 > 0 && (stats.0 + stats.1) % 500 == 0 {
             println!("bridge tx={} rx={}", stats.0, stats.1);
         }
     }
@@ -664,7 +733,7 @@ fn serve_ws(cfg: Arc<Cfg>, stream: TcpStream) -> anyhow_like::Result<()> {
 }
 
 // tungstenite's error type is large; a tiny wrapper keeps signatures readable.
-mod anyhow_like {
+mod bridge {
     pub struct Error(String);
     impl std::fmt::Display for Error {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

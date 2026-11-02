@@ -2,16 +2,16 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>RakNet-Wasm-Client</title>
+<title>RakNet Client</title>
 <style>
-  html,body{margin:0;height:100%;background:#101014;color:#ddd;font:14px system-ui}
+  html,body{margin:0;height:100%;background:#000;color:#ddd;font:14px system-ui}
   #canvas{width:100vw;height:100vh;display:block;outline:none}
   #input-container{position:absolute;left:0;top:0;width:0;height:0;overflow:hidden}
   #input-input,#input-textarea{position:absolute;opacity:0}
   #hud{position:absolute;left:12px;top:12px;font:12px ui-monospace,monospace;color:#8ab;pointer-events:none;white-space:pre}
 </style>
 <script>
-  // WasmPlayer.js requires this before it loads.
+  // WasmPlayer.js reads this before it loads.
   window.__wasmLoaderContext = {
     engineBase: location.origin + "/engine",
     server: "prod",
@@ -25,7 +25,7 @@
   <div id="hud">booting…</div>
   <div id="input-container"><textarea id="input-textarea"></textarea><input id="input-input"></div>
 
-  <!-- elements WasmPlayer.js touches; kept off-screen -->
+  <!-- elements the loader touches; hidden, never used by us -->
   <div id="loading-overlay" style="display:none">
     <div id="loading-icon-shell"></div>
     <div id="loading-background-image"></div>
@@ -44,11 +44,15 @@
   <div id="proxyenabled" style="display:none"></div>
 
   <script>
+    // One line of feedback; the engine logs go to /__log via ring.js.
     const hud = document.getElementById("hud");
-    const say = (m) => { hud.textContent = String(m).slice(0, 400); };
-    window.__onEngineLoadingStatus = (s) => say(s);
+    const say = (m) => { hud.textContent = String(m).slice(0, 300); };
+    window.__onEngineLoadingStatus = say;
     addEventListener("error", (e) => say("error: " + (e.message || e)));
-    addEventListener("unhandledrejection", (e) => say("reject: " + (e.reason && e.reason.message || e.reason)));
+  </script>
+  <script>
+    // Ring layout from tools/patch.py, injected by rkhost at serve time.
+    window.__rkAbi = __WEBLOX_RING_ABI__;
   </script>
   <script src="/ring.js"></script>
   <script src="/proxy-hook.js"></script>
