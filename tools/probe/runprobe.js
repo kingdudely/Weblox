@@ -21,6 +21,7 @@ const COOKIE = a("cookie", "/home/john/Boblox/run/cookie.txt");
 const WASM_URL = a("wasm-url", "http://127.0.0.1:8765/WebClient.wasm");
 const FLAGS = a("flags", "FFlagUseRbxTransportClient3=False");
 const PORT = Number(a("port", 9335));
+const HOOK = a("hook", null) ? fs.readFileSync(a("hook"), "utf8") : null;
 
 try { fs.unlinkSync(OUT); } catch (_) {}
 const log = (o) => fs.appendFileSync(OUT, JSON.stringify(o) + "\n");
@@ -110,17 +111,21 @@ async function wsUrl() {
     const sid = p.sessionId;
     log({ k: "target", type: p.targetInfo.type, url: String(p.targetInfo.url).slice(0, 120) });
     try { await send("Runtime.enable", {}, sid); } catch (_) {}
+    if (HOOK) { try { await send("Runtime.evaluate", { expression: HOOK }, sid); } catch (e) { log({ k: "hookerr", e: String(e).slice(0, 200) }); } }
     try { await send("Fetch.enable", { patterns: [{ urlPattern: "*WebClient.wasm*" }] }, sid); } catch (_) {}
     try { await send("Runtime.runIfWaitingForDebugger", {}, sid); } catch (_) {}
   });
 
-  const t = await send("Target.createTarget", { url: "about:blank" });
-  const at = await send("Target.attachToTarget", { targetId: t.targetId, flatten: true });
+  const { targetInfos } = await send("Target.getTargets", {});
+  const page = targetInfos.find((t) => t.type === "page");
+  if (!page) throw new Error("no page target");
+  const at = await send("Target.attachToTarget", { targetId: page.targetId, flatten: true });
   const S = at.sessionId;
   await send("Page.enable", {}, S);
   await send("Runtime.enable", {}, S);
   await send("Network.enable", {}, S);
   await send("Page.addScriptToEvaluateOnNewDocument", { source: flagInit }, S);
+  if (HOOK) await send("Page.addScriptToEvaluateOnNewDocument", { source: HOOK }, S);
   await send("Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: true, flatten: true }, S);
   await send("Emulation.setDeviceMetricsOverride", { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }, S);
 
