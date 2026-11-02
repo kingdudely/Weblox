@@ -131,7 +131,55 @@ encodings (`exnref`/exception handling). A current wabt or Binaryen is required
 for full disassembly; the scanner only needs section/function boundaries and raw
 byte scans, which work today.
 
-## 7. Retracted / corrected
+## 7. Patch chain — the socket setup ladder, wall by wall
+
+Each rung was found by patching the previous one and reading the next log line.
+Same place, same account, `FFlagUseRbxTransportClient3=False`, patched module
+served locally and redirected via CDP (`tools/probe/runprobe.js`).
+
+**[1] Resolver — patched (`func[301]`).**
+
+```
+[FLog::Network] UDMUX Address = 128.116.32.34, Port = 51174 | RCC Server Address = 10.18.9.212, Port = 51174
+[FLog::Output] Failed to start network client
+Unknown bind__() error 0
+```
+
+The `getaddrinfo(...) failed` line is gone; RakNet now reaches `bind()` and fails
+with a stale errno (0 → "Unknown error"). The synthetic addrinfo works.
+
+**[2] fd validator — patched (`func[298]` = `errno=EBADF; return -1`).**
+
+```
+[FLog::Network] setsockopt SO_RCVBUF failed : errno=8, errString=Bad file descriptor
+[FLog::Network] setsockopt SO_LINGER failed : errno=8 ...
+[FLog::Network] setsockopt SO_SNDBUF failed : errno=8 ...
+[FLog::Network] setsockopt SO_BROADCAST failed : errno=8 ...
+[FLog::Network] binding socket on inaddr_any:0
+[FLog::Network] bind failed:Error : 8 - Bad file descriptor
+bind__(): sockfd is not a valid descriptor.
+```
+
+musl rejects our fd before any syscall runs. Patching `298` to return 0 makes
+every check pass.
+
+**[3] Port check — open.**
+
+```
+[FLog::Network] binding socket on inaddr_any:0
+[FLog::Network] RakNet Socket bound to invalid (privileged) port: 0
+```
+
+`bind()` now "succeeds", but `getsockname` never writes a port, so RakNet reads 0
+and refuses. `getsockname` is not among the direct callers of the ENOSYS stub, so
+it reaches it through a helper — unresolved.
+
+Note for whoever continues: the real fix is not to keep faking the fd. `socket()`
+must return a descriptor the rest of the call chain agrees on, or the whole
+socket layer must be replaced at RakNet's own abstraction (which avoids musl's
+fd table, `errno`, `fd_set` and `sockaddr` entirely). Preference: the latter.
+
+## 8. Retracted / corrected
 
 - "The wasm's RakNet code is dead because there are no sockets." — wrong. The
   code runs; it is the socket backend that is missing (§1).

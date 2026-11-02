@@ -1,29 +1,37 @@
 # probe
 
-CDP harness for the live engine. Launches real Chrome (headed, GPU), injects
-`run/cookie.txt`-style `.ROBLOSECURITY`, attaches to every worker *before* its
-script runs, and taps the engine at the `WebAssembly.instantiate` boundary.
+CDP harness for driving the live engine. Everything here exists because the
+engine is hostile to observation: it runs in page scope, fetches its module from
+a CDN, and hides its transport behind a JS glue layer.
+
+| file | purpose |
+| --- | --- |
+| `runprobe.js` | **main entry** — launches Chrome, injects the cookie, flips fast flags, redirects `WebClient.wasm` to a local patched module, logs console |
+| `tapprobe.js` | same harness without the wasm redirect; used to observe the engine |
+| `tap.js` | hook injected before the engine runs: wraps the `rbx_wasm_rna_*` imports, logs channel opens, datagram/stream payloads, receive-ring geometry, and heap-scans for string anchors |
+| `flagtap.js` | rewrites the `WebClientApp` client-settings response in flight |
 
 ```sh
-node --experimental-websocket tools/probe/tapprobe.js \
-  --url 'https://play.roblox.com/games/start?placeId=<id>' \
-  --cookie /path/to/cookie.txt \
-  --hook tools/probe/flagtap.js \
+node --experimental-websocket tools/probe/runprobe.js \
+  --place <id> --cookie /path/to/cookie.txt \
+  --wasm-url http://127.0.0.1:8765/WebClient.wasm \
+  --flags FFlagUseRbxTransportClient3=False \
   --seconds 70 --out /tmp/run.jsonl
 ```
 
-- `tap.js` — wraps the `rbx_wasm_rna_*` imports and the exported callbacks:
-  logs channel opens, datagram/stream payload hex, and the receive-ring
-  geometry (`data/head/tail/slotSize/slotCount`). Also heap-scans for string
-  anchors and prints their linear addresses.
-- `flagtap.js` — rewrites the `WebClientApp` client-settings response in flight
-  to flip fast flags (`FFlagUseRbxTransportClient3=False` selects RakNet).
+Everything lands in `--out` as JSONL: `console`, `exc`, `target`, `wasm`, `done`.
+Filter with `jq -r 'select(.k=="console")|.s'`.
 
-Notes learned the hard way:
+## Learned the hard way
 
-- The engine instantiates **in page scope**; the workers are the pthread pool.
-  Install hooks with `Page.addScriptToEvaluateOnNewDocument`, not per-worker.
+- The engine instantiates **in page scope**; the dozen workers are the pthread
+  pool. Install hooks with `Page.addScriptToEvaluateOnNewDocument`, not per
+  worker.
 - `Runtime.runIfWaitingForDebugger` must be called for every attached target or
   the page hangs.
-- The exported callbacks (`rbx_wasm_rna_on_*`) are re-wrapped by the glue via
-  `Object.assign`, so wrapping `instance.exports` is unreliable — tap imports.
+- Exported callbacks are re-wrapped by the glue (`Object.assign`), so wrapping
+  `instance.exports` silently does nothing — tap the imports instead.
+- The wasm redirect must keep `application/wasm` and carry CORS + CORP headers,
+  because the page is cross-origin isolated.
+- Fast flags are strings in the `WebClientApp` settings JSON, e.g.
+  `FFlagUseRbxTransportClient3=False`.
