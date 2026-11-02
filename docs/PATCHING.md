@@ -138,7 +138,10 @@ and note its ten parameters, of which the last three must not be zero
 (`connectionAttempts`, `connectionAttemptDelay`, `socketIndex`), or the call
 traps with divide-by-zero.
 
-## Host + shell
+## Host + shell (legacy path)
+
+Kept until the IWA is the only target. The module, the ring and the RUPP fields
+are identical in both; only the datagram seam differs.
 
 ```
 cargo build --manifest-path app/rkhost/Cargo.toml
@@ -160,3 +163,34 @@ Debugging without a console: the page streams its console to `/__log` and posts
 bridge prints the first datagrams in each direction with full hex, plus a RUPP
 payload-id histogram every 500 sends, which is how the retransmit storm was
 diagnosed.
+
+## Isolated Web App
+
+The current path. Same patched module, same ring, same RUPP — the seam is a
+`UDPSocket` instead of a WebSocket, and the join is done by a
+`<controlledframe>` instead of the Rust proxy.
+
+```
+./tools/run_iwa.sh                      # install once, then open
+PLACE=12345 ./tools/run_iwa.sh
+```
+
+What still matters when the module is rebuilt:
+
+* `--abi` output (`build/WebClient.patched.ring.json`) is served as `/abi.js`.
+  If the ring layout moves in `tools/patch.py`, the page picks it up with no
+  edit — do not reintroduce a second copy of the offsets in JS.
+* `--wasm` is served at `/engine/WebClient.wasm`; `--cdn-base` must point at the
+  matching `version-<hash>-RobloxWebClient` directory, or every engine asset
+  403s and the client silently runs on default flags.
+* `rkhost --iwa` prepends the worker prelude to `WebClient.js` so workers load
+  `rbx-net.js`. Without it the engine's worker fetches bypass the frame.
+* The engine only picks RakNet if `FFlagUseRbxTransportClient3` is `"False"`.
+  `iwa/rbx-net.js` rewrites that flag in the `WebClientApp` settings response.
+
+Console access: `--remote-debugging-port=9222`, then attach to the `app` target
+(`curl 127.0.0.1:9222/json`). The old `/__log` and `/__client` endpoints are
+unused — the IWA CSP has no localhost in `connect-src`, so the page cannot post
+to them.
+
+Details, API shapes and traps: **[IWA.md](IWA.md)**.

@@ -20,21 +20,13 @@
   const placeId = params.get("placeId") || params.get("place") || "13569002876";
 
   async function login(auth) {
-    let who = await auth.whoami();
+    const who = await auth.whoami();
     if (who) return who;
 
     // No session in the frame's jar: show it and let the user log in once. The
     // partition persists, so this happens on a fresh install and never again.
     say("log in to Roblox in the embedded page");
-    auth.visible(true);
-    for (;;) {
-      await new Promise((r) => setTimeout(r, 2000));
-      who = await auth.whoami().catch(() => null);
-      if (who) {
-        auth.visible(false);
-        return who;
-      }
-    }
+    return auth.interactiveLogin();
   }
 
   async function main() {

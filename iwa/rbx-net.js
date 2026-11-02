@@ -310,5 +310,40 @@
     self.XMLHttpRequest = FrameXHR;
   }
 
+  // ---------------------------------------------------------------- images ---
+  // rbxcdn sends ACAO: * but no CORP, and a COEP page refuses cross-origin
+  // subresources without it. Fetching with CORS and handing the element a blob:
+  // URL (same-origin) sidesteps that without a proxy.
+  const CDN_RE = /^https?:\/\/([a-z0-9-]+\.)*rbxcdn\.com\//i;
+  const blobs = new Map();
+  if (typeof HTMLImageElement !== "undefined") {
+    const desc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, "src");
+    Object.defineProperty(HTMLImageElement.prototype, "src", {
+      configurable: true,
+      enumerable: desc.enumerable,
+      get: desc.get,
+      set(v) {
+        const url = String(v);
+        if (!CDN_RE.test(url)) return desc.set.call(this, url);
+        const hit = blobs.get(url);
+        if (hit) return desc.set.call(this, hit);
+        origFetch
+          .call(self, url, { mode: "cors", credentials: "omit" })
+          .then((r) => (r.ok ? r.blob() : Promise.reject(new Error("HTTP " + r.status))))
+          .then((b) => {
+            const blobUrl = URL.createObjectURL(b);
+            blobs.set(url, blobUrl);
+            if (blobs.size > 512) {
+              const oldest = blobs.keys().next().value;
+              URL.revokeObjectURL(blobs.get(oldest));
+              blobs.delete(oldest);
+            }
+            desc.set.call(this, blobUrl);
+          })
+          .catch(() => desc.set.call(this, url));
+      },
+    });
+  }
+
   self.__rbxNetHosts = [...HOSTS];
 })();
