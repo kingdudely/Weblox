@@ -71,7 +71,30 @@ class Asm:
     def local_set(self, i):        self.b += bytes([0x21]) + uleb(i); return self
     def local_tee(self, i):        self.b += bytes([0x22]) + uleb(i); return self
     def i32_const(self, v):        self.b += bytes([0x41]) + sleb(v); return self
+    def i64_const(self, v):        self.b += bytes([0x42]) + sleb(v); return self
     def i32_load(self, align=2, off=0):   self.b += bytes([0x28]) + uleb(align) + uleb(off); return self
+    def i32_load8_u(self, align=0, off=0):  self.b += bytes([0x2D]) + uleb(align) + uleb(off); return self
+    def i32_load16_u(self, align=1, off=0): self.b += bytes([0x2F]) + uleb(align) + uleb(off); return self
+    def i32_and(self):             self.b += b"\x71"; return self
+    def i32_mul(self):             self.b += b"\x6c"; return self
+    def i32_sub(self):             self.b += b"\x6b"; return self
+    def i32_ne(self):              self.b += b"\x47"; return self
+    def i32_lt_u(self):            self.b += b"\x49"; return self
+    def i32_gt_u(self):            self.b += b"\x4b"; return self
+    def i32_ge_u(self):            self.b += b"\x4f"; return self
+    def select_(self):             self.b += b"\x1b"; return self
+    def memory_copy(self):
+        self.b += bytes([0xFC, 0x0A, 0x00, 0x00]); return self
+    def atomic_load(self, align=2, off=0):
+        self.b += bytes([0xFE, 0x10]) + uleb(align) + uleb(off); return self
+    def atomic_store(self, align=2, off=0):
+        self.b += bytes([0xFE, 0x17]) + uleb(align) + uleb(off); return self
+    def atomic_rmw_add(self, align=2, off=0):
+        self.b += bytes([0xFE, 0x1E]) + uleb(align) + uleb(off); return self
+    def atomic_wait32(self, align=2, off=0):
+        self.b += bytes([0xFE, 0x01]) + uleb(align) + uleb(off); return self
+    def atomic_notify(self, align=2, off=0):
+        self.b += bytes([0xFE, 0x00]) + uleb(align) + uleb(off); return self
     def i32_store(self, align=2, off=0):  self.b += bytes([0x36]) + uleb(align) + uleb(off); return self
     def i32_store16(self, align=1, off=0): self.b += bytes([0x3b]) + uleb(align) + uleb(off); return self
     def i32_store8(self, align=0, off=0):  self.b += bytes([0x3a]) + uleb(align) + uleb(off); return self
@@ -308,17 +331,312 @@ def func_body(buf, idx):
     return off, ln, buf[off:off + ln]
 
 
+def defined_func_count(buf):
+    for sid, start, size in sections(buf):
+        if sid != 3:
+            continue
+        n, _ = read_uleb(buf, start)
+        return n
+    return 0
+
+
+def type_section(buf):
+    """Return [(params_bytes, results_bytes)] in type-index order."""
+    for sid, start, size in sections(buf):
+        if sid != 1:
+            continue
+        pos = start
+        n, pos = read_uleb(buf, pos)
+        out = []
+        for _ in range(n):
+            if buf[pos] != 0x60:
+                raise SystemExit("unexpected functype %#x" % buf[pos])
+            pos += 1
+            np_, pos = read_uleb(buf, pos)
+            params = buf[pos:pos + np_]
+            pos += np_
+            nr, pos = read_uleb(buf, pos)
+            results = buf[pos:pos + nr]
+            pos += nr
+            out.append((bytes(params), bytes(results)))
+        return out
+    return []
+
+
+def find_type(buf, params, results):
+    """Reuse an existing type index; adding one would shift nothing but is
+    unnecessary — 273 imports already cover most shapes."""
+    for i, (p, r) in enumerate(type_section(buf)):
+        if p == params and r == results:
+            return i
+    raise SystemExit("no existing type %r -> %r; add one to type_section() first"
+                     % (params, results))
+
+
+def add_functions(buf, bodies):
+    """Append functions at the end of the function/code sections.
+
+    Appending never renumbers an existing function index, which is the whole
+    reason we append instead of inserting. Returns (buf, [new_indices]).
+    """
+    type_idx = []
+    for params, results, _ in bodies:
+        type_idx.append(find_type(buf, params, results))
+
+    first = count_imported_funcs(buf) + defined_func_count(buf)
+
+    _, fstart, fsize = find_section(buf, 3)
+    pos = fstart
+    n, pos = read_uleb(buf, pos)
+    payload = bytearray(uleb(n + len(bodies))) + buf[pos:fstart + fsize]
+    for t in type_idx:
+        payload += uleb(t)
+    buf = replace_section(buf, 3, bytes(payload))
+
+    _, cstart, csize = find_code(buf)
+    pos = cstart
+    n, pos = read_uleb(buf, pos)
+    payload = bytearray(uleb(n + len(bodies)))
+    end_of_count = pos
+    # copy every existing body verbatim
+    for _ in range(n):
+        ln, p2 = read_uleb(buf, pos)
+        payload += buf[pos:p2 + ln]
+        pos = p2 + ln
+    for _, _, body in bodies:
+        payload += uleb(len(body)) + body
+    buf = replace_section(buf, 10, bytes(payload))
+    return buf, list(range(first, first + len(bodies)))
+
+
+# ------------------------------------------------------------- transport ----
+# The engine is compiled without sockets: sendto/recvfrom/select are a shared
+# stub that sets errno and returns -1. We cannot add imports (appending a
+# function import would renumber all 167k functions), so the transport lives in
+# linear memory instead:
+#
+#   wasm --(TX ring)--> page --(WebSocket)--> tools/udp_bridge.js --> UDP
+#   wasm <--(RX ring)-- page <--(WebSocket)--
+#
+# Emscripten builds pthread modules with `shared: true`, so the page and every
+# engine worker already share one SharedArrayBuffer. content.js captures it by
+# wrapping WebAssembly.Memory at document_start, then pumps the two rings.
+#
+# The ring sits at the top of the 2 GiB linear memory: dlmalloc grows up from
+# __heap_base (global 0 initialises to 0x17152a0), so the last few hundred KiB
+# are the only region nothing else will claim.
+
+RING_BASE = 0x7FF00000
+RING_MAGIC = RING_BASE + 0x00        # page writes 'RAKN' when its pump is live
+RING_TX_HEAD = RING_BASE + 0x04      # wasm writes, page reads
+RING_TX_TAIL = RING_BASE + 0x08      # page writes
+RING_RX_HEAD = RING_BASE + 0x0C      # page writes
+RING_RX_TAIL = RING_BASE + 0x10      # wasm writes
+RING_WAKE = RING_BASE + 0x14         # futex word: page notifies, recv waits
+RING_SELECTS = RING_BASE + 0x18      # counters, for probing liveness
+RING_RECVD = RING_BASE + 0x1C
+RING_ADDR = RING_BASE + 0x20         # 16-byte sockaddr captured from SendTo
+RING_PEER = RING_BASE + 0x30         # RakPeer* observed by UpdateNetworkLoop
+RING_UPDATES = RING_BASE + 0x34      # UpdateNetworkLoop iterations
+RING_CREQ = RING_BASE + 0x38         # page sets 1 to ask for a RakPeer::Connect
+RING_CRES = RING_BASE + 0x3C         # result of that Connect
+RING_HOST = RING_BASE + 0x40         # NUL-terminated ASCII IPv4, 48 bytes
+RING_PORT = RING_BASE + 0x70         # u32 port
+RING_SLOT = 1536                     # u32 len + 1500 payload, 4-byte aligned
+RING_N = 64                          # power of two; index is masked
+RING_TX0 = RING_BASE + 0x80
+RING_RX0 = RING_TX0 + RING_N * RING_SLOT
+RING_END = RING_RX0 + RING_N * RING_SLOT
+
+MAX_DATAGRAM = 1500
+
+
+def patch_udp_send():
+    """func[127931](buf, len, sockaddr, &err) -> i32: queue the datagram.
+
+    RakNet's send wrapper still has every parameter a real sendto() needs, so
+    this is the one place bytes leave the engine with a live buffer pointer. We
+    append (sockaddr, len, payload) to the TX ring and report a full send; the
+    page forwards it. The sockaddr is also parked in the ring header so the
+    receive side can hand RakNet replies that appear to come from the peer it
+    believes it is talking to.
+    """
+    a = Asm()
+    a.local_get(3).i32_const(0).i32_store(2, 0)              # *err = 0
+    a.i32_const(RING_ADDR).local_get(2).i32_const(16).memory_copy()
+
+    # n = min(len, MAX_DATAGRAM)
+    a.local_get(1).i32_const(MAX_DATAGRAM)
+    a.local_get(1).i32_const(MAX_DATAGRAM).i32_lt_u()
+    a.select_().local_set(4)
+
+    # h = tx_head (single writer: RakNet's send path is serialised by its own lock)
+    a.i32_const(RING_TX_HEAD).atomic_load(2, 0).local_set(5)
+    a.i32_const(RING_TX0)
+    a.local_get(5).i32_const(RING_N - 1).i32_and()
+    a.i32_const(RING_SLOT).i32_mul().i32_add().local_set(6)
+
+    a.local_get(6).i32_const(0).i32_store(2, 0)               # len = 0: not ready
+    a.local_get(6).i32_const(4).i32_add()
+    a.local_get(0).local_get(4).memory_copy()
+    a.local_get(6).local_get(4).i32_store(2, 0)               # len last: publishes
+
+    a.i32_const(RING_TX_HEAD)
+    a.local_get(5).i32_const(1).i32_add().atomic_store(2, 0)
+    a.local_get(4)
+    return a.body([(3, I32)])
+
+
+def fn_select():
+    """select() replacement: service connects, then report readable.
+
+    The recv loop's only blocking point was select(); a bare `return 1` would
+    spin a core. memory.atomic.wait32 is available because the module is built
+    with shared memory, and the page wakes it with Atomics.notify when a
+    datagram arrives, so the idle cost is one futex park.
+
+    It also carries the connect request: this thread is the only one we own that
+    runs often, and it already owns the RakPeer pointer (RING_PEER), so a
+    pending RING_CREQ is turned into a RakPeer::Connect here.
+    """
+    a = Asm()
+    a.i32_const(RING_SELECTS)
+    a.i32_const(RING_SELECTS).atomic_load(2, 0).i32_const(1).i32_add()
+    a.atomic_store(2, 0)
+
+    # local 0 = peer
+    a.i32_const(RING_PEER).i32_load(2, 0).local_set(0)
+    a.local_get(0).if_()
+    a.i32_const(RING_CREQ).i32_load(2, 0).if_()
+    a.i32_const(RING_CREQ).i32_const(0).i32_store(2, 0)
+    a.local_get(0)
+    a.i32_const(RING_HOST)
+    a.i32_const(RING_PORT).i32_load(2, 0)
+    for _ in range(CONNECT_ARITY - 3):
+        a.i32_const(0)
+    a.call(RAKPEER_CONNECT)
+    a.local_set(1)
+    a.i32_const(RING_CRES).local_get(1).i32_store(2, 0)
+    a.end()
+    a.end()
+
+    a.i32_const(RING_RX_HEAD).atomic_load(2, 0)
+    a.i32_const(RING_RX_TAIL).atomic_load(2, 0)
+    a.i32_ne().if_().i32_const(1).ret().end()
+
+    a.i32_const(RING_WAKE).i32_const(0).i64_const(1000000)
+    a.atomic_wait32(2, 0).drop()
+    a.i32_const(1)
+    return a.body([(2, I32)])
+
+
+def fn_recv():
+    """func[127685] splice target: (dest, this) -> length.
+
+    (dest, this) -> n. Copies one queued datagram into `dest` (the packet object
+    RakNet's RecvFromLoop allocated for exactly this purpose), copies the peer
+    sockaddr into `this+232` where the surrounding code expects recvfrom to have
+    left it, and returns the length. The untouched tail of func[127685] then
+    stores the length, stamps the receive time, and parses the address — exactly
+    as it would for a real recvfrom.
+    """
+    a = Asm()
+    a.i32_const(RING_RX_TAIL).atomic_load(2, 0).local_set(2)
+    a.i32_const(RING_RX_HEAD).atomic_load(2, 0).local_set(3)
+    a.local_get(2).local_get(3).i32_eq().if_().i32_const(0).ret().end()
+
+    a.i32_const(RING_RX0)
+    a.local_get(2).i32_const(RING_N - 1).i32_and()
+    a.i32_const(RING_SLOT).i32_mul().i32_add().local_set(4)
+
+    a.local_get(4).i32_load(2, 0).local_set(5)
+    a.local_get(5).i32_eqz().if_().i32_const(0).ret().end()
+    a.local_get(5).i32_const(MAX_DATAGRAM - 8)
+    a.local_get(5).i32_const(MAX_DATAGRAM - 8).i32_lt_u()
+    a.select_().local_set(5)
+
+    a.local_get(0).local_get(4).i32_const(4).i32_add()
+    a.local_get(5).memory_copy()
+    a.local_get(1).i32_const(232).i32_add()
+    a.i32_const(RING_ADDR).i32_const(16).memory_copy()
+
+    a.i32_const(RING_RX_TAIL)
+    a.local_get(2).i32_const(1).i32_add().atomic_store(2, 0)
+    a.i32_const(RING_RECVD)
+    a.i32_const(RING_RECVD).atomic_load(2, 0).local_get(5).i32_add()
+    a.atomic_store(2, 0)
+    a.local_get(5)
+    return a.body([(4, I32)])
+
+
+UPDATE_LOOP = 127660
+
+
+def patch_stash_peer():
+    """Borrow func[127660] (RakNet::UpdateNetworkLoop) to publish its `this`.
+
+    The web build never calls RakPeer::Connect, so the only way to drive the
+    real stack is to call into it ourselves -- which needs the peer pointer.
+    The update loop is handed exactly that pointer, so it records it here.
+    Local 0, not a parameter read: this body is a prefix, so locals are intact.
+    """
+    a = Asm()
+    a.i32_const(RING_PEER).local_get(0).i32_store(2, 0)
+    a.i32_const(RING_UPDATES)
+    a.i32_const(RING_UPDATES).atomic_load(2, 0).i32_const(1).i32_add()
+    a.atomic_store(2, 0)
+    return bytes(a.b)
+
+
+# RakNet's connect, driven by us. The web build selects a dummy transport and
+# never calls this, so the real RakPeer the engine started would otherwise sit
+# idle. Signature is (this, host, port, ...) -> i32; the trailing arguments are
+# passwords/public keys/socket index, none of which apply here.
+RAKPEER_CONNECT = 127655
+CONNECT_ARITY = 10
+
+RECV_SITE = (127685, "200110aa02")
+SELECT_SITE = (127685, "37031010aa02")
+
+
+def apply_transport(buf):
+    """Splice the recv loop's select()/recvfrom() calls and append the stubs."""
+    imported = count_imported_funcs(buf)
+    total = imported + defined_func_count(buf)
+
+    sel_idx = total
+    recv_idx = total + 1
+
+    idx, pat_hex = RECV_SITE
+    _, _, body = func_body(buf, idx)
+    pat = bytes.fromhex(pat_hex)
+    if body.count(pat) != 1:
+        raise SystemExit("recv site not unique in func[%d]" % idx)
+    body = body.replace(
+        pat, bytes.fromhex("2001") + bytes.fromhex("2006") + bytes.fromhex("2000")
+        + b"\x10" + uleb(recv_idx))
+
+    idx2, pat2_hex = SELECT_SITE
+    pat2 = bytes.fromhex(pat2_hex)
+    if body.count(pat2) != 1:
+        raise SystemExit("select site not unique in func[%d]" % idx2)
+    body = body.replace(pat2, pat2[:-3] + b"\x10" + uleb(sel_idx))
+
+    buf = replace_functions(buf, {idx - imported: body})
+    buf, new = add_functions(buf, [
+        (b"", b"\x7f", fn_select()),
+        (b"\x7f\x7f", b"\x7f", fn_recv()),
+    ])
+    print("transport        -> func[%d] select, func[%d] recv (ring @ %#x..%#x)"
+          % (new[0], new[1], RING_BASE, RING_END))
+    return buf
+
+
 # ---------------------------------------------------------------- patches ----
 # Function indices are resolved by tools/wasm_scan.py + shape analysis.
 # Keep them in one place so a rebuild only needs a re-resolve pass.
 
 MALLOC = 163490          # exports: func[163490] <malloc>
-
-# Two imports the web client never uses (Emscripten's websocket API — Studio
-# networking only). Repurposed in place: renaming an existing import keeps every
-# function index stable, which appending a new import would not.
-WS_SEND_BINARY = 202     # (i32 sockid, i32 ptr, i32 len) -> i32
-WS_CLOSE        = 201    # (i32 sockid, i32 code, i32 reason) -> i32
 
 CONSOLE_LOG = 246        # env.emscripten_console_log(ptr) -> void, unused import
 MARKER_STR  = 953724     # long log string; suffix at +k marks trace slot k
@@ -390,22 +708,6 @@ def patch_nofd():
     return a.body()
 
 
-def patch_udp_send():
-    """func[127931](buf, len, sockaddr, &err) -> i32: hand the datagram to JS.
-
-    RakNet's send wrapper keeps exactly what a real sendto() needs, so the body
-    becomes a call into the repurposed import. The glue reads the sockaddr out
-    of linear memory itself, so only the pointer crosses the boundary.
-    """
-    a = Asm()
-    a.local_get(3).i32_const(0).i32_store(2, 0)   # *err = 0
-    a.local_get(2)                                 # sockaddr ptr
-    a.local_get(0)                                 # buf
-    a.local_get(1)                                 # len
-    a.call(WS_SEND_BINARY)
-    return a.body()
-
-
 # Byte-level edits inside an existing body: (func_index, pattern_hex, replacement_hex).
 # Used when the change is "neutralise one instruction", not "replace a function".
 BYTE_PATCHES = {
@@ -456,6 +758,8 @@ def main(argv):
         if argv[i] == "--rename-import":
             renames[int(argv[i + 1])] = argv[i + 2]
     trace = [int(argv[i + 1]) for i in range(len(argv) - 1) if argv[i] == "--trace"]
+    transport = "--transport" in argv
+    stash_peer = "--stash-peer" in argv
     print("imported funcs: %d" % imported)
     new = {}
     for n in names:
@@ -484,6 +788,12 @@ def main(argv):
         out = rename_imports(out, renames)
         for i, n in sorted(renames.items()):
             print("import[%d] renamed -> %s" % (i, n))
+    if transport:
+        out = apply_transport(out)
+    if stash_peer:
+        out = replace_functions(out, {
+            UPDATE_LOOP - count_imported_funcs(out): body_splice_prefix(
+                func_body(out, UPDATE_LOOP)[2], patch_stash_peer())})
     open(dst, "wb").write(out)
     print("wrote %s (%d -> %d bytes)" % (dst, len(buf), len(out)))
     return 0

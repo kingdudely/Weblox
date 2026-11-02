@@ -1,0 +1,15 @@
+[package]
+name = "rkhost"
+version = "0.1.0"
+edition = "2021"
+description = "Local host for the RakNet-spliced Roblox web client: static page, Roblox API proxy, UDP bridge"
+
+[[bin]]
+name = "rkhost"
+path = "src/main.rs"
+
+[dependencies]
+tiny_http = "0.12"
+tungstenite = "0.24"
+serde_json = "1"
+ureq = { version = "2.10", default-features = false, features = ["tls", "gzip"] }

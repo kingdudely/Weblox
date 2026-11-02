@@ -14,7 +14,7 @@ const PROFILE = fs.mkdtempSync(path.join(os.tmpdir(), "cdpt-"));
 const chrome = spawn("google-chrome", ["--new-window", "--remote-debugging-port=" + PORT, "--user-data-dir=" + PROFILE,
   "--no-first-run", "--no-default-browser-check", "--disable-dev-shm-usage", "--no-sandbox",
   "--autoplay-policy=no-user-gesture-required", "--ignore-certificate-errors",
-  "--enable-unsafe-extension-debugging", "--user-agent=" + UA, "--window-size=1280,800", "about:blank"],
+  "--enable-unsafe-extension-debugging", "--disable-features=LocalNetworkAccessChecks", "--user-agent=" + UA, "--window-size=1280,800", "about:blank"],
   { stdio: ["ignore", "ignore", "ignore"] });
 const kill = () => { try { chrome.kill("SIGTERM"); } catch (_) {} };
 process.on("exit", kill);
@@ -33,7 +33,22 @@ async function wsUrl() { for (let i = 0; i < 120; i++) { try { const r = await f
   const send = (method, params, sid) => { const i = ++id; const p = { id: i, method, params: params || {} }; if (sid) p.sessionId = sid; w.send(JSON.stringify(p));
     return new Promise((res, rej) => { pend.set(i, { res, rej }); setTimeout(() => { if (pend.delete(i)) rej(new Error("timeout " + method)); }, 20000).unref(); }); };
   const on = (m, f) => { if (!h.has(m)) h.set(m, []); h.get(m).push(f); };
+  let destSent = false;
+  const relayDest = (text) => {
+    const m = /UDMUX Address = ([\d.]+), Port = (\d+)/.exec(text);
+    if (!m || destSent) return;
+    destSent = true;
+    const ip = m[1], port = parseInt(m[2], 10);
+    const expr = `(() => { const r = globalThis.__rkRing; if (!r) return false; r.setDest(${JSON.stringify(ip + ":" + m[2])}); return r.connect(${JSON.stringify(ip)}, ${port}); })()`;
+    send("Runtime.evaluate", { expression: expr, returnByValue: true }, S)
+      .then(() => log({ k: "dest", v: m[1] + ":" + m[2] }))
+      .catch(() => {});
+  };
   on("Runtime.consoleAPICalled", (p) => {
+    try {
+      const txt = (p.args || []).map((a) => a.value !== undefined ? a.value : a.description || "").join(" ");
+      if (txt.indexOf("UDMUX Address") >= 0) relayDest(txt);
+    } catch (_) {}
     const s = (p.args || []).map((x) => x.value !== undefined ? x.value : x.description || "").join(" ");
     if (globalThis.__n === undefined) globalThis.__n = 0;
     if (globalThis.__n++ < 600) log({ k: "console", s: s.slice(0, 400) });
@@ -78,7 +93,7 @@ async function wsUrl() { for (let i = 0; i < 120; i++) { try { const r = await f
   while (Date.now() < end) { await sleep(3000);
     if (Date.now() > end - 12000) {
       try {
-        const r = await send("Runtime.evaluate", { expression: "JSON.stringify({udp:typeof globalThis.__rkUdp, boot:globalThis.__rkBoot||null, ws:typeof WebSocket})", returnByValue: true }, S);
+        const r = await send("Runtime.evaluate", { expression: "JSON.stringify({ring: globalThis.__rkRing ? {ready:__rkRing.ready, connected:__rkRing.connected, stats:__rkRing.stats, wasm:__rkRing.wasm} : null})", returnByValue: true }, S);
         log({ k: "probe", v: r && r.result && r.result.value });
       } catch (_) {}
     } const st = await send("Runtime.evaluate", { expression: "JSON.stringify({t:document.title,c:document.querySelectorAll('canvas').length})", returnByValue: true }, S).catch(() => null); if (st && st.result && st.result.value) log({ k: "page", ...JSON.parse(st.result.value) }); }
