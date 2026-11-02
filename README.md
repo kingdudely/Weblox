@@ -113,6 +113,27 @@ docs/
 - The engine rotates weekly. **Function indices are per-build** — see
   `docs/PATCHING.md` for the re-resolve procedure. Never hardcode a file offset.
 
+## Next step (pick up here)
+
+The fd fake is a dead end — musl's fd table, `errno`, `fd_set` and `sockaddr`
+semantics all have to agree, and they are now three patches deep with a fourth
+(`getsockname`) already failing. **Prefer replacing RakNet's own socket
+abstraction** (or the engine's socket setup function that logs
+`binding socket on inaddr_any:0`), which needs no errno and no fd table:
+
+1. Locate the engine's socket wrapper. It is the function that emits
+   `binding socket on inaddr_any:0`, `setsockopt SO_* failed`, and
+   `RakNet Socket bound to invalid (privileged) port`. String xrefs do not work
+   (see PATCHING) — use call-graph narrowing from `getsockname`/`bind` leaves,
+   or patch-a-candidate-and-diff-the-log.
+2. Replace its send/recv/bind bodies with ring-buffer stubs (tx push, rx pop,
+   `EAGAIN`-equivalent when empty).
+3. Only then build the host page + bridge. Until data actually moves, the bridge
+   has nothing to carry.
+
+Keep the three existing patches — they are harmless and they get the engine to
+the socket setup, which is where the real work starts.
+
 ## Explicitly out of scope
 
 - Reimplementing Roblox's Luau, replication, physics, or anti-cheat.
