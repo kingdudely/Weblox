@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RakNet-Wasm-Client</title>
+<style>
+  html,body{margin:0;height:100%;background:#101014;color:#ddd;font:14px system-ui}
+  #canvas{width:100vw;height:100vh;display:block;outline:none}
+  #input-container{position:absolute;left:0;top:0;width:0;height:0;overflow:hidden}
+  #input-input,#input-textarea{position:absolute;opacity:0}
+  #hud{position:absolute;left:12px;top:12px;font:12px ui-monospace,monospace;color:#8ab;pointer-events:none;white-space:pre}
+</style>
+<script>
+  // WasmPlayer.js requires this before it loads.
+  window.__wasmLoaderContext = {
+    engineBase: location.origin + "/engine",
+    server: "prod",
+    channel: null,
+    workerStubUrl: location.origin + "/stub.js"
+  };
+</script>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <div id="hud">booting…</div>
+  <div id="input-container"><textarea id="input-textarea"></textarea><input id="input-input"></div>
+
+  <!-- elements WasmPlayer.js touches; kept off-screen -->
+  <div id="loading-overlay" style="display:none">
+    <div id="loading-icon-shell"></div>
+    <div id="loading-background-image"></div>
+    <div id="loading-experience-title"></div>
+    <div id="loading-experience-creator"></div>
+    <img id="loading-experience-icon" alt="">
+    <span id="loading-verified-badge"></span>
+    <button id="loading-cancel">cancel</button>
+    <div id="loading-error-title"></div>
+    <div id="loading-error-message"></div>
+    <div id="loading-error-code"></div>
+    <button id="loading-error-leave">leave</button>
+  </div>
+  <div id="status" style="display:none"></div>
+  <div id="server" style="display:none"></div>
+  <div id="proxyenabled" style="display:none"></div>
+
+  <script>
+    const hud = document.getElementById("hud");
+    const say = (m) => { hud.textContent = String(m).slice(0, 400); };
+    window.__onEngineLoadingStatus = (s) => say(s);
+    addEventListener("error", (e) => say("error: " + (e.message || e)));
+    addEventListener("unhandledrejection", (e) => say("reject: " + (e.reason && e.reason.message || e.reason)));
+  </script>
+  <script src="/proxy-hook.js"></script>
+  <script src="/engine/WasmPlayer.js"></script>
+</body>
+</html>
