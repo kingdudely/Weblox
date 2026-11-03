@@ -355,6 +355,16 @@ Ruled out along the way, so nobody re-tests them:
   `navigator.userActivation` but does not unlock media, so a headless check will
   always report `suspended`. Audio has to be confirmed with a real click.
 
+**The worklet sink is gated on that resume, so it is not used.** `start()` is
+`mContext.resume().then(() => addModule(...))`, and the `AudioWorkletNode` is
+only constructed after the promise settles. When the resume never settles there
+is no sink at all and the mix goes nowhere. FMOD's other output — the legacy
+`ScriptProcessorNode`, chosen when `AudioWorkletNode` is absent — builds its node
+eagerly during start-up, independent of the resume. `boot.js` therefore hides
+`AudioWorkletNode` before the engine loads. It mixes on the main thread, which is
+slower, but it is deterministic; switch back once the worklet path is shown to
+resume in a real session.
+
 **The sink is built after the resume, not before.** `start()` is
 `mContext.resume().then(() => addModule(...))`, and only then is the
 `AudioWorkletNode` constructed and connected. So while the context is suspended

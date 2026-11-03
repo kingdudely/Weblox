@@ -45,6 +45,15 @@ if (typeof trustedTypes !== "undefined") {
   const Native = window.AudioContext || window.webkitAudioContext;
   if (!Native) return;
 
+  // FMOD builds its AudioWorklet sink *inside* `mContext.resume().then(...)`, so
+  // no sink exists until that promise settles — and on this client it never
+  // settles, which leaves the mixer with nowhere to write. The ScriptProcessor
+  // output builds its node eagerly at start-up, so the mixer is wired whether or
+  // not the context has been unlocked yet. Slower (main-thread mixing), but it
+  // is the difference between a silent client and an audible one. Revisit when
+  // the worklet path can be shown to resume — see docs/IWA.md.
+  window.AudioWorkletNode = undefined;
+
   const live = new Set();
   const kicked = new WeakSet();
 
