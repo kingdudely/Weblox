@@ -380,6 +380,66 @@ bug and is neither. Capture the missing paths and fetch them:
 ./tools/mirror_engine.py
 ```
 
+## The home screen (LuaApp) — why the client has none
+
+The engine does contain the desktop app's home: `LuaAppStarterScript`,
+`LuaAppExperienceController`, `AppShell`, `HomePageSdui*`,
+`returnToLuaAppRequest`, `UniversalApp.rbxm`. When the client leaves an
+experience it has nothing to return to, so the canvas goes to `about:blank`.
+
+It cannot be reached from this build, and the code says so plainly. In the
+lifecycle function, the whole start-up is gated on one value:
+
+```wat
+i32.const 0x10b8f10            ;; startup place id (i64)
+i64.load
+i64.const 0
+i64.ne
+if                             ;; place id set -> build the experience and run it
+  ...
+else                           ;; no place id
+  i32.const 2824533            ;; "[LIFECYCLE] no startup place id; exiting"
+  i32.const 0
+  call 163158                  ;; log
+  call 6                       ;; terminate
+  br 4                         ;; leave the app loop
+end
+```
+
+So the no-place branch is a hard exit, not a home screen; the desktop app's
+shell lives in a different bootstrap that this module does not contain. What the
+harness *can* do is already done: with no `placeId` the loader still starts the
+engine (`Ae(...)` without `set_place_id`), which is why the exit line appears at
+all. The JS control surface confirms the limit — `Module` exposes
+`set_place_id`, `set_preloaded_flags`, `set_channel`, `resume_audio` and the ring
+callbacks, and nothing that starts an app shell.
+
+Two practical routes if this is picked up again:
+
+* **Return to a surface we control.** `__resolveGameExit` hands back
+  `{reason: "leave" | "native_exit" | "teleport_failed" | "join_failed"}`. On
+  `leave`/`native_exit`, show the `<controlledframe>` (already logged in) over the
+  canvas so the user can pick another experience, and intercept its navigation to
+  join from there. This is the whole of the native "return to home" behaviour,
+  minus the engine's own UI.
+* **Port the app shell.** It would mean a bootstrap that creates a DataModel from
+  `UniversalApp.rbxm` (`rbxasset://models/UniversalApp/UniversalApp.rbxm`, not on
+  the public CDN in any path form tried) and starts `LuaAppStarterScript` — engine
+  work, not a flag.
+
+### Reading this module
+
+Stock `wabt` (0.1.x, as shipped by distros) rejects the module: the type section
+uses `exnref`/typed refs ("expected valid result type (got -0x17)"). Use
+`wasm-tools` (Bytecode Alliance) instead:
+
+```
+wasm-tools print build/WebClient.patched.wasm | grep -m1 -B120 -A30 "i32.const 2824533"
+```
+
+`wasm-tools` is not in the build deps; fetch a release binary, print, grep. The
+files it prints are enormous, so always pipe instead of writing a `.wat`.
+
 ## Debugging
 
 `--remote-debugging-port=9222`, then attach to the target whose type is **`app`**
