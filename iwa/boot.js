@@ -36,14 +36,13 @@ if (typeof trustedTypes !== "undefined") {
 // lifts it: a suspended context never runs onaudioprocess, so the client is
 // silent with a perfectly good graph. suspend() is therefore a no-op.
 //
-// FMOD's AudioWorklet output is built inside a resume() that never settles on
-// this client, so it gets no sink at all; the ScriptProcessor output builds its
-// node eagerly. Hiding AudioWorkletNode selects that one. See docs/IWA.md.
+// FMOD has two outputs. The AudioWorklet one is built inside a resume() that
+// never settles on this client, so it gets no sink at all; the ScriptProcessor
+// output builds eagerly. Hiding AudioWorkletNode selects that one, and its node
+// is kept in `sinks` so __audio() can tell "no sink" from "silent".
 (() => {
   const Native = window.AudioContext || window.webkitAudioContext;
   if (!Native) return;
-
-  window.AudioWorkletNode = undefined;
 
   const live = new Set();
   const sinks = [];
@@ -59,7 +58,12 @@ if (typeof trustedTypes !== "undefined") {
       this.addEventListener("statechange", () => {
         if (this.state === "closed") live.delete(this);
       });
-      this.suspend = () => Promise.resolve();
+      // Logged, not silent: if the engine ever suspends mid-session this is the
+      // line to look for next to a stall.
+      this.suspend = () => {
+        console.log("[audio] suspend suppressed (live contexts: " + live.size + ")");
+        return Promise.resolve();
+      };
       resume();
     }
   }
@@ -76,12 +80,15 @@ if (typeof trustedTypes !== "undefined") {
     }
   };
 
+  window.AudioWorkletNode = undefined;
+
   // The engine's sink, held so the console can tell "no sink" from "silent".
   const nativeProcessor = AudioContext.prototype.createScriptProcessor;
   if (nativeProcessor) {
     AudioContext.prototype.createScriptProcessor = function (...args) {
       const node = nativeProcessor.apply(this, args);
       sinks.push(node);
+      console.log("[audio] script processor: buffer=" + node.bufferSize + " channels=" + node.channelCount);
       return node;
     };
   }
@@ -97,7 +104,12 @@ if (typeof trustedTypes !== "undefined") {
   // amplitude leaving that sink, which separates "silent mixer" from "muted".
   window.__audio = () => ({
     contexts: [...live].map((c) => ({ state: c.state, rate: c.sampleRate })),
-    sinks: sinks.map((n) => ({ kind: n.constructor.name, state: n.context.state })),
+    sinks: sinks.map((n) => ({
+      kind: n.constructor.name,
+      state: n.context.state,
+      buffer: n.bufferSize || null,
+      channels: n.channelCount,
+    })),
   });
 
   window.__audioPeak = async (ms = 1000) => {
@@ -118,6 +130,34 @@ if (typeof trustedTypes !== "undefined") {
     node.disconnect(analyser);
     return { state: ctx.state, peak };
   };
+})();
+
+// ----------------------------------------------------------- engine exit ----
+// WasmPlayer installs window.__resolveGameExit itself, twice: once as a stub and
+// once as the resolver the engine's crash callback settles. Wrapping it on
+// assignment is the only place the reason is visible — the engine reports a
+// crash as {reason:"crash", errorType:"ExplicitTerminate"} and otherwise only
+// logs an opaque object. A crash is a hard stop, so it is also the one case
+// that has to interrupt.
+(() => {
+  let handler = null;
+  let told = false;
+  Object.defineProperty(window, "__resolveGameExit", {
+    configurable: true,
+    get: () => handler,
+    set: (fn) => {
+      handler = function (e) {
+        const reason = e && e.reason;
+        const type = e && e.errorType;
+        console.log("[exit] reason=" + reason + (type ? " type=" + type : ""));
+        if (reason === "crash" && !told) {
+          told = true;
+          window.alert("Roblox crashed.\n\n" + (type || e.errorMessage || "The engine stopped."));
+        }
+        return fn.apply(this, arguments);
+      };
+    },
+  });
 })();
 
 // ----------------------------------------------------------- hard stops -----

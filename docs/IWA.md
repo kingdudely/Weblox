@@ -349,7 +349,7 @@ Confirmed by measurement, not by ear: `__audio()` reported
 ### Watching it
 
 ```js
-self.__audio()                 // {contexts:[{state,rate}], sinks:[{kind,state}]}
+self.__audio()                 // {contexts:[{state,rate}], sinks:[{kind,state,buffer,channels}]}
 await self.__audioPeak(1500)   // {state, peak} — amplitude leaving the first sink
 ```
 
@@ -358,6 +358,50 @@ Every context `suspended` after a click means the document never unlocked (1).
 means the engine never built its output. `sinks` present, `peak: 0` and playing
 audio means the mixer is being fed nothing — a content problem. Input injected
 over CDP never unlocks media, so these are only meaningful in a real session.
+
+### When the client dies: `RBXCRASH: ExplicitTerminate`
+
+The one crash seen in a real session, a minute or two into play:
+
+```
+RBXCRASH: ExplicitTerminate
+Aborted()
+Uncaught RuntimeError: unreachable
+    at wasm-function[163109]:0x57116b9
+    at Pe (WebClient.js)
+    at wi (WebClient.js)
+    at wasm-function[163119] ...
+    ... down to
+    at _as_script_node.onaudioprocess
+```
+
+Read it as: the engine called `RBXCRASH(ExplicitTerminate)` from inside the FMOD
+mix, reported it (`__resolveGameExit({reason:"crash", errorType:"ExplicitTerminate"})`),
+then `abort()` → the bare `unreachable` stub (function 163109). It is a deliberate
+engine abort, not a trap out of corrupt state, and **nothing is logged before it**.
+
+Mapping the frames: V8 prints `wasm-function[N]:0xOFFSET`, where the offset is a
+module offset and `N` counts imports (273) plus bodies in code-section order.
+Walking that gives `FMOD_JS_MixFunction` (126654) → `FMOD::Output::mix` (125626) →
+125629 → 125616 → … → the crash reporter. Function 125616 contains the string
+`NumFrames must be at least {}` — that is a **log record**, not an assert, and the
+branch never runs (no such line is ever printed). Do not chase it.
+
+The only non-engine part of that stack is the sink. With `AudioWorkletNode`
+hidden the engine uses its ScriptProcessor output, which calls
+`FMOD_JS_MixFunction` on the main thread with a 1024-frame buffer. Whether that is
+the trigger is unproven: it is rare (once in ~3 minutes of play, and a 10-minute
+idle session is clean), and the worklet sink cannot be substituted — with the
+worklet visible the engine selects it, asks for `audio-processor-fast.js`, and
+never builds a node, so there is no sink and no audio at all.
+
+`boot.js` wraps `window.__resolveGameExit` on assignment: it logs
+`[exit] reason=…` and raises an alert for `reason === "crash"`. That is where the
+reason is visible, because the engine only logs an opaque object.
+
+To run the mixer unattended for a repro, launch Chrome with
+`--autoplay-policy=no-user-gesture-required`; CDP input never unlocks media, but
+this policy does, so `onaudioprocess` runs without a real click.
 
 ### The heap is fixed at 2 GiB
 
