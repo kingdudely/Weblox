@@ -332,10 +332,9 @@ loads and FMOD takes that path. It mixes on the main thread, which is slower, bu
 it always has somewhere to write.
 
 **3. The engine parks the mixer with `mixerSuspend()` and never lifts it.**
-This is what kept the last session silent: the contexts had run
-(`ran: true`, so the document was unlocked), but every one of them reported
-`suspended` and stayed there — a `ScriptProcessorNode` whose own context is
-suspended never calls `onaudioprocess`. FMOD's matching `mixerResume()` on input
+This is what kept the client silent: every context reported `suspended` and
+stayed there even though the document was unlocked — a `ScriptProcessorNode`
+whose own context is suspended never calls `onaudioprocess`. FMOD's matching `mixerResume()` on input
 does not bring the context back. So `boot.js` makes `suspend()` a no-op on every
 context it hands the engine: the sink stays running for the session. Suspension
 only saves cycles while nothing is playing; refusing it is what makes the client
@@ -347,11 +346,12 @@ Confirmed by measurement, not by ear: `__audio()` reported
 ### Watching it
 
 ```js
-self.__audio()                 // {contexts:[{state,rate,ran}], sinks:[{kind,state}]}
+self.__audio()                 // {contexts:[{state,rate}], sinks:[{kind,state}]}
 await self.__audioPeak(1500)   // {state, peak} — amplitude leaving the first sink
 ```
 
-`ran: false` after a click means the document never unlocked (1). `sinks: []`
+Every context `suspended` after a click means the document never unlocked (1).
+`sinks: []`
 means the engine never built its output. `sinks` present, `peak: 0` and playing
 audio means the mixer is being fed nothing — a content problem. Input injected
 over CDP never unlocks media, so these are only meaningful in a real session.

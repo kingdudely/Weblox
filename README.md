@@ -14,13 +14,18 @@ helper process, no extension, no UDP relay. Installed, it is an app window calle
 
 ---
 
-## Status (2026-11-02)
+## Status (2026-11-03)
 
 ```
-place 13569002876        Chrome 156 / Linux
-tx 4073 datagrams        rx 3768 datagrams        1.08 MB replicated
-canvas 1366x593          avatar, decals, textures, CoreGui, tool hotbar
+place 1818 (Crossroads)  Chrome 156 / Linux
+tx 7046 datagrams        rx 8708 datagrams        5.2 MB replicated
+canvas 1026x639          avatar, decals, textures, CoreGui, tool hotbar
+audio                    free-running sink, contexts running
 ```
+
+The window is the canvas and nothing else. Progress goes to the console; anything
+that stops the session raises one `window.alert` rather than drawing over the
+game.
 
 | Piece | State | Where |
 | --- | --- | --- |
@@ -87,8 +92,9 @@ request to `rkhost`.
 | `tools/mirror_engine.py` | fetches the engine content tree into `iwa/engine/` |
 | `tools/stage_engine.sh` | puts wasm + glue + prelude + ring ABI into `iwa/` |
 | `app/rkhost/` | ~180-line static server with the IWA security policy |
-| `docs/IWA.md` | the architecture, the API shapes, the traps |
+| `docs/IWA.md` | the architecture, the API shapes, the traps — start here |
 | `docs/PATCHING.md` | how the module is patched, and how to re-find it after a rebuild |
+| `docs/FINDINGS.md` | protocol and behaviour notes gathered before the IWA existed |
 
 ## Known constraints
 
@@ -101,6 +107,9 @@ request to `rkhost`.
   set of files the client was seen asking for. A miss is logged loudly by
   rkhost as `MISSING engine/...`; re-run `mirror_engine.py --capture` against
   that log.
+* **One app window at a time.** The engine reserves 2 GiB of shared memory before
+  any of its own logic runs, so a second window fails to allocate. The page
+  alerts instead of dying silently.
 * **No signed bundle yet.** Dev-mode install is per-machine and flag-gated.
 
 ## Explicitly out of scope
