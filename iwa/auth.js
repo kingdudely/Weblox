@@ -212,13 +212,21 @@
         }
 
         let s = reply.joinScript;
+        let carrier = reply;
         if (!s || typeof s !== 'object') {
           const again = await post(reply.jobId);
-          if (again.joinScript && typeof again.joinScript === 'object') s = again.joinScript;
+          if (again.joinScript && typeof again.joinScript === 'object') {
+            s = again.joinScript;
+            carrier = again;
+          }
         }
         if (!s || typeof s !== 'object') throw new Error('join script missing');
 
         return {
+          // The engine asks for a join of its own; rbx-net answers that request
+          // with this reply verbatim (see setJoinReply), so the whole body has
+          // to survive the trip out of the frame.
+          reply: carrier,
           jobId: reply.jobId,
           tries,
           userId: s.UserId,

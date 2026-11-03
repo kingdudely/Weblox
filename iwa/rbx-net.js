@@ -63,11 +63,57 @@
   let seq = 0;
   const waiting = new Map(); // id -> resolve
 
+  // ------------------------------------------------------------ local join ---
+  // The engine performs its own join: POST /v1/join-game with only a placeId,
+  // i.e. the *website* shape. That request is refused for any universe whose
+  // join is gated (place 1818 answers "Playtesters Only", status 12), because
+  // the gate is keyed on the client identity in the request, not on the user.
+  //
+  // The page has already done the join the native client does, with the native
+  // body, so the reply is a join script the game server will honour. Answering
+  // the engine's request with that same reply is both correct and free: one
+  // join, one ticket, and the engine still drives the connection itself.
+  let joinReply = null;
+
+  function setJoinReply(reply) {
+    joinReply = reply && reply.joinScript ? reply : null;
+    console.log("[rbxnet] local join reply " + (joinReply ? "armed for place " + joinReply.joinScript.PlaceId : "cleared"));
+  }
+
+  function joinAnswer(url, init) {
+    if (!joinReply) return null;
+    if (String(url).split("?")[0] !== "https://gamejoin.roblox.com/v1/join-game") return null;
+    const method = String((init && init.method) || "GET").toUpperCase();
+    if (method !== "POST") return null;
+    // A teleport or a different place must not be answered with this script.
+    let want = null;
+    try {
+      want = JSON.parse((init && init.body) || "{}").placeId;
+    } catch (e) {
+      return null;
+    }
+    if (want != null && Number(want) !== Number(joinReply.joinScript.PlaceId)) return null;
+    const json = JSON.stringify(joinReply);
+    const bytes = new TextEncoder().encode(json);
+    let b64 = "";
+    const CH = 0x8000;
+    for (let i = 0; i < bytes.length; i += CH) {
+      b64 += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
+    }
+    return { status: 200, url, headers: { "content-type": "application/json" }, body: btoa(b64) };
+  }
+
   if (channel) {
     channel.onmessage = (ev) => {
       const msg = ev.data;
       if (!msg) return;
       if (msg.kind === "req" && isPage && self.__rbxAuth) {
+        const local = joinAnswer(msg.url, msg.init);
+        if (local) {
+          note(msg.url, msg.init && msg.init.method, local.status, "local");
+          channel.postMessage({ kind: "res", id: msg.id, res: local });
+          return;
+        }
         self.__rbxAuth
           .request(msg.url, msg.init)
           .then((res) => {
@@ -161,6 +207,11 @@
 
   async function rbxRequest(url, init) {
     const encoded = await encodeInit(init);
+    const local = joinAnswer(url, encoded);
+    if (local) {
+      note(url, encoded.method, local.status, "local");
+      return local;
+    }
     let res;
     try {
       res = isPage && self.__rbxAuth ? await self.__rbxAuth.request(url, encoded) : await viaChannel(url, encoded);
@@ -424,5 +475,6 @@
     });
   }
 
+  self.__rbxNetSetJoin = setJoinReply;
   self.__rbxNetRule = "*.roblox.com";
 })();

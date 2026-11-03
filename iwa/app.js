@@ -13,7 +13,7 @@
     hud.textContent = String(m).slice(0, 300);
     console.log("[app] " + m);
   };
-  window.__onEngineLoadingStatus = say;
+  window.__onEngineLoadingStatus = (m) => say(m && m.message ? m.message : m);
   // Errors go to the console, not the HUD: the engine raises benign ones during
   // boot and they would otherwise replace the line that says where the
   // transport landed.
@@ -46,6 +46,10 @@
     say(`joining ${placeId}…`);
     const join = await auth.join(placeId);
     window.__join = join;
+    // The engine asks gamejoin for a join of its own, in the website's shape;
+    // that shape is refused on gated universes. Hand its request this reply
+    // instead, so the join that happens is the one that just succeeded.
+    if (self.__rbxNetSetJoin) self.__rbxNetSetJoin(join.reply);
     const peer = join.udmux || (join.connections && join.connections[0]);
     if (!peer) throw new Error("join script has no endpoint");
 

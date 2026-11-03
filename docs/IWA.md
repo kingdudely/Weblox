@@ -58,12 +58,54 @@ client identity that asked for it. That is solved with the frame's
 7. `UDPSocket({remoteAddress: UdmuxEndpoints[0].Address, remotePort})`.
 8. `ring.start()` points the seam at that socket; `/engine/WasmPlayer.js` loads
    after, so RakNet never wakes up without a destination.
+9. The engine asks for a join of its own. That request is **answered from the
+   reply above**, never forwarded — see below.
+
+### The engine joins too — answer it, do not forward it
+
+The engine does not accept a join script from the page. Left alone it POSTs
+`https://gamejoin.roblox.com/v1/join-game` itself, with the *website* body:
+
+```json
+{"placeId": 1818, "gameJoinAttemptId": "0173b730-…"}
+```
+
+That shape is refused on any universe whose join is gated. Place `1818`
+(Crossroads) answers:
+
+```json
+{"status":12,"message":"You are not allowed to play this game. (Playtesters Only)"}
+```
+
+even though the same account joins it fine through the native body — the gate
+reads the client identity in the request, not the user. `status 12` is easy to
+mistake for the user-agent rejection below; it is not one, that header is
+already rewritten by the time the engine asks.
+
+So `rbx-net.js` holds the reply the page's own join produced and answers the
+engine with it verbatim. `app.js`, right after `auth.join()`:
+
+```js
+if (self.__rbxNetSetJoin) self.__rbxNetSetJoin(join.reply);
+```
+
+`joinAnswer()` matches only `POST /v1/join-game` **for the same `placeId`**, so a
+teleport or a different place falls through to the network untouched. One join,
+one ticket, and the engine still drives its own transport.
+
+Two things this settles:
+
+* The join happens once. Roblox's per-user join rate limit stops mattering.
+* `status: 30, "Let's check if you can join this game"` is not something the
+  plumbing can fix. It is Roblox's account gate (age / identity verification)
+  on experiences that require it; the account has to clear it on roblox.com.
 
 ### The interceptor
 
-`gamejoin` hands out a session shaped for the client that asked: a browser user
-agent gets `status: 12, "Unable to join Game 211"`. Same cookie, same body, same
-request — only the header differs. So:
+The page's own join is a plain `fetch` from inside the frame, and `gamejoin`
+hands out a session shaped for the client that asked: a browser user agent gets
+`status: 12, "Unable to join Game 211"`. Same cookie, same body, same request —
+only the header differs. So:
 
 ```js
 frame.request.createWebRequestInterceptor({
@@ -114,6 +156,8 @@ the Rust original, kept as its own file because it is the most fragile piece.
 
 | traffic | path | why |
 | --- | --- | --- |
+| the page's `gamejoin` | frame + `User-Agent` rewrite | needs the cookie, and a native identity |
+| the engine's `gamejoin` | answered locally from the reply above | its website-shaped body is gated per-universe |
 | `*.roblox.com` (suffix rule) | frame, `credentials: include` | needs the cookie; Roblox only echoes ACAO for its own origins |
 | `clientsettings(cdn).roblox.com` | direct | public, `ACAO: *`, and carries the transport flag |
 | `contentdelivery.roblox.com` | direct, `credentials: omit` | signed URLs, `ACAO: *`, multi-MB binaries |
