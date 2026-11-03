@@ -355,9 +355,43 @@ Ruled out along the way, so nobody re-tests them:
   `navigator.userActivation` but does not unlock media, so a headless check will
   always report `suspended`. Audio has to be confirmed with a real click.
 
-Watch it from the console with `self.__audio()` → one entry per live context with
-`{state, rate, ran}`. `ran: false` after the first click means the context never
-started, which is the latch in (1).
+**The sink is built after the resume, not before.** `start()` is
+`mContext.resume().then(() => addModule(...))`, and only then is the
+`AudioWorkletNode` constructed and connected. So while the context is suspended
+there is no sink at all — no worklet node, no ScriptProcessorNode — and the whole
+mix goes nowhere. "No sink" is a symptom of the suspended context, not a second
+bug. The legacy path (`AudioWorkletNode` absent) does create its node up front,
+which is how this was confirmed.
+
+Two diagnostics, both for a real session:
+
+```js
+self.__audio()      // {contexts:[{state,rate,ran}], sinks:[{kind,state}]}
+await self.__audioPeak(1500)   // {state, peak} — peak amplitude leaving the sink
+```
+
+`__audio()` with no `sinks` entry and every context `suspended` after a click
+means the gesture did not unlock the document. `sinks` present but `peak: 0` while
+the game is loud means the mixer is being fed nothing — a content problem, not a
+mixer one. Input injected over CDP never unlocks media, so this has to be run by a
+person who clicked.
+
+### Content the client expects but the mirror may not have
+
+`WebClient.metadata.json` registers asset paths the engine then reads through the
+VFS. A registered path with no file behind it fails as `Temp read failed` or
+`MeshContentProvider ... could not fetch`, which looks like an audio or renderer
+bug and is neither. Capture the missing paths and fetch them:
+
+```
+./tools/mirror_engine.py --capture /tmp/opencode/rkhost-iwa.log
+./tools/mirror_engine.py
+```
+
+Some `rbxasset://Sounds/*.wav` (UI clicks, `pageturn`, `swoosh`) are not on
+`setup.rbxcdn.com` at all — 403 for every path form — so those stay missing and
+only cost the interface its click sounds. Game audio arrives by `rbxassetid://`
+from `assetdelivery`, not from the mirror.
 
 
 ## Debugging

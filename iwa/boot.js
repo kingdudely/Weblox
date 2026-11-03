@@ -50,7 +50,13 @@ if (typeof trustedTypes !== "undefined") {
 
   const resumeAll = () => {
     for (const ctx of live) {
-      if (!ctx.__hasRun()) continue;
+      // Never suspend a context that has not run yet: that is the latch. A plain
+      // resume is the only thing it can accept, and it also releases the resume
+      // the engine issued at start-up.
+      if (!ctx.__hasRun()) {
+        ctx.resume().catch(() => {});
+        continue;
+      }
       if (!kicked.has(ctx)) {
         kicked.add(ctx);
         ctx.suspend().then(() => ctx.resume()).catch(() => {});
@@ -102,6 +108,56 @@ if (typeof trustedTypes !== "undefined") {
   }
   addEventListener("visibilitychange", resumeAll);
 
-  // Readout for the console: `__audio()` lists the live sinks and their states.
-  window.__audio = () => [...live].map((c) => ({ state: c.state, rate: c.sampleRate, ran: c.__hasRun() }));
+  // ---- diagnostics -----------------------------------------------------------
+  // The mixer's sink is either an AudioWorkletNode (fast path, needs
+  // crossOriginIsolated) or a ScriptProcessorNode (fallback). Hold whichever
+  // appears so `__audio()` can say whether there is one at all, and
+  // `__audioPeak()` can measure what comes out of it.
+  const sinks = [];
+  const NativeNode = window.AudioWorkletNode;
+  if (NativeNode) {
+    window.AudioWorkletNode = new Proxy(NativeNode, {
+      construct(target, args) {
+        const node = Reflect.construct(target, args);
+        sinks.push(node);
+        return node;
+      },
+    });
+  }
+  const nativeProcessor = AudioContext.prototype.createScriptProcessor;
+  if (nativeProcessor) {
+    AudioContext.prototype.createScriptProcessor = function (...args) {
+      const node = nativeProcessor.apply(this, args);
+      sinks.push(node);
+      return node;
+    };
+  }
+
+  // `__audio()` — one entry per live context and whether a sink exists.
+  window.__audio = () => ({
+    contexts: [...live].map((c) => ({ state: c.state, rate: c.sampleRate, ran: c.__hasRun() })),
+    sinks: sinks.map((n) => ({ kind: n.constructor.name, state: n.context.state })),
+  });
+
+  // `__audioPeak(ms)` — peak amplitude leaving the first sink. Zero while the
+  // game is quiet, or while the context is suspended; that is the difference
+  // between "no sink" and "no sound playing".
+  window.__audioPeak = async (ms = 1000) => {
+    const node = sinks[0];
+    if (!node) return { error: "no sink" };
+    const ctx = node.context;
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 2048;
+    node.connect(analyser);
+    const buf = new Float32Array(analyser.fftSize);
+    let peak = 0;
+    const end = performance.now() + ms;
+    while (performance.now() < end) {
+      await new Promise((r) => setTimeout(r, 50));
+      analyser.getFloatTimeDomainData(buf);
+      for (const v of buf) peak = Math.max(peak, Math.abs(v));
+    }
+    node.disconnect(analyser);
+    return { state: ctx.state, peak };
+  };
 })();
