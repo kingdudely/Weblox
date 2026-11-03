@@ -311,80 +311,59 @@ grep -o "isolated-app://[a-z0-9]\{40,\}" ~/.weblox-iwa/Default/Preferences
 
 The origin id is random per install, and `grep` without `\{40,\}` truncates it.
 
-## Audio — the mixer needs a gesture, and a specific one
+## Audio — do not let the mixer be suspended
 
-The engine loads in silence until the page has been interacted with, and no
-amount of retrying the engine's own hook changes that. Three separate things are
-stacked here; all three had to be handled in `boot.js`.
+Three things stack up here, and the last one is the one that actually mattered.
 
-**1. Chrome will not start an `AudioContext` before a gesture.** The engine
-builds its context while it is booting, so it comes up suspended. Chrome also
-latches the bad case: a context suspended **before its first rendering quantum**
-cannot be resumed at all — every later `resume()` rejects with
-`InvalidStateError`, and the sink never comes up. The wrapper therefore ignores a
-`suspend()` that arrives before the context has been running once. That is the
-engine switching off a sink it has not opened, not a request.
+**1. Chrome will not start an `AudioContext` before the page is interacted with.**
+The engine builds its context while booting, so it comes up suspended. Worse, a
+context suspended **before its first rendering quantum** is latched: every later
+`resume()` rejects with `InvalidStateError`. `boot.js` creates one context inside
+the first input to unlock the document, and the engine's context comes up running
+from then on.
 
-**2. FMOD needs `mixerSuspend()` then `mixerResume()`, not a bare resume.** This
-is FMOD's own documented browser workaround, and it matters: a `resume()` issued
-while an earlier one is still pending does nothing, while the pair re-issues the
-start now that the page has been touched. The engine's hook calls
-`Module.resume_audio()` — the resume half only — and throws the result away, so
-it can never recover on its own. `boot.js` does the pair for every live context
-on the first input.
+**2. FMOD's AudioWorklet sink is gated on a resume that never settles**, so that
+output path is not used. `start()` is
+`mContext.resume().then(() => addModule(...))` and only then builds the node —
+while the context is suspended there is no sink at all, and the mix goes nowhere.
+The legacy output (`ScriptProcessorNode`) builds its node eagerly at start-up,
+independent of the resume, so `boot.js` hides `AudioWorkletNode` before the engine
+loads and FMOD takes that path. It mixes on the main thread, which is slower, but
+it always has somewhere to write.
 
-**3. A context created inside the gesture is allowed to start**, and it keeps the
-document unlocked for the engine's context a few seconds later. `boot.js` creates
-one on the first input and leaves it alive.
+**3. The engine parks the mixer with `mixerSuspend()` and never lifts it.**
+This is what kept the last session silent: the contexts had run
+(`ran: true`, so the document was unlocked), but every one of them reported
+`suspended` and stayed there — a `ScriptProcessorNode` whose own context is
+suspended never calls `onaudioprocess`. FMOD's matching `mixerResume()` on input
+does not bring the context back. So `boot.js` makes `suspend()` a no-op on every
+context it hands the engine: the sink stays running for the session. Suspension
+only saves cycles while nothing is playing; refusing it is what makes the client
+audible.
 
-`firstInput()` in `app.js` holds the engine until that input arrives, so the
-engine's context is created in a document that has already been touched, and the
-splash icon is what the window shows meanwhile. Without the wait the engine still
-loads, but it can be silent for the session.
+Confirmed by measurement, not by ear: `__audio()` reported
+`contexts: running`, `sinks: [{kind: "ScriptProcessorNode", state: "running"}]`.
 
-Ruled out along the way, so nobody re-tests them:
-
-* **Not autoplay policy.** `--autoplay-policy=no-user-gesture-required` changes
-  nothing; the context is still suspended.
-* **Not the manifest.** `permissions_policy.autoplay` is present and the window is
-  cross-origin isolated (`crossOriginIsolated === true`, `SharedArrayBuffer`
-  available, `Module.audioProcessorUrl` correct). The worklet module loads and an
-  `AudioWorkletNode` can be constructed by hand in the same document.
-* **Not `status: 12`/`30`.** Those are join failures, unrelated.
-* **Synthetic input does not count.** Input injected over CDP sets
-  `navigator.userActivation` but does not unlock media, so a headless check will
-  always report `suspended`. Audio has to be confirmed with a real click.
-
-**The worklet sink is gated on that resume, so it is not used.** `start()` is
-`mContext.resume().then(() => addModule(...))`, and the `AudioWorkletNode` is
-only constructed after the promise settles. When the resume never settles there
-is no sink at all and the mix goes nowhere. FMOD's other output — the legacy
-`ScriptProcessorNode`, chosen when `AudioWorkletNode` is absent — builds its node
-eagerly during start-up, independent of the resume. `boot.js` therefore hides
-`AudioWorkletNode` before the engine loads. It mixes on the main thread, which is
-slower, but it is deterministic; switch back once the worklet path is shown to
-resume in a real session.
-
-**The sink is built after the resume, not before.** `start()` is
-`mContext.resume().then(() => addModule(...))`, and only then is the
-`AudioWorkletNode` constructed and connected. So while the context is suspended
-there is no sink at all — no worklet node, no ScriptProcessorNode — and the whole
-mix goes nowhere. "No sink" is a symptom of the suspended context, not a second
-bug. The legacy path (`AudioWorkletNode` absent) does create its node up front,
-which is how this was confirmed.
-
-Two diagnostics, both for a real session:
+### Watching it
 
 ```js
-self.__audio()      // {contexts:[{state,rate,ran}], sinks:[{kind,state}]}
-await self.__audioPeak(1500)   // {state, peak} — peak amplitude leaving the sink
+self.__audio()                 // {contexts:[{state,rate,ran}], sinks:[{kind,state}]}
+await self.__audioPeak(1500)   // {state, peak} — amplitude leaving the first sink
 ```
 
-`__audio()` with no `sinks` entry and every context `suspended` after a click
-means the gesture did not unlock the document. `sinks` present but `peak: 0` while
-the game is loud means the mixer is being fed nothing — a content problem, not a
-mixer one. Input injected over CDP never unlocks media, so this has to be run by a
-person who clicked.
+`ran: false` after a click means the document never unlocked (1). `sinks: []`
+means the engine never built its output. `sinks` present, `peak: 0` and playing
+audio means the mixer is being fed nothing — a content problem. Input injected
+over CDP never unlocks media, so these are only meaningful in a real session.
+
+### The heap is fixed at 2 GiB
+
+`FIntWasmMemoryPages` is 32768 pages and the engine creates the memory without a
+growth ceiling, and the ring ABI lives at the top of that address range
+(`tools/patch.py`), so the size cannot be trimmed — shrinking it moves the ring
+out of bounds (`Invalid atomic access index`). If the allocation fails there is no
+client, and the usual cause is a second app window holding the same 2 GiB. That
+case now raises an alert instead of a console line.
 
 ### Content the client expects but the mirror may not have
 
@@ -397,12 +376,6 @@ bug and is neither. Capture the missing paths and fetch them:
 ./tools/mirror_engine.py --capture /tmp/opencode/rkhost-iwa.log
 ./tools/mirror_engine.py
 ```
-
-Some `rbxasset://Sounds/*.wav` (UI clicks, `pageturn`, `swoosh`) are not on
-`setup.rbxcdn.com` at all — 403 for every path form — so those stay missing and
-only cost the interface its click sounds. Game audio arrives by `rbxassetid://`
-from `assetdelivery`, not from the mirror.
-
 
 ## Debugging
 

@@ -31,7 +31,7 @@ canvas 1366x593          avatar, decals, textures, CoreGui, tool hotbar
 | Authenticated join | **works** — controlled frame | `iwa/auth.js` |
 | roblox.com API + assets | **works** | `iwa/rbx-net.js` |
 | Fullscreen, pointer | **works** | manifest permissions policy |
-| Audio | **works after the first click** — FMOD needs `mixerSuspend`+`mixerResume` in the gesture | `iwa/boot.js`, `docs/IWA.md` |
+| Audio | **works** — context unlocked on first input, engine's suspend refused, ScriptProcessor sink | `iwa/boot.js`, `docs/IWA.md` |
 | Packaging as a signed bundle | **not done** | — |
 
 ## Shape

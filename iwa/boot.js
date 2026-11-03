@@ -42,6 +42,13 @@ if (typeof trustedTypes !== "undefined") {
     alerted = true;
     window.alert("Roblox failed to start.\n\n" + text.split("\n")[0].slice(0, 300));
   };
+
+  // Uncaught throw while the engine is still starting is the same class of stop.
+  addEventListener("error", (e) => {
+    if (alerted || self.Module) return;
+    alerted = true;
+    window.alert("Roblox failed to start.\n\n" + String((e && e.message) || e).slice(0, 300));
+  });
 })();
 
 // ------------------------------------------------------------------- audio ---
@@ -98,14 +105,18 @@ if (typeof trustedTypes !== "undefined") {
       live.add(this);
 
       let ran = this.state === "running";
-      const suspend = this.suspend.bind(this);
 
       this.addEventListener("statechange", () => {
         if (this.state === "running") ran = true;
         if (this.state === "closed") live.delete(this);
       });
 
-      this.suspend = () => (ran ? suspend() : Promise.resolve());
+      // Never suspend. The engine parks its mixer through mixerSuspend() at
+      // start-up and its matching resume does not bring the context back, which
+      // leaves a client that ran once, stays "suspended" for the session, and is
+      // silent. Suspension only saves a few cycles while nothing is playing;
+      // refusing it keeps the sink alive.
+      this.suspend = () => Promise.resolve();
       this.__hasRun = () => ran;
 
       resumeAll();
