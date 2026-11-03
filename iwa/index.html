@@ -2,18 +2,18 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Weblox</title>
+<title>Roblox</title>
 <style>
-  html,body{margin:0;height:100%;background:#000;color:#ddd;font:14px system-ui;overflow:hidden}
+  html,body{margin:0;height:100%;background:#000;overflow:hidden}
   #canvas{width:100vw;height:100vh;display:block;outline:none}
   #input-container{position:absolute;left:0;top:0;width:0;height:0;overflow:hidden}
   #input-input,#input-textarea{position:absolute;opacity:0}
-  #hud{position:absolute;left:12px;top:12px;font:12px ui-monospace,monospace;color:#8ab;pointer-events:none;white-space:pre;max-width:70vw}
+  #splash{position:fixed;left:50%;top:50%;width:128px;height:128px;margin:-64px 0 0 -64px;pointer-events:none;user-select:none}
 </style>
 </head>
 <body>
   <canvas id="canvas"></canvas>
-  <div id="hud">booting…</div>
+  <img id="splash" src="/icon-512.png" alt="">
   <div id="input-container"><textarea id="input-textarea"></textarea><input id="input-input"></div>
 
   <!-- elements the loader touches; hidden, never used by us -->

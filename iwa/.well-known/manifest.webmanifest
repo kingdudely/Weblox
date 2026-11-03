@@ -1,8 +1,8 @@
 {
-  "name": "Weblox",
-  "short_name": "Weblox",
-  "description": "Roblox web client over RakNet.",
-  "version": "0.2.0",
+  "name": "Roblox",
+  "short_name": "Roblox",
+  "description": "Roblox.",
+  "version": "0.3.0",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

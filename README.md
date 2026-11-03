@@ -9,7 +9,8 @@ that with its own code; this repository supplies the two things a browser does
 not give it: a socket, and a way to be logged in.
 
 It runs as a Chrome **Isolated Web App**: pure JS plus the patched module, no
-helper process, no extension, no UDP relay.
+helper process, no extension, no UDP relay. Installed, it is an app window called
+**Roblox**, with Roblox's icon, and the canvas is the whole of it.
 
 ---
 
@@ -29,7 +30,8 @@ canvas 1366x593          avatar, decals, textures, CoreGui, tool hotbar
 | UDP socket | **works** — Direct Sockets | `iwa/ring.js` |
 | Authenticated join | **works** — controlled frame | `iwa/auth.js` |
 | roblox.com API + assets | **works** | `iwa/rbx-net.js` |
-| Fullscreen, audio, pointer | **works** | manifest permissions policy |
+| Fullscreen, pointer | **works** | manifest permissions policy |
+| Audio | **works after the first click** — FMOD needs `mixerSuspend`+`mixerResume` in the gesture | `iwa/boot.js`, `docs/IWA.md` |
 | Packaging as a signed bundle | **not done** | — |
 
 ## Shape
