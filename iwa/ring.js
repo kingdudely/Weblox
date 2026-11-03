@@ -37,9 +37,25 @@
   const log = (...a) => console.log("[rkring]", ...a);
 
   // ---------------------------------------------------------------- memory ---
+  // The heap is fixed: the engine asks for 32768 pages — 2 GiB — and the ring
+  // ABI lives at the top of it, so the size cannot be trimmed without moving
+  // the seam (tools/patch.py). If the allocation fails there is no client at
+  // all, and the usual reason is a second app window holding the same 2 GiB.
   const RealMemory = WebAssembly.Memory;
   function Memory(desc) {
-    const m = new RealMemory(desc);
+    let m;
+    try {
+      m = new RealMemory(desc);
+    } catch (e) {
+      if (!globalThis.__rkMemAlerted) {
+        globalThis.__rkMemAlerted = true;
+        window.alert(
+          "Roblox could not get the memory it needs (about 2 GB).\n\n" +
+            "Close any other Roblox window, then reload."
+        );
+      }
+      throw e;
+    }
     if (desc && desc.shared) attach(m);
     return m;
   }

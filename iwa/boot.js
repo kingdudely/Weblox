@@ -27,6 +27,23 @@ if (typeof trustedTypes !== "undefined") {
   }
 }
 
+// --------------------------------------------------------------- hard stops ---
+// The engine's loader catches its own start-up failures and only logs them, so a
+// dead client would otherwise be a black window with one console line. Anything
+// that stops start-up is escalated to an alert, once.
+(() => {
+  const nativeError = console.error.bind(console);
+  let alerted = false;
+  console.error = (...args) => {
+    nativeError(...args);
+    if (alerted) return;
+    const text = args.map((a) => (a && a.message) || String(a)).join(" ");
+    if (!/startup failed|could not allocate memory|Invalid atomic access index/i.test(text)) return;
+    alerted = true;
+    window.alert("Roblox failed to start.\n\n" + text.split("\n")[0].slice(0, 300));
+  };
+})();
+
 // ------------------------------------------------------------------- audio ---
 // Chrome will not start an AudioContext until the page has been interacted
 // with, and FMOD needs more than a resume: its documented browser workaround is
@@ -116,6 +133,15 @@ if (typeof trustedTypes !== "undefined") {
     addEventListener(type, unlock, { capture: true, passive: true, once: true });
   }
   addEventListener("visibilitychange", resumeAll);
+
+  // A context created before the first input stays suspended until something
+  // retries it. Polling is cheap and means the click that comes later is not
+  // missed because the engine loaded after it.
+  setInterval(() => {
+    for (const ctx of live) {
+      if (ctx.state === "suspended") return resumeAll();
+    }
+  }, 2000);
 
   // ---- diagnostics -----------------------------------------------------------
   // The mixer's sink is either an AudioWorkletNode (fast path, needs
