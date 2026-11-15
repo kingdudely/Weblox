@@ -22,49 +22,42 @@
 
   class RobloxAuth {
     constructor(opts = {}) {
-      this.partition = opts.partition || "persist:roblox";
-      this.onLog = opts.onLog || (() => {});
       this.frame = null;
       this.interceptor = null;
       this.seq = 0;
-      this.loaded = false;
     }
 
     log(msg) {
-      this.onLog(String(msg));
       console.log("[auth] " + msg);
     }
 
     // ------------------------------------------------------------- frame ----
     /**
-     * Create the frame and wait for roblox.com to finish loading. The
-     * partition must be set before src or the frame gets an in-memory jar that
-     * dies with the element.
+     * Create the frame and wait for roblox.com to finish loading. Its cookie
+     * jar does not outlive the browser; the launch ticket is what logs it in.
      */
     async start(mount = document.body) {
       if (this.frame) return this.frame;
 
       const el = document.createElement("controlledframe");
       el.id = "rbx-auth";
-      el.setAttribute("partition", this.partition);
       el.setAttribute("src", LOGIN_ORIGIN);
-      // Hidden until an interactive login is actually needed.
+      // Hidden: the frame is a roblox.com context for the join, not the UI.
       el.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;border:0;background:#111;display:none";
 
       const loaded = new Promise((resolve) => {
-        const done = (ok, detail) => {
+        const settle = (text) => {
           clearTimeout(timer);
           el.removeEventListener("loadstop", onStop);
           el.removeEventListener("loadabort", onAbort);
-          this.loaded = ok;
-          this.log(`frame ${ok ? "loaded" : "aborted"}: ${detail}`);
-          resolve(ok);
+          this.log("frame " + text);
+          resolve();
         };
-        const onStop = () => done(true, LOGIN_ORIGIN);
-        const onAbort = (e) => done(false, e.url || "unknown");
+        const onStop = () => settle("loaded");
+        const onAbort = (e) => settle("aborted: " + (e.url || "unknown"));
         el.addEventListener("loadstop", onStop);
         el.addEventListener("loadabort", onAbort);
-        const timer = setTimeout(() => done(false, "timeout"), 30000);
+        const timer = setTimeout(() => settle("timed out"), 30000);
       });
 
       mount.appendChild(el);
@@ -75,15 +68,15 @@
     }
 
     /**
-     * gamejoin is the only host that needs the identity rewrite, and the scope
-     * matters: adding a custom header to every roblox.com URL turns plain GETs
-     * into preflighted requests, and Roblox's CORS configs do not allow the
-     * header.
+     * gamejoin and the auth ticket exchange want the native client's identity.
+     * The scope matters: adding a custom header to every roblox.com URL turns
+     * plain GETs into preflighted requests, and Roblox's CORS configs do not
+     * allow the header.
      */
     installInterceptor() {
       if (this.interceptor || !this.frame) return this.interceptor;
       this.interceptor = this.frame.request.createWebRequestInterceptor({
-        urlPatterns: ["*://gamejoin.roblox.com/*"],
+        urlPatterns: ["*://gamejoin.roblox.com/*", "*://auth.roblox.com/*"],
         blocking: true,
         includeHeaders: "all",
       });
@@ -140,11 +133,6 @@
       throw new Error("evalAsync timed out after " + timeoutMs + "ms");
     }
 
-    async evalSync(code) {
-      const res = await this.frame.executeScript({ code });
-      return Array.isArray(res) ? res[0] : res;
-    }
-
     // ------------------------------------------------------------- login ----
     /** Is the frame's storage agent logged in? */
     async whoami() {
@@ -158,18 +146,44 @@
     }
 
     /**
-     * Write the cookie into the frame's jar from inside its own origin. Chrome
-     * allows overwriting an HttpOnly cookie from script; only reading is
-     * blocked. Used when the caller already has a .ROBLOSECURITY, so the first
-     * run does not need a visible login.
+     * Exchange the launch link's `gameinfo` ticket for a session, the same way
+     * the native client does: the ticket is the credential, no cookie is sent,
+     * and the reply sets .ROBLOSECURITY in the frame's jar. Single-use, so a
+     * rejection is final: the launch link is the only credential.
      */
-    async injectCookie(value) {
-      if (!value) throw new Error("empty cookie");
-      const literal = JSON.stringify(".ROBLOSECURITY=" + value + "; domain=.roblox.com; path=/; secure; samesite=lax");
-      await this.evalAsync(`document.cookie = ${literal}; await new Promise(r => setTimeout(r, 50)); return true;`);
-      const who = await this.whoami();
-      if (!who) throw new Error("cookie rejected");
-      this.log(`logged in as ${who.name} (${who.id})`);
+    async redeemTicket(ticket) {
+      if (!ticket) throw new Error("no ticket");
+      const attempt = (type, body) =>
+        this.evalAsync(`
+          const r = await fetch('https://auth.roblox.com/v1/authentication-ticket/redeem', {
+            method: 'POST',
+            credentials: 'include',
+            headers: {
+              'Content-Type': ${JSON.stringify(type)},
+              'RBXAuthenticationNegotiation': '1'
+            },
+            body: ${JSON.stringify(body)}
+          });
+          return r.status;
+        `);
+
+      // Form-encoded is what the client sends; JSON is allowed too, so a
+      // rejected shape still gets one chance at the other.
+      const form = "authenticationTicket=" + encodeURIComponent(ticket);
+      let status = await attempt("application/x-www-form-urlencoded", form);
+      if (status !== 200) {
+        const json = JSON.stringify({ authenticationTicket: ticket });
+        status = await attempt("application/json", json);
+      }
+      if (status !== 200) throw new Error("redeem HTTP " + status);
+
+      let who = await this.whoami();
+      if (!who) {
+        await sleep(300);
+        who = await this.whoami();
+      }
+      if (!who) throw new Error("redeem did not log in");
+      this.log(`redeemed launch ticket as ${who.name} (${who.id})`);
       return who;
     }
 
@@ -181,10 +195,12 @@
      * allowed, and the interceptor's User-Agent rewrite rides on the same
      * request.
      */
-    async join(placeId) {
+    async join(placeId, jobId) {
       if (!this.frame) throw new Error("frame not started");
       const place = Number(placeId) || 0;
-      const script = await this.evalAsync(`
+      const requested = jobId ? JSON.stringify(String(jobId)) : "null";
+      const result = await this.evalAsync(`
+        const requestedJobId = ${requested};
         const post = (jobId) => fetch('${GAMEJOIN}', {
           method: 'POST',
           credentials: 'include',
@@ -201,11 +217,11 @@
           }, jobId ? { jobId } : {}))
         }).then(r => r.json());
 
-        let reply = await post(null);
+        let reply = await post(requestedJobId);
         let tries = 0;
         while (reply.status === 0 && tries++ < 25) {
           await new Promise(r => setTimeout(r, 400));
-          reply = await post(null);
+          reply = await post(requestedJobId);
         }
         if (reply.status !== 2) {
           throw new Error('join status ' + reply.status + ' ' + (reply.message || ''));
@@ -214,7 +230,7 @@
         let s = reply.joinScript;
         let carrier = reply;
         if (!s || typeof s !== 'object') {
-          const again = await post(reply.jobId);
+          const again = await post(reply.jobId || requestedJobId);
           if (again.joinScript && typeof again.joinScript === 'object') {
             s = again.joinScript;
             carrier = again;
@@ -227,24 +243,15 @@
           // with this reply verbatim (see setJoinReply), so the whole body has
           // to survive the trip out of the frame.
           reply: carrier,
-          jobId: reply.jobId,
+          jobId: reply.jobId || requestedJobId,
           tries,
-          userId: s.UserId,
-          userName: s.UserName,
-          machine: s.MachineAddress,
-          serverPort: s.ServerPort,
-          udmux: (s.UdmuxEndpoints || [])[0] || null,
-          connections: s.ServerConnections || null,
-          token: s.TokenValue,
-          pepper: s.PepperId,
-          clientTicket: s.ClientTicket,
-          gameId: s.GameId,
-          placeId: s.PlaceId,
           script: s
         };
       `, 30000);
-      this.log(`joined ${script.udmux?.Address}:${script.udmux?.Port} via ${script.tries} retr${script.tries === 1 ? "y" : "ies"}`);
-      return script;
+      const join = result.script;
+      const peer = (join.UdmuxEndpoints || [])[0] || (join.ServerConnections || [])[0] || null;
+      this.log(`joined ${peer ? peer.Address + ":" + peer.Port : "without an endpoint"} after ${result.tries} tr${result.tries === 1 ? "y" : "ies"}`);
+      return { ...result, peer };
     }
 
     // ------------------------------------------------------------ bridge ----
@@ -302,30 +309,6 @@
       `, 60000);
     }
 
-    /** Show or hide the frame. It has to be visible for an interactive login. */
-    visible(on) {
-      if (this.frame) this.frame.style.display = on ? "block" : "none";
-    }
-
-    /** Show the frame on top and wait until the user has logged in. */
-    async interactiveLogin(timeoutMs = 10 * 60 * 1000) {
-      this.visible(true);
-      const deadline = performance.now() + timeoutMs;
-      while (performance.now() < deadline) {
-        const who = await this.whoami().catch(() => null);
-        if (who) {
-          this.visible(false);
-          return who;
-        }
-        await sleep(2000);
-      }
-      throw new Error("login timed out");
-    }
-
-    async logout() {
-      if (this.frame) await this.frame.clearData();
-      this.log("frame data cleared");
-    }
   }
 
   window.RobloxAuth = RobloxAuth;

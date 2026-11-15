@@ -150,6 +150,13 @@ if (typeof trustedTypes !== "undefined") {
         const reason = e && e.reason;
         const type = e && e.errorType;
         console.log("[exit] reason=" + reason + (type ? " type=" + type : ""));
+        // Leaving ends the session on the app's own screen, not the app: not
+        // forwarding keeps WasmPlayer's promise pending, so its
+        // close-then-about:blank branch never runs.
+        if (reason === "leave" || reason === "native_exit") {
+          window.__onSessionEnd && window.__onSessionEnd("Game ended", "Press Play on roblox.com to play again.");
+          return;
+        }
         if (reason === "crash" && !told) {
           told = true;
           window.alert("Roblox crashed.\n\n" + (type || e.errorMessage || "The engine stopped."));

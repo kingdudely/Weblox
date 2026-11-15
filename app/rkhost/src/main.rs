@@ -69,11 +69,15 @@ fn serve(root: PathBuf, port: u16) -> ! {
 }
 
 fn handle(root: &Path, request: tiny_http::Request) -> std::io::Result<()> {
+    let method = request.method().clone();
     let url = request.url().to_string();
     let path = url.split('?').next().unwrap_or("/");
 
-    if request.method() != &tiny_http::Method::Get {
+    if method != tiny_http::Method::Get {
         return respond(request, 405, "text/plain", b"method not allowed".to_vec());
+    }
+    if path == "/" || path == "/index.html" {
+        println!("GET {path}");
     }
 
     let relative = path.trim_start_matches('/');

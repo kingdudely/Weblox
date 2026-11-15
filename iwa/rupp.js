@@ -87,10 +87,6 @@
       return this;
     }
 
-    get ready() {
-      return !!(this.join || this.rcc);
-    }
-
     /** Rewrite the fields this session owns, in place. */
     stamp(bytes) {
       if (!this.join && !this.rcc) return bytes;

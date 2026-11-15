@@ -9,5 +9,10 @@ __pycache__/
 # tools/engine.paths is the tracked source of truth for what it should contain.
 iwa/engine/
 
+# signed bundle output (build_bundle.sh)
+build/bundle/
+*.wbn
+*.swbn
+
 # rust build output
 **/target/

@@ -37,7 +37,7 @@ game.
 | roblox.com API + assets | **works** | `iwa/rbx-net.js` |
 | Fullscreen, pointer | **works** | manifest permissions policy |
 | Audio | **works** — context unlocked on first input, engine's suspend refused, ScriptProcessor sink | `iwa/boot.js`, `docs/IWA.md` |
-| Packaging as a signed bundle | **not done** | — |
+| Packaging as a signed bundle | **works** — install through `chrome://iwa-dev/` | `tools/build_bundle.sh` |
 
 ## Shape
 
@@ -73,14 +73,26 @@ identity* that asked for it — is solved by rewriting `User-Agent` to
 # one time: patch the module
 ./tools/build_patched.sh /path/to/WebClient.wasm build/WebClient.patched.wasm
 
-# every run: stage, serve, install on first use, open
+# build + sign the installable app (first run generates the key)
+./tools/build_bundle.sh
+# chrome://iwa-dev/ -> Install IWA from Signed Web Bundle -> build/Weblox.swbn
+
+# optional dev loop for engine work
 ./tools/run_iwa.sh
-PLACE=12345 ./tools/run_iwa.sh
+./tools/run_iwa.sh --stop
 ```
 
-`run_iwa.sh` installs the app into `~/.weblox-iwa` on first use, and reinstalls
-when the manifest changes. Source changes need nothing: dev mode proxies every
-request to `rkhost`.
+The signed bundle is self-contained; no server runs with it. `run_iwa.sh` +
+rkhost remain only as the dev-mode loop: they serve `iwa/`, install a dev app in
+`~/.weblox-iwa`, and leave the server detached. They do not register an OS
+handler.
+
+Once installed, roblox.com's **Play** button opens the app directly. Chrome owns
+the protocol registration; with the signed app in the same Chrome profile that
+presses Play, no OS handoff or external-protocol dialog is involved. The link's
+one-time `gameinfo` ticket signs the client in, and `app.js` restores
+`?placeId=` before loading the engine (the loader's startup gate needs it). A
+launch without a ticket cannot start a session.
 
 ## Layout
 
@@ -91,7 +103,8 @@ request to `rkhost`.
 | `tools/build_patched.sh` | the only entry point that writes a module |
 | `tools/mirror_engine.py` | fetches the engine content tree into `iwa/engine/` |
 | `tools/stage_engine.sh` | puts wasm + glue + prelude + ring ABI into `iwa/` |
-| `app/rkhost/` | ~180-line static server with the IWA security policy |
+| `tools/build_bundle.sh` | bundles `iwa/` and signs `build/Weblox.swbn` |
+| `app/rkhost/` | dev-only static server with the IWA security policy |
 | `docs/IWA.md` | the architecture, the API shapes, the traps — start here |
 | `docs/PATCHING.md` | how the module is patched, and how to re-find it after a rebuild |
 | `docs/FINDINGS.md` | protocol and behaviour notes gathered before the IWA existed |
@@ -110,7 +123,10 @@ request to `rkhost`.
 * **One app window at a time.** The engine reserves 2 GiB of shared memory before
   any of its own logic runs, so a second window fails to allocate. The page
   alerts instead of dying silently.
-* **No signed bundle yet.** Dev-mode install is per-machine and flag-gated.
+* **Signed bundle.** `build/Weblox.swbn` is about 143 MB because it carries the
+  engine tree; rebuild and re-sign after every engine build. The key at
+  `~/.weblox-iwa-key.pem` fixes the app origin — losing it means a new app, not
+  an update.
 
 ## Explicitly out of scope
 

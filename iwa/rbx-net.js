@@ -93,14 +93,8 @@
       return null;
     }
     if (want != null && Number(want) !== Number(joinReply.joinScript.PlaceId)) return null;
-    const json = JSON.stringify(joinReply);
-    const bytes = new TextEncoder().encode(json);
-    let b64 = "";
-    const CH = 0x8000;
-    for (let i = 0; i < bytes.length; i += CH) {
-      b64 += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
-    }
-    return { status: 200, url, headers: { "content-type": "application/json" }, body: btoa(b64) };
+    const body = new TextEncoder().encode(JSON.stringify(joinReply));
+    return { status: 200, url, headers: { "content-type": "application/json" }, body: bytesToB64(body) };
   }
 
   if (channel) {
@@ -259,40 +253,43 @@
     });
   }
 
-  // Everything that is not routed through the frame is fetched by the app
-  // origin itself. Those hosts all answer `access-control-allow-origin: *`,
-  // and a wildcard is only legal on an uncredentialed request — so the
-  // engine's `withCredentials` has to be dropped, not passed along.
-  function uncredentialed(init) {
-    const out = { ...(init || {}) };
-    out.credentials = "omit";
-    return out;
-  }
-
-  const looksLikeAsset = (url) => {
-    const host = hostOf(url);
-    return DIRECT.has(host);
-  };
+  const isDirect = (url) => DIRECT.has(hostOf(url));
 
   const origFetch = self.fetch;
-  self.fetch = function (input, init) {
+
+  /**
+   * A Request carries its method, headers and body, and a custom-scheme
+   * crossing needs plain data. This is the one place the body can be read.
+   */
+  async function requestInit(input) {
+    if (!(input instanceof Request)) return {};
+    return {
+      method: input.method,
+      headers: input.headers,
+      redirect: input.redirect,
+      body: input.method === "GET" || input.method === "HEAD" ? undefined : await input.clone().text(),
+    };
+  }
+
+  self.fetch = async function (input, init) {
     const url = typeof input === "string" ? input : input && input.url;
-    if (url && SETTINGS_RE.test(new URL(url, base).href)) return settingsOverride(new URL(url, base).href, init);
-    if (!url || !isRoblox(url)) {
-      const pass = init || undefined;
-      if (url && looksLikeAsset(url)) {
-        const opts = uncredentialed(pass);
-        return origFetch.call(self, input, opts).then((res) => {
-          note(url, opts.method, res.status, "direct");
-          return res;
-        });
-      }
-      return origFetch.call(self, input, pass);
+    if (!url) return origFetch.call(self, input, init);
+    const href = new URL(url, base).href;
+
+    if (SETTINGS_RE.test(href)) return settingsOverride(href, init);
+
+    if (!isRoblox(href)) {
+      if (!isDirect(href)) return origFetch.call(self, input, init);
+      // These hosts answer `access-control-allow-origin: *`, and a wildcard is
+      // only legal on an uncredentialed request — so the engine's
+      // `withCredentials` has to be dropped, not passed along.
+      const opts = { ...(init || (await requestInit(input))), credentials: "omit" };
+      const res = await origFetch.call(self, href, opts);
+      note(href, opts.method, res.status, "direct");
+      return res;
     }
-    const opts = init || (input && input.url && !(input instanceof Request) ? undefined : input);
-    // A Request body has to be read before it can cross the channel.
-    const run = input instanceof Request && !init ? input.text().then((text) => ({ ...(opts || {}), body: text })) : Promise.resolve(opts || {});
-    return run.then((o) => rbxRequest(new URL(url, base).href, o)).then(toResponse);
+
+    return toResponse(await rbxRequest(href, init || (await requestInit(input))));
   };
 
   // Emscripten's fetch backend drives XMLHttpRequest, so a small shim that
@@ -327,8 +324,8 @@
       open(method, url) {
         this._method = method;
         this._url = new URL(url, base).href;
-        this._robox = isRoblox(this._url);
-        if (!this._robox) {
+        this._viaFrame = isRoblox(this._url);
+        if (!this._viaFrame) {
           this._real = new OrigXHR();
           const real = this._real;
           // readystatechange, not load: the engine reads assets from the state
@@ -375,7 +372,7 @@
           real.responseType = this.responseType;
           real.timeout = this.timeout;
           // A wildcard-CORS host rejects a credentialed request outright.
-          real.withCredentials = looksLikeAsset(this._url) ? false : this.withCredentials;
+          real.withCredentials = isDirect(this._url) ? false : this.withCredentials;
           return real.send(body);
         }
         rbxRequest(this._url, { method: this._method || "GET", headers: this._headers, body })
@@ -476,5 +473,4 @@
   }
 
   self.__rbxNetSetJoin = setJoinReply;
-  self.__rbxNetRule = "*.roblox.com";
 })();

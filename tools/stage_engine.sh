@@ -3,15 +3,15 @@
 #
 #   ./tools/stage_engine.sh
 #
-# Three things land in iwa/:
-#   engine/WebClient.wasm        the patched module
-#   engine/WebClient.js          the glue, with tools/worker-prelude.js in front
-#   engine/WasmPlayer.js         the loader
-#   abi.js                       the ring layout, from patch.py's --abi
+# Lands in iwa/:
+#   engine/WebClient.wasm   the patched module, from build/
+#   engine/WebClient.js     the glue, with tools/worker-prelude.js in front
+#   engine/WasmPlayer.js    the loader
+#   engine/*                audio-processor-fast.js and the metadata
+#   abi.js                  the ring layout, from patch.py's --abi
 #
-# Content (fonts, meshes, sounds, sky) is not fetched here: it changes rarely and
-# tools/mirror_engine.py owns it. This script is the part that must be redone
-# after every module rebuild.
+# Content (fonts, meshes, sounds, sky) is not fetched here: tools/mirror_engine.py
+# owns it. This script is the part that must be redone after every module build.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")/.." && pwd)"
@@ -22,21 +22,30 @@ out="$here/iwa/engine"
 die() { echo "$*" >&2; exit 1; }
 
 [ -f "$wasm" ] || die "no patched module at $wasm — build it: ./tools/build_patched.sh <stock.wasm> $wasm"
-[ -f "$engine/WebClient.js" ] || die "no glue at $engine/WebClient.js — point ENGINE_DIR at a downloaded engine tree"
 
 mkdir -p "$out"
 
-# 100 MB; skip the copy when the source has not moved.
+# The module always comes from build/. 100 MB; skip the copy when the source
+# has not moved.
 cp -u "$wasm" "$out/WebClient.wasm"
-for f in WasmPlayer.js WebClient.metadata.json; do
-  [ -f "$engine/$f" ] && cp -u "$engine/$f" "$out/$f"
-done
 
-# Always rebuilt from the pristine glue, so the stage is idempotent and a changed
-# prelude always takes effect. 129 KB, not worth a staleness check.
-tmp="$out/WebClient.js.tmp"
-cat "$here/tools/worker-prelude.js" "$engine/WebClient.js" > "$tmp"
-mv "$tmp" "$out/WebClient.js"
+if [ -f "$engine/WebClient.js" ]; then
+  for f in WasmPlayer.js WebClient.metadata.json audio-processor-fast.js; do
+    if [ -f "$engine/$f" ]; then cp -u "$engine/$f" "$out/$f"; fi
+  done
+
+  # Always rebuilt from the pristine glue, so the stage is idempotent and a
+  # changed prelude always takes effect. 129 KB, not worth a staleness check.
+  tmp="$out/WebClient.js.tmp"
+  cat "$here/tools/worker-prelude.js" "$engine/WebClient.js" > "$tmp"
+  mv "$tmp" "$out/WebClient.js"
+elif [ -f "$out/WebClient.js" ] && [ -f "$out/WasmPlayer.js" ]; then
+  # No engine tree on this machine: the glue already staged in iwa/engine has
+  # the prelude in front, so keep it and only refresh the module above.
+  echo "stage: no engine source at $engine — keeping the staged glue" >&2
+else
+  die "no glue at $engine/WebClient.js — set ENGINE_DIR to a downloaded engine tree"
+fi
 
 # The ring layout exists in exactly one place: patch.py's output.
 abi="${wasm%.wasm}.ring.json"

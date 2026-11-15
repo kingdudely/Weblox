@@ -2,12 +2,17 @@
   "name": "Roblox",
   "short_name": "Roblox",
   "description": "Roblox.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "background_color": "#000000",
   "theme_color": "#000000",
+  "launch_handler": { "client_mode": "navigate-existing" },
+  "protocol_handlers": [
+    { "protocol": "roblox-player", "url": "/?player=%s" },
+    { "protocol": "roblox", "url": "/?deeplink=%s" }
+  ],
   "icons": [
     { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png" }
   ],

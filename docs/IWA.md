@@ -41,15 +41,155 @@ The remaining problem is that the session the server hands out depends on the
 client identity that asked for it. That is solved with the frame's
 `WebRequest` interceptor, scoped to `gamejoin` alone.
 
+## The entry point — Play opens the app
+
+An installed app is launched by roblox.com itself. The Play button emits the
+link the native launcher takes, and the scheme registration hands it to the app:
+
+```
+roblox-player:1+launchmode:play+gameinfo:<ticket>
+  +placelauncherurl:assetgame.roblox.com/game/PlaceLauncher.ashx?request=RequestGame&…&placeId=1818&isPlayTogetherGame=false
+  +launchtime:…+browsertrackerid:…+robloxLocale:en_us+gameLocale:en_us
+```
+
+```json
+"launch_handler": { "client_mode": "navigate-existing" },
+"protocol_handlers": [
+  { "protocol": "roblox-player", "url": "/?player=%s" },
+  { "protocol": "roblox", "url": "/?deeplink=%s" }
+]
+```
+
+`launch_handler` is not cosmetic: a running app holds 2 GiB of shared memory, so
+a second window fails to allocate. `navigate-existing` reloads the window that is
+already open, which is also the right behaviour — the new place replaces the
+current session.
+
+The rules are IWA-specific
+(`third_party/blink/common/custom_handlers/protocol_handler_utils.cc`):
+
+| Rule | Consequence |
+| --- | --- |
+| `kIsolatedAppFeatures` allows any dash-separated ASCII-alpha scheme except `http`, `https`, `file`, `ms-settings`, `chrome`, `chrome-extension`, `isolated-app` | `roblox-player` and `roblox` are claimable — a PWA could claim neither |
+| exactly one `%s`, and it must be in the query string | `/?player=%s` works; a path placeholder is dropped |
+| the handler URL must be `isolated-app://` and inside the manifest scope | `/` |
+| an entry repeating an earlier entry's URL is dropped | the two schemes need two distinct URLs |
+| `navigator.registerProtocolHandler()` throws inside an IWA | the manifest member is the only path |
+
+The launched link arrives percent-encoded in the named parameter; `app.js` takes
+`placeId` (and `gameId`, when the link names a job) out of `placelauncherurl`,
+and `gameinfo` as the authentication ticket it is. The query is read raw rather
+than through `URLSearchParams`, which would rewrite the link's `+` separators
+into spaces.
+
+### The installed form is a signed bundle
+
+`tools/build_bundle.sh` stages the app, bundles all of `iwa/`, and signs it with
+the key at `~/.weblox-iwa-key.pem` (generated on first build). The key fixes the
+origin — `isolated-app://kfknp…/` for this key. Install the resulting
+`build/Weblox.swbn` through `chrome://iwa-dev/` → **Install IWA from Signed Web
+Bundle**. Chrome writes its own desktop entry and protocol handlers; the app
+runs from the bundle with no server.
+
+There is no project-owned OS handler and no `weblox.desktop`. The wrapper and
+the rkhost `/launch` handoff existed only for dev mode; both are gone. If Play
+is clicked in the same Chrome profile that has the app installed, Chrome handles
+`roblox-player:` internally. Clicking Play from another profile or browser
+still falls through to Chrome's own OS entry, where Chrome's `%U` navigation can
+show its external-protocol dialog; that path belongs to Chrome, not the app.
+
+Dev mode (`run_iwa.sh` + rkhost) remains for engine iteration, without any
+custom handler.
+
+### The bundle, the key, and dev mode
+
+`build_bundle.sh` writes `build/Weblox.swbn` (about 143 MB, the engine tree
+included) and prints its origin. The key defaults to
+`~/.weblox-iwa-key.pem`; keep it, because re-signing with a new key creates a
+different app rather than an update. It is never copied into the repo.
+
+Install the bundle in the profile you browse roblox.com with. Same profile is
+what keeps protocol handling inside Chrome; a separate profile still goes
+through Chrome's OS entry for Play and can show the dialog.
+
+Dev mode remains available for engine rebuilds:
+
+```sh
+CHROME=/usr/bin/chromium WEBLOX_IWA_PROFILE=$HOME/.weblox-iwa ./tools/run_iwa.sh
+./tools/run_iwa.sh --stop
+```
+
+The profile defaults to `~/.weblox-iwa`. Dev mode serves through rkhost on
+`127.0.0.1:8770` and installs a dev-mode app; it does not touch the xdg handler.
+
+Uninstalling the signed app is Chrome's own UI (`chrome://apps` or
+`chrome://iwa-dev/`). Remove Chrome's generated entry only if it survives; there
+is no `weblox.desktop` to clean up, and the old dev profile stays separate.
+
+### Logs
+
+In dev mode, `rkhost` prints `GET /` and missing engine files to its log
+(default `/tmp/opencode/rkhost-iwa.log`). The signed bundle has no server and no
+wrapper log; once a game starts, the app's DevTools console is the source. A
+Play that never opens the app means Chrome did not hand the scheme to the
+installed app (wrong profile or browser).
+
+Installing into the everyday profile works — point `WEBLOX_IWA_PROFILE` at
+`~/.config/google-chrome` with Chrome closed — but Roblox then appears in that
+profile's app list and Play launches that profile's Chrome.
+
+The catch is timing. The app origin shows up in `Preferences` while the install
+is still running, so treating that string as "installed" and closing Chrome
+early leaves an app with no desktop entry and no scheme registration — Play
+then falls through to whatever else claims `roblox-player:`, which is how a
+native launcher ends up opening instead. `run_iwa.sh` therefore waits for the
+desktop entry, and on a manifest update for the rewrite of the existing one,
+before it closes the installer.
+
+Chrome asks once before handing an external scheme to the OS. In the
+same-profile signed install there is no handoff and no prompt; in dev mode or
+from another browser, tick "Always allow" once and later Play clicks reuse the
+app through `launch_handler`.
+
+The login is the native client's: `gameinfo` is a single-use authentication
+ticket minted from the browser's session when Play was clicked. `auth.js` posts
+it to `auth.roblox.com/v1/authentication-ticket/redeem` from inside the frame —
+the same origin Roblox's CORS policy allows — and the reply sets
+`.ROBLOSECURITY` in the frame's jar, so a Play click from a logged-in browser
+never shows a login page. The ticket is spent by that call and is never logged
+or stored; a reloaded link has nothing left to redeem.
+
+There is no second way in. The app stores no credentials: no cookie capture, no
+cookie injection, no login page. A launch without a ticket — the app icon, an
+expired link, or a `roblox://` deeplink, which carries no `gameinfo` at all —
+shows "Open roblox.com and press Play." instead of starting a frame. The ticket
+is stripped from the URL as soon as it is parsed, before the first `await`, so
+it never sits in the address or in history while the redeem runs.
+
+The frame is not a home page. It is hidden, because Chrome turns a
+`roblox-player:` navigation from inside it into `about:blank`: no OS handoff,
+and `loadstart` reports `about:blank` rather than the link. Games therefore
+start only from a real browser. Leaving a game is not a window close either:
+`WasmPlayer.js` would `window.close()` and then `location.replace("about:blank")`
+once `__resolveGameExit` resolves; `boot.js` answers `leave`/`native_exit` on
+the app's end screen and never forwards the call, so the window survives and
+offers the way out.
+
 ## The join, exactly
 
-1. Frame loads `https://www.roblox.com/home` with `partition="persist:roblox"`.
-2. `whoami()` → `GET https://users.roblox.com/v1/users/authenticated` from inside
-   the frame. 200 means logged in.
-3. Not logged in: the frame is shown and the user logs in once; the partition
-   keeps it. `injectCookie()` is the alternative — writing `.ROBLOSECURITY` from
-   inside the frame's own origin works even though the cookie is `HttpOnly`
-   (only *reading* is blocked). It is the fallback, not the primary path.
+0. Opened by the Play button (`roblox-player:` → `/?player=…`). In the signed
+   install Chrome delivers it directly; in dev mode `run_iwa.sh` only stages,
+   serves and installs. A link without a ticket cannot sign in.
+   The ticket is stripped immediately, then `app.js` restores
+   `/?placeId=<id>` before loading `/engine/WasmPlayer.js` — the loader reads
+   that query and calls `set_place_id`; without it the lifecycle exits with
+   `[LIFECYCLE] no startup place id`.
+1. Frame loads `https://www.roblox.com/home`; its cookie jar is memory-only.
+2. `redeemTicket()` posts `gameinfo` to
+   `auth.roblox.com/v1/authentication-ticket/redeem`, and the reply signs the
+   frame in. This is the only path from the Play button.
+3. `whoami()` → `GET https://users.roblox.com/v1/users/authenticated` from inside
+   the frame confirms it.
 4. `join(placeId)` → `POST https://gamejoin.roblox.com/v1/join-game` with the
    native client's body.
 5. **`status: 0` is not an error.** A fresh attempt answers `0` with a
@@ -261,15 +401,16 @@ Files at the **deployment root** are easy to miss because they are not under
 worker fails, and the failure surfaces as an unrelated `TypeError` deep inside
 `WebClient.js`.
 
-## The server
+## The dev server
 
 `app/rkhost` is ~180 lines: serve a file, attach headers, done. It exists only
-because dev-mode install takes an `http://` URL. A signed bundle would not need
-it.
+because dev-mode install takes an `http://` URL; the signed bundle does not use
+it. There is no proxy, no bridge, no cookie handling, no engine special case.
 
-It sends the IWA policy (`script-src 'self' 'wasm-unsafe-eval'`,
-`require-trusted-types-for 'script'`, no inline script) plus COOP/COEP/CORP.
-There is no proxy, no bridge, no cookie handling, no engine special case.
+The app's CSP is now a `<meta http-equiv>` in `index.html`, because a signed
+bundle does not need rkhost's headers. Chrome injects COOP/COEP/CORP and
+`frame-ancestors 'self'` for an IWA; dev mode still also sends the same policy
+from rkhost.
 
 ## Permissions policy
 
@@ -295,12 +436,29 @@ reinstalls when it moves; source changes are live through the dev proxy.
 
 ## Running it
 
+Signed bundle (the installed form):
+
 ```bash
-./tools/run_iwa.sh            # stage, serve, install once, open
-PLACE=12345 ./tools/run_iwa.sh
+./tools/build_bundle.sh
+# chrome://iwa-dev/ -> Install IWA from Signed Web Bundle -> build/Weblox.swbn
 ```
 
-Manual:
+The bundle is self-contained; no server has to be running. Install it in the
+profile that presses Play, then open the app from Chrome's launcher.
+
+Dev mode (engine iteration only):
+
+```bash
+./tools/run_iwa.sh            # stage, serve, install the dev app
+./tools/run_iwa.sh --stop     # stop the detached server
+```
+
+The dev-mode app proxies every request to `rkhost` on `127.0.0.1:8770`, so that
+server has to be running whenever the dev app is. `run_iwa.sh` starts it
+detached and leaves it across Chrome restarts. It opens nothing — a game starts
+only from the Play button.
+
+Manual dev install:
 
 ```bash
 ./app/rkhost/target/debug/rkhost --root iwa --port 8770
@@ -312,7 +470,7 @@ google-chrome --user-data-dir=~/.weblox-iwa \
 grep -o "isolated-app://[a-z0-9]\{40,\}" ~/.weblox-iwa/Default/Preferences
 ```
 
-The origin id is random per install, and `grep` without `\{40,\}` truncates it.
+The origin id is random per dev install, and `grep` without `\{40,\}` truncates it.
 
 ## Audio — do not let the mixer be suspended
 
@@ -461,11 +619,13 @@ callbacks, and nothing that starts an app shell.
 Two practical routes if this is picked up again:
 
 * **Return to a surface we control.** `__resolveGameExit` hands back
-  `{reason: "leave" | "native_exit" | "teleport_failed" | "join_failed"}`. On
-  `leave`/`native_exit`, show the `<controlledframe>` (already logged in) over the
-  canvas so the user can pick another experience, and intercept its navigation to
-  join from there. This is the whole of the native "return to home" behaviour,
-  minus the engine's own UI.
+  `{reason: "leave" | "native_exit" | "teleport_failed" | "join_failed"}`.
+  `boot.js` now intercepts `leave`/`native_exit`, shows the app's end screen and
+  does not forward the call, so WasmPlayer's close-then-`about:blank` branch
+  never runs. A `<controlledframe>` home page was tried and cannot work: a
+  `roblox-player:` navigation from inside the frame is replaced by `about:blank`
+  — measured, there is no OS handoff and `loadstart` reports `about:blank`, not
+  the link — so Play always has to come from a real browser.
 * **Port the app shell.** It would mean a bootstrap that creates a DataModel from
   `UniversalApp.rbxm` (`rbxasset://models/UniversalApp/UniversalApp.rbxm`, not on
   the public CDN in any path form tried) and starts `LuaAppStarterScript` — engine
@@ -501,9 +661,10 @@ Two in-page diagnostics, both bounded and cheap:
 
 ## Known edges
 
-* **Packaging.** Dev mode is per-machine and flag-gated. A signed bundle is the
-  only distributable form, and it has to bundle the whole `engine/` tree, since
-  `script-src 'self'` means the glue cannot come from the CDN at runtime.
+* **Packaging.** The signed bundle is the installed form and bundles the whole
+  `engine/` tree (about 143 MB), since `script-src 'self'` means the glue cannot
+  come from the CDN at runtime. Rebuild and re-sign it after every engine build.
+  Dev mode remains the faster engine-iteration loop.
 * **The mirror is a capture, not a manifest.** A screen the capture never visited
   can request a file that is not there. Loud on the server, silent in the client.
 * **Weekly engine builds.** Re-run `build_patched.sh` and `stage_engine.sh`;
