@@ -64,8 +64,10 @@ fn start_worker(
                 ti.call(&mut *store, (pthread as i32, 0, 0, 1, 0, 0))?;
                 let tls = inst.get_typed_func::<(), (i32,)>(&mut *store, "_emscripten_tls_init")?;
                 tls.call(&mut *store, ())?;
-                let sts = inst.get_typed_func::<(i32, i32, i32, i32), ()>(&mut *store, "__set_thread_state")?;
-                sts.call(&mut *store, (pthread as i32, 0, 0, 0))?;
+                if std::env::var_os("WC_NOSTS").is_none() {
+                    let sts = inst.get_typed_func::<(i32, i32, i32, i32), ()>(&mut *store, "__set_thread_state")?;
+                    sts.call(&mut *store, (pthread as i32, 0, 0, 0))?;
+                }
                 static EMBIND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
                 if !EMBIND.swap(true, std::sync::atomic::Ordering::Relaxed) {
                     if let Ok(b) = inst.get_typed_func::<(), ()>(&mut *store, "_embind_initialize_bindings") {
