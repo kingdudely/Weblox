@@ -26,12 +26,18 @@ pub struct St {
     pub main_ptr: Option<u32>,
     pub rt: Option<crate::fibre::Rt>,
     pub cur: u32,
+    /// id of this thread root fibre
+    pub root: u32,
     pub in_drain: bool,
     pub mbx_task: bool,
     pub mk_calls: u32,
     pub turn_depth: u32,
     /// embind type id -> kind, from _embind_register_*
     pub types: HashMap<u32, String>,
+    /// fetch handle -> raw response header block
+    pub fetch_hdrs: HashMap<u32, Vec<u8>>,
+    /// .ROBLOSECURITY for roblox.com requests
+    pub cookie: Option<String>,
 }
 
 impl St {
@@ -53,11 +59,14 @@ impl St {
             main_ptr: None,
             rt: None,
             cur: 0,
+            root: 0,
             in_drain: false,
             mbx_task: false,
             mk_calls: 0,
             turn_depth: 0,
             types: Default::default(),
+            fetch_hdrs: Default::default(),
+            cookie: None,
         }
     }
 }

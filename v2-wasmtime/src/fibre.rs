@@ -1,41 +1,44 @@
-//! The engine's fibre scheduler, ported from the page glue.
+//! The engine's fibre scheduler, on real host stacks.
 //!
-//! The glue switches fibres by handing the wasm stack pointer around:
-//! `create_suspended_fiber_js(id, top, bottom, fn, arg)` saves the caller's
-//! sp/base/end under `id`, points the stack at the new range and calls
-//! `fiber_entry(id, fn, arg)`; `fiber_transfer_js(from, to)` saves `from`'s
-//! state, restores `to`'s and resolves `to`'s pending promise with `from`.
-//! Both imports return the id of whoever resumed them, so the return value of
-//! a create/transfer is the resumer, not a status.
+//! The glue switches fibres by handing the wasm stack pointer around: create
+//! saves the caller's sp/base/end under a token and points the stack at the new
+//! range; transfer parks the caller under `from` and resumes whoever owns `to`;
+//! the value a transfer returns is the key of whoever resumed it.
 //!
-//! Chrome gets the stackful part from JSPI: every suspended import keeps its
-//! wasm frames alive. wasmtime is stackless, so this module keeps the wasm
-//! calls themselves alive as futures in a tiny executor, switches the wasm
-//! stack pointer on the way in and out, and polls them here. The wasm frames
-//! live on the wasm stacks (that is why the glue moves the pointer), so a
-//! suspended call resumes exactly where it stopped.
-use std::collections::{HashMap, VecDeque};
+//! A stackless (future) scheduler cannot do this: a chain A->B->C that comes
+//! back to A has to resume *through* the frames in between, and a suspended
+//! future's frame is not staying put.  So each guest fibre gets a real host
+//! stack (`wasmtime-internal-fiber`) and suspends with `Fiber::suspend`, which
+//! is the same primitive the guest expects, minus the wasm sp juggling (the
+//! guest still does that itself through `set_stack_ptr`).
+use std::cell::Cell;
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Condvar, Mutex};
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
-use futures::channel::oneshot;
-use wasmtime::{AsContextMut, Caller, Linker, Result, Store};
+use wasmtime::{Caller, Linker, Result, Store};
+use wasmtime_internal_fiber::{Fiber, FiberStack, Suspend};
 
 use crate::state::St;
 
+const STACK: usize = 4 << 20;
+
 pub type Task = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
-struct Fiber {
-    sp: u32,
-    base: u32,
-    end: u32,
-    resume: Option<oneshot::Sender<u32>>,
-    task: Option<Task>,
-}
+type Fib = Fiber<'static, u32, u32, ()>;
+type Susp = Suspend<u32, u32, ()>;
 
-type Q = Arc<(Mutex<VecDeque<u32>>, Condvar)>;
+thread_local! {
+    /// suspend handles of the fibres from the root outwards
+    static SUSP_STACK: std::cell::RefCell<Vec<*mut Susp>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// fibre currently executing on this thread
+    static CUR_ID: Cell<u32> = const { Cell::new(u32::MAX) };
+    /// timer queue: (deadline, fibre)
+    static SLEEPERS: std::cell::RefCell<Vec<(std::time::Instant, u32)>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// store of this thread, for the ticker
+    static CUR_STORE: Cell<*mut Store<St>> = const { Cell::new(std::ptr::null_mut()) };
+}
 
 /// Raw store handle; only ever touched from the owning thread.
 #[derive(Clone, Copy)]
@@ -49,299 +52,336 @@ impl PStore {
     }
 }
 
+struct Fibre {
+    running: Cell<bool>,
+    susp: std::rc::Rc<Cell<*mut Susp>>,
+    f: Box<Fib>,
+    parent: u32,
+    arg: u32,
+}
+
 pub struct Rt {
     pub store: PStore,
-    q: Q,
-    fibers: HashMap<u32, Fiber>,
-    alive: usize,
-    /// deepest fibre stack currently installed (restored on wake)
+    /// token -> fibre it belongs to (token 0 is the thread root)
+    tokens: HashMap<u32, u32>,
+    fibres: HashMap<u32, Fibre>,
     root: u32,
 }
 
-// single-threaded: only the owning thread touches the store
 unsafe impl Send for Rt {}
 
 impl Rt {
     pub fn new(store: PStore) -> Self {
-        Rt {
-            store,
-            q: Arc::new((Mutex::new(VecDeque::new()), Condvar::new())),
-            fibers: HashMap::new(),
-            alive: 0,
-            root: 0,
-        }
-    }
-
-    fn push(&self, id: u32) {
-        let (m, cv) = &*self.q;
-        m.lock().unwrap().push_back(id);
-        cv.notify_one();
+        Rt { store, tokens: HashMap::new(), fibres: HashMap::new(), root: 0 }
     }
 }
 
-// --- waker --- //
-struct Wake {
-    id: u32,
-    q: Q,
+fn suspend_here(v: u32) -> u32 {
+    let p = SUSP_STACK.with(|c| c.borrow_mut().pop());
+    let p = p.expect("suspend outside a fibre");
+    let out = unsafe { (*p).suspend(v) };
+    SUSP_STACK.with(|c| c.borrow_mut().push(p));
+    out
 }
 
-static VT: RawWakerVTable = RawWakerVTable::new(clone, wake, wake_ref, drop_w);
-
-unsafe fn clone(p: *const ()) -> RawWaker {
-    Arc::increment_strong_count(p as *const Wake);
-    RawWaker::new(p, &VT)
-}
-
-unsafe fn wake(p: *const ()) {
-    let w = Arc::from_raw(p as *const Wake);
-    let (m, cv) = &*w.q;
-    m.lock().unwrap().push_back(w.id);
-    cv.notify_one();
-}
-
-unsafe fn wake_ref(p: *const ()) {
-    let w = &*(p as *const Wake);
-    let (m, cv) = &*w.q;
-    m.lock().unwrap().push_back(w.id);
-    cv.notify_one();
-}
-
-unsafe fn drop_w(p: *const ()) {
-    drop(Arc::from_raw(p as *const Wake));
-}
-
-fn waker_for(rt: &Rt, id: u32) -> Waker {
-    let w = Arc::new(Wake { id, q: rt.q.clone() });
-    unsafe { Waker::from_raw(RawWaker::new(Arc::into_raw(w) as *const (), &VT)) }
-}
-
-// --- stack helpers (exports on the module) --- //
-async fn sp_of<T: AsContextMut<Data = St>>(cx: &mut T) -> Result<u32> {
-    let inst = cx.as_context().data().inst.expect("instance");
-    let f = inst.get_typed_func::<(), (u32,)>(&mut *cx, "get_stack_ptr")?;
-    Ok(f.call_async(&mut *cx, ()).await?.0)
-}
-
-async fn set_sp<T: AsContextMut<Data = St>>(cx: &mut T, sp: u32) -> Result<()> {
-    let inst = cx.as_context().data().inst.expect("instance");
-    let f = inst.get_typed_func::<(u32,), ()>(&mut *cx, "set_stack_ptr")?;
-    f.call_async(&mut *cx, (sp,)).await
-}
-
-async fn set_limits<T: AsContextMut<Data = St>>(cx: &mut T, base: u32, end: u32) -> Result<()> {
-    let inst = cx.as_context().data().inst.expect("instance");
-    let f = inst.get_typed_func::<(u32, u32), ()>(&mut *cx, "set_stack_limits")?;
-    f.call_async(&mut *cx, (base, end)).await
-}
-
-/// Install fibre `id`'s stack as the current one.
-async fn enter<T: AsContextMut<Data = St>>(cx: &mut T, id: u32) -> Result<()> {
-    let (base, end, sp) = {
-        let rt = cx.as_context().data().rt.as_ref().expect("rt");
-        let f = rt.fibers.get(&id).expect("fibre");
-        (f.base, f.end, f.sp)
+fn resume(store: &mut Store<St>, id: u32, v: u32) -> Option<std::result::Result<(), u32>> {
+    let prev_cur = store.data().cur;
+    let fp: *const Fibre = store.data().rt.as_ref()?.fibres.get(&id)?;
+    let f = unsafe { &*fp };
+    if f.running.get() || f.f.done() {
+        return None;
+    }
+    f.running.set(true);
+    let p = f.susp.get();
+    if !p.is_null() {
+        SUSP_STACK.with(|c| c.borrow_mut().push(p));
+    }
+    let prev_id = CUR_ID.with(|c| c.get());
+    store.data_mut().cur = id;
+    let out = match f.f.resume(v) {
+        Ok(()) => Ok(()),
+        Err(y) => Err(y),
     };
-    set_limits(cx, base, end).await?;
-    set_sp(cx, sp).await
+    store.data_mut().cur = prev_cur;
+    CUR_ID.with(|c| c.set(prev_id));
+    f.running.set(false);
+    Some(out)
 }
-
-// --- imports --- //
 
 /// `__asyncjs__create_suspended_fiber_js(id, base, limit, entry, arg) -> resumer`
 pub fn register(l: &mut Linker<St>) -> Result<()> {
-    l.func_wrap_async("env", "__asyncjs__create_suspended_fiber_js",
-        |mut c: Caller<'_, St>, (id, base, limit, entry, arg): (u32, u32, u32, u32, u32)|
-        Box::new(async move {
+    l.func_wrap("env", "__asyncjs__create_suspended_fiber_js",
+        |mut c: Caller<'_, St>, id: u32, base: u32, limit: u32, entry: u32, arg: u32| -> Result<u32> {
             crate::trace::hit("fiber_create");
             let cur = c.data().cur;
-            let sp = sp_of(&mut c).await?;
+            eprintln!("[fbr ] create {id:#x} entry={entry} cur={cur:#x}");
+            let inst = c.data().inst.expect("instance");
+            let raw = c.data().rt.as_ref().expect("rt").store;
+            let _ = &mut c;
+            let fe = inst.get_typed_func::<(i32, i32, i32), ()>(raw.get(), "fiber_entry")?;
+            let _ = (base, limit);
 
-            let (tx, rx) = oneshot::channel();
-            let task = spawn_entry(&mut c, id, entry, arg, base, limit).await?;
+            let stack = FiberStack::new(STACK, false).map_err(|e| wasmtime::Error::msg(e.to_string()))?;
+            let susp_slot: std::rc::Rc<Cell<*mut Susp>> = std::rc::Rc::new(Cell::new(std::ptr::null_mut()));
+            let ss = susp_slot.clone();
+            let fib = Fiber::new(stack, move |_first: u32, s: &mut Susp| {
+                ss.set(s as *mut Susp);
+                SUSP_STACK.with(|c| c.borrow_mut().push(s as *mut Susp));
+                CUR_ID.with(|c| c.set(id));
+                let st = raw.get();
+                let _ = fe.call(st, (id as i32, entry as i32, arg as i32));
+                CUR_ID.with(|c| c.set(u32::MAX));
+                SUSP_STACK.with(|c| {
+                    c.borrow_mut().pop();
+                });
+            })
+            .map_err(|(e, _)| wasmtime::Error::msg(e.to_string()))?;
+
+            let rt = c.data_mut().rt.as_mut().expect("rt");
+            rt.tokens.insert(id, id);
+            rt.fibres.insert(id, Fibre { running: Cell::new(false), susp: susp_slot.clone(), f: Box::new(fib), parent: cur, arg });
+            rt.store.get().data_mut().cur = id;
+
+            // run it to its opening transfer, which hands control straight back
+            let out = match resume(raw.get(), id, cur) {
+                Some(Err(v)) => v,
+                Some(Ok(())) => 0,
+                None => 0,
+            };
+            eprintln!("[fbr ] create {id:#x} -> {out:#x}");
+            c.data_mut().cur = cur;
+            Ok(out)
+        })?;
+
+    l.func_wrap("env", "__asyncjs__fiber_transfer_js",
+        |mut c: Caller<'_, St>, from: u32, to: u32| -> Result<u32> {
+            crate::trace::hit("fiber_transfer");
+            let cur = c.data().cur;
+            eprintln!("[fbr ] xfer {from:#x} -> {to:#x} cur={cur:#x}");
             {
                 let rt = c.data_mut().rt.as_mut().expect("rt");
-                let me = rt.fibers.get_mut(&cur).expect("current fibre");
-                me.sp = sp;
-                rt.fibers.insert(id, Fiber { sp: base, base, end: limit, resume: Some(tx), task: Some(task) });
-                rt.alive += 1;
-                rt.push(id);
-            }
-
-            // run the new fibre; return whoever sends us back
-            Ok(rx.await.unwrap_or(0))
-        }))?;
-
-    l.func_wrap_async("env", "__asyncjs__fiber_transfer_js",
-        |mut c: Caller<'_, St>, (from, to): (u32, u32)| Box::new(async move {
-            crate::trace::hit("fiber_transfer");
-            if from == to {
-                return Ok(from);
-            }
-            let sp = sp_of(&mut c).await?;
-            let (tx, rx) = oneshot::channel();
-
-            let next = {
-                let rt = c.data_mut().rt.as_mut().expect("rt");
                 if from != 0 {
-                    if let Some(f) = rt.fibers.get_mut(&from) {
-                        f.sp = sp;
-                        f.resume = Some(tx);
-                    } else {
-                        return Ok(from);
+                    rt.tokens.insert(from, cur);
+                }
+            }
+
+            // Walk to the target, hopping through fibres that only handed the
+            // switch on.  `pass` is what the target's suspend returns.
+            let mut next = to;
+            let mut pass = from;
+            loop {
+                let t = {
+                    let rt = c.data_mut().rt.as_mut().expect("rt");
+                    rt.tokens.remove(&next)
+                };
+                let Some(t) = t else {
+                    return Ok(from);
+                };
+                if t == cur {
+                    if cur == 0 && CUR_ID.with(|x| x.get()) == u32::MAX {
+                        // the thread root: nobody to switch to
+                        return Ok(pass);
                     }
+                    // switching to ourselves still parks, so the resumer runs
+                    let back = suspend_here(pass);
+                    c.data_mut().cur = cur;
+                    return Ok(back);
                 }
-                let target = rt.fibers.get_mut(&to).ok_or_else(|| {
-                    wasmtime::Error::msg(format!("transfer to unknown fibre {to:#x}"))
-                })?;
-                let sender = target.resume.take();
-                let (base, end, sp) = (target.base, target.end, target.sp);
-                (sender, base, end, sp)
-            };
-            let (sender, base, end, sp) = next;
-            set_limits(&mut c, base, end).await?;
-            set_sp(&mut c, sp).await?;
-            if let Some(s) = sender {
-                let _ = s.send(from);
+                if t == 0 {
+                    // the thread root, below the resume chain: unwind to it
+                    let back = suspend_here(pass);
+                    c.data_mut().cur = cur;
+                    return Ok(back);
+                }
+                let done = resume(c.data().rt.as_ref().unwrap().store.get(), t, pass);
+                match done {
+                    Some(Err(v)) => {
+                        next = v;
+                        pass = v;
+                    }
+                    Some(Ok(())) => {
+                        let rt = c.data_mut().rt.as_mut().expect("rt");
+                        rt.fibres.remove(&t);
+                        return Ok(pass);
+                    }
+                    None => return Ok(pass),
+                }
             }
-            let rt = c.data().rt.as_ref().expect("rt");
-            rt.push(to);
+        })?;
 
-            Ok(rx.await.unwrap_or(from))
-        }))?;
-
-    // the fibre's entry call, kept alive as a task
-    l.func_wrap_async("env", "fiber_destroy_js",
-        |_c: Caller<'_, St>, (_id,): (u32,)| Box::new(async move { Ok(()) }))?;
+    let _ = 0;
+    l.func_wrap("env", "fiber_destroy_js", |mut c: Caller<'_, St>, id: u32| -> Result<()> {
+        let cur = c.data().cur;
+        let t = c.data_mut().rt.as_mut().expect("rt").tokens.remove(&id);
+        let Some(t) = t else { return Ok(()) };
+        if t != cur && t != 0 {
+            let done = resume(c.data().rt.as_ref().unwrap().store.get(), t, 0);
+            let rt = c.data_mut().rt.as_mut().expect("rt");
+            if let Some(Ok(())) = done {
+                rt.fibres.remove(&t);
+            }
+        }
+        Ok(())
+    })?;
     Ok(())
 }
 
-async fn spawn_entry<T: AsContextMut<Data = St>>(
-    cx: &mut T, id: u32, entry: u32, arg: u32, base: u32, limit: u32,
-) -> Result<Task> {
-    let inst = cx.as_context().data().inst.expect("instance");
-    let store = cx.as_context().data().rt.as_ref().expect("rt").store;
-    let f = inst.get_table(&mut *cx, "__indirect_function_table").ok_or_else(|| {
-        wasmtime::Error::msg("no table")
-    })?;
-    let slot = f.get(&mut *cx, entry as u64).ok_or_else(|| {
-        wasmtime::Error::msg(format!("fibre entry {entry} missing"))
-    })?;
-    let func = match slot {
-        wasmtime::Ref::Func(Some(f)) => f,
-        _ => return Err(wasmtime::Error::msg("fibre entry is not a func")),
-    };
-    let _ = (base, limit);
-    Ok(Box::pin(async move {
-        let mut out = [];
-        if let Err(e) = func.call_async(store.get(), &[wasmtime::Val::I32(id as i32),
-                                                       wasmtime::Val::I32(arg as i32)], &mut out).await {
-            eprintln!("[fibre] entry {id:#x} threw: {e:#}");
-        }
-        if let Some(rt) = store.get().data_mut().rt.as_mut() {
-            rt.alive = rt.alive.saturating_sub(1);
-            rt.fibers.remove(&id);
-        }
-    }))
-}
-
-/// Register the calling thread's own stack as a fibre and run its task.
-pub fn run(store: &mut Store<St>, id: u32, root: Task) -> Result<usize> {
-    let cur = block_on_inline(sp_of(store))?;
-    let (base, end) = {
-        let inst = store.data().inst.expect("instance");
-        let b = inst.get_typed_func::<(), (u32,)>(&mut *store, "get_stack_base")?;
-        let e = inst.get_typed_func::<(), (u32,)>(&mut *store, "get_stack_end")?;
-        (block_on_inline(b.call_async(&mut *store, ()))?.0,
-         block_on_inline(e.call_async(&mut *store, ()))?.0)
-    };
+/// Run a task on a private fibre, starting it immediately.
+pub fn spawn_on_new_stack<T: wasmtime::AsContextMut<Data = St>>(
+    cx: &mut T, id: u32, size: u32, task: Task,
+) -> Result<()> {
+    let raw = cx.as_context().data().rt.as_ref().expect("rt").store;
+    let cur = cx.as_context().data().cur;
+    let stack = FiberStack::new(size.max(64 * 1024) as usize, false)
+        .map_err(|e| wasmtime::Error::msg(e.to_string()))?;
+    let susp_slot: std::rc::Rc<Cell<*mut Susp>> = std::rc::Rc::new(Cell::new(std::ptr::null_mut()));
+    let ss = susp_slot.clone();
+    let fib = Fiber::new(stack, move |_v: u32, s: &mut Susp| {
+        ss.set(s as *mut Susp);
+        SUSP_STACK.with(|c| c.borrow_mut().push(s as *mut Susp));
+        CUR_ID.with(|c| c.set(id));
+        let st = raw.get();
+        block_on(task);
+        CUR_ID.with(|c| c.set(u32::MAX));
+        SUSP_STACK.with(|c| {
+            c.borrow_mut().pop();
+        });
+    })
+    .map_err(|(e, _)| wasmtime::Error::msg(e.to_string()))?;
     {
-        let rt = store.data_mut().rt.as_mut().expect("rt");
-        rt.root = id;
-        rt.alive += 1;
-        rt.fibers.insert(id, Fiber { sp: cur, base, end, resume: None, task: Some(root) });
-        rt.push(id);
+        let mut ctx = cx.as_context_mut();
+        let d = ctx.data_mut();
+        let rt = d.rt.as_mut().expect("rt");
+        rt.tokens.insert(id, id);
+        rt.fibres.insert(id, Fibre { running: Cell::new(false), susp: susp_slot.clone(), f: Box::new(fib), parent: cur, arg: 0 });
     }
-    pump(store)
-}
-
-/// Run `task` as a fibre on a freshly allocated wasm stack.
-pub fn spawn_on_new_stack(store: &mut Store<St>, id: u32, size: u32, task: Task) -> Result<()> {
-    let inst = store.data().inst.expect("instance");
-    let alloc = inst.get_typed_func::<(u32,), u32>(&mut *store, "emscripten_stack_alloc")?;
-    let low = block_on_inline(alloc.call_async(&mut *store, (size,)))?;
-    let base = low + size;
-    {
-        let rt = store.data_mut().rt.as_mut().expect("rt");
-        rt.alive += 1;
-        rt.fibers.insert(id, Fiber { sp: base, base, end: low, resume: None, task: Some(task) });
-        rt.push(id);
+    cx.as_context_mut().data_mut().cur = id;
+    let done = {
+        let rt = cx.as_context().data().rt.as_ref().expect("rt");
+        resume(raw.get(), id, cur)
+    };
+    cx.as_context_mut().data_mut().cur = cur;
+    if let Some(Ok(())) = done {
+        cx.as_context_mut().data_mut().rt.as_mut().unwrap().fibres.remove(&id);
     }
     Ok(())
 }
 
-/// Suspend the calling fibre for `dur`.
-pub async fn sleep<T: AsContextMut<Data = St>>(cx: &mut T, dur: std::time::Duration) {
-    let (tx, rx) = oneshot::channel::<()>();
-    std::thread::spawn(move || {
-        std::thread::sleep(dur);
-        let _ = tx.send(());
-    });
-    let _ = rx.await;
-    let _ = cx;
-}
-
-pub fn pump(store: &mut Store<St>) -> Result<usize> {
+/// Run a task on its own fibre and pump until it finishes, timers included.
+pub fn call_fibre<T: wasmtime::AsContextMut<Data = St>>(
+    cx: &mut T, id: u32, size: u32, task: Task,
+) -> Result<()> {
+    spawn_on_new_stack(cx, id, size, task)?;
+    let mut n = 0u64;
     loop {
-        let next = {
-            let rt = store.data().rt.as_ref().expect("rt");
-            let (m, cv) = &*rt.q;
-            let mut g = m.lock().unwrap();
-            if g.is_empty() {
-                if rt.alive == 0 {
-                    return Ok(0);
-                }
-                let (g2, _) = cv.wait_timeout(g, std::time::Duration::from_millis(4)).unwrap();
-                g = g2;
-            }
-            g.pop_front()
+        let (live, raw) = {
+            let d = cx.as_context().data();
+            (d.rt.as_ref().map(|r| r.fibres.contains_key(&id)).unwrap_or(false),
+             d.rt.as_ref().unwrap().store)
         };
-        let Some(id) = next else {
-            return Ok(store.data().rt.as_ref().map(|r| r.alive).unwrap_or(0));
-        };
-
-        let mut task = match store.data_mut().rt.as_mut().and_then(|r| r.fibers.get_mut(&id)).and_then(|f| f.task.take()) {
-            Some(t) => t,
-            None => continue,
-        };
-        let wk = {
-            let rt = store.data().rt.as_ref().expect("rt");
-            waker_for(rt, id)
-        };
-        let mut cx = Context::from_waker(&wk);
-
+        if !live {
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        tick(raw.get());
         {
-            let st = store.data().rt.as_ref().expect("rt").store.get();
-            let (base, end, sp) = {
-                let rt = st.data().rt.as_ref().expect("rt");
-                match rt.fibers.get(&id) {
-                    Some(f) => (f.base, f.end, f.sp),
-                    None => (0, 0, 0),
-                }
-            };
-            if base != 0 {
-                block_on_inline(set_limits(st, base, end))?;
-                block_on_inline(set_sp(st, sp))?;
+            let st = raw.get();
+            let live = st.data().rt.as_ref().map(|r| r.fibres.contains_key(&id)).unwrap_or(false);
+            if live && CUR_ID.with(|c| c.get()) != id {
+                let _ = resume(st, id, 0);
             }
         }
-
-        if let Poll::Pending = task.as_mut().poll(&mut cx) {
-            if let Some(f) = store.data_mut().rt.as_mut().and_then(|r| r.fibers.get_mut(&id)) {
-                f.task = Some(task);
+        if std::env::var_os("WC_FX").is_some() && (n & 63) == 0 {
+            let st = raw.get();
+            let d = st.data();
+            let m = d.mem.data();
+            for (id, f) in d.rt.as_ref().unwrap().fibres.iter() {
+                let mut w = String::new();
+                for i in 0..8 { w.push_str(&format!(" {:#x}", unsafe { *(m[f.arg as usize + i * 4].get() as *const u32) })); }
+                let rec = unsafe { *(m[f.arg as usize + 20].get() as *const u32) };
+                let mut r = String::new();
+                if rec > 0x1000 { for i in 0..12 { r.push_str(&format!(" {:#x}", unsafe { *(m[rec as usize + i * 4].get() as *const u32) })); } }
+                let cell = if rec > 0x1000 { unsafe { *(m[rec as usize + 16].get() as *const u32) } } else { 0 };
+                let mut cw = String::new();
+                if cell > 0x1000 { for i in 0..4 { cw.push_str(&format!(" {:#x}", unsafe { *(m[cell as usize + i * 4].get() as *const u32) })); } }
+                eprintln!("[fx2] fibre {id:#x} rec={rec:#x}:{r} cell={cell:#x}:{cw}");
             }
         }
+        n += 1;
     }
 }
 
-fn block_on_inline<F: Future>(f: F) -> F::Output {
-    futures::executor::block_on(f)
+/// Suspend the caller for `dur`.  Resumed by `tick` from whichever frame is
+/// parked, so it must only be used on a fibre.
+pub async fn sleep<T: wasmtime::AsContextMut<Data = St>>(cx: &mut T, dur: std::time::Duration) {
+    if CUR_ID.with(|c| c.get()) == u32::MAX {
+        std::thread::sleep(dur);
+        return;
+    }
+    let id = cx.as_context().data().cur;
+    SLEEPERS.with(|q| q.borrow_mut().push((std::time::Instant::now() + dur, id)));
+    let _ = suspend_here(id);
+}
+
+pub fn is_live(store: &Store<St>, id: u32) -> bool {
+    store.data().rt.as_ref().map(|r| r.fibres.contains_key(&id)).unwrap_or(false)
+}
+
+/// Resume every sleeper whose deadline has passed.
+pub fn tick(store: &mut Store<St>) {
+    let now = std::time::Instant::now();
+    let due: Vec<u32> = SLEEPERS.with(|q| {
+        let mut q = q.borrow_mut();
+        let due = q.iter().filter(|(t, _)| *t <= now).map(|(_, i)| *i).collect();
+        q.retain(|(t, _)| *t > now);
+        due
+    });
+    if due.is_empty() {
+        return;
+    }
+    let _ = store;
+    let cur = CUR_ID.with(|c| c.get());
+    let mut ran = false;
+    for id in due {
+        if id == cur || !store.data().rt.as_ref().map(|r| r.fibres.contains_key(&id)).unwrap_or(false) {
+            SLEEPERS.with(|q| q.borrow_mut().push((now, id)));
+            continue;
+        }
+        let _ = resume(store, id, id);
+    }
+}
+
+/// Register the current (host) stack as the thread root, so transfers to token
+/// 0 have somewhere to go.
+pub fn run(store: &mut Store<St>, id: u32) {
+    CUR_STORE.with(|c| c.set(store as *mut Store<St>));
+    let rt = store.data_mut().rt.as_mut().expect("rt");
+    rt.root = id;
+    rt.store.get().data_mut().root = id;
+    rt.store.get().data_mut().cur = id;
+}
+
+// --- nested-safe block_on --- //
+struct Park;
+static PVT: RawWakerVTable = RawWakerVTable::new(|_| RawWaker::new(std::ptr::null(), &PVT), |_| {
+    std::thread::park();
+}, |_| {
+    std::thread::park();
+}, |_| {});
+
+pub fn block_on<F: Future>(f: F) -> F::Output {
+    let waker = unsafe { Waker::from_raw(RawWaker::new(std::ptr::null(), &PVT)) };
+    let mut cx = Context::from_waker(&waker);
+    let mut f = Box::pin(f);
+    loop {
+        if let Poll::Ready(v) = f.as_mut().poll(&mut cx) {
+            return v;
+        }
+        // drive timers while parked; the waker unparks us early
+        let p = CUR_STORE.with(|c| c.get());
+        if !p.is_null() {
+            tick(unsafe { &mut *p });
+        }
+        std::thread::park_timeout(std::time::Duration::from_millis(1));
+    }
 }

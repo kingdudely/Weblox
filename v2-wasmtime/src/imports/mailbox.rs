@@ -114,7 +114,7 @@ async fn check<T: AsContextMut<Data = St>>(cx: &mut T) {
         return;
     };
     cx.as_context_mut().data_mut().in_drain = true;
-    if let Err(e) = f.call_async(&mut *cx, &[], &mut []).await {
+    if let Err(e) = f.call(&mut *cx, &[], &mut []) {
         static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if n < 5 {
@@ -125,10 +125,9 @@ async fn check<T: AsContextMut<Data = St>>(cx: &mut T) {
 }
 
 pub fn register(l: &mut Linker<St>) -> Result<()> {
-    l.func_wrap_async("env", "_emscripten_thread_mailbox_await",
-        |mut c: Caller<'_, St>, (ptr,): (i32,)| Box::new(async move {
+    l.func_wrap("env", "_emscripten_thread_mailbox_await",
+        |mut c: Caller<'_, St>, ptr: i32| {
             crate::trace::hit("mbx_await");
-            crate::diag::event("mailbox await".into());
             let ptr = ptr as u32;
 
             if c.data().is_main {
@@ -137,27 +136,21 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
                 // the glue arms and returns; the drain happens from the loop
                 if !c.data().mbx_task {
                     c.data_mut().mbx_task = true;
-                    spawn_loop(&mut c, ptr)?;
+                    spawn_loop(&mut c, ptr).expect("mailbox loop");
                 }
-                return Ok(());
+                return;
             }
 
             loop {
                 if take_ring(ptr) {
                     break;
                 }
-                let rx = arm(ptr);
-                if take_ring(ptr) {
-                    disarm(ptr);
-                    break;
-                }
-                let _ = futures::future::select(rx, Box::pin(sleep_ms(20))).await;
-                disarm(ptr);
+                crate::fibre::block_on(crate::fibre::sleep(
+                    &mut c, std::time::Duration::from_millis(1)));
             }
             set_ready(&mut c, ptr);
-            check(&mut c).await;
-            Ok(())
-        }))?;
+            crate::fibre::block_on(check(&mut c));
+        })?;
 
     l.func_wrap("env", "_emscripten_notify_mailbox_postmessage",
         |target: i32, self_thread: i32| {

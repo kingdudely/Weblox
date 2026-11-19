@@ -344,17 +344,17 @@ pub fn register(l: &mut Linker<St>) -> anyhow::Result<()> {
     // main-thread pthread/TLS bring-up: the glue calls the module's own
     // _emscripten_thread_init + tls_init here (lo), so everything after this
     // point has a valid __pthread and TLS block.
-    l.func_wrap_async("env", "_emscripten_init_main_thread_js",
-        |mut c: Caller<'_, St>, (ptr,): (i32,)| Box::new(async move {
+    l.func_wrap("env", "_emscripten_init_main_thread_js",
+        |mut c: Caller<'_, St>, ptr: i32| -> wasmtime::Result<()> {
             let inst = c.data().inst.ok_or_else(|| wasmtime::Error::msg("no instance"))?;
             let ti = inst.get_typed_func::<(i32, i32, i32, i32, i32, i32), ()>(
                 &mut c, "_emscripten_thread_init")?;
-            ti.call_async(&mut c, (ptr, 1, 1, 1, 262144, 0)).await?;
+            ti.call(&mut c, (ptr, 1, 1, 1, 262144, 0))?;
             let tls = inst.get_typed_func::<(), (i32,)>(&mut c, "_emscripten_tls_init")?;
-            tls.call_async(&mut c, ()).await?;
+            tls.call(&mut c, ())?;
             eprintln!("[wasm] main thread init, tls done");
             Ok(())
-        }))?;
+        })?;
 
     // wasi_snapshot_preview1: the module only needs wall clock, no environ, exit
     l.func_wrap("wasi_snapshot_preview1", "clock_time_get",

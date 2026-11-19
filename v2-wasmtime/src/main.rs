@@ -20,15 +20,44 @@ mod state;
 
 use state::{St, CANVAS_H, CANVAS_W};
 
-const WASM: &str = "/home/john/rr/WebClient.wasm";
+fn wasm_path() -> String { std::env::var("WC_WASM").unwrap_or_else(|_| "/home/john/rr/WebClient.wasm".into()) }
 const CACHE: &str = "data/cache/webclient.cwasm";
 const CACHE_STAMP: &str = "data/cache/webclient.stamp";
 const PAGES: u32 = 32768; // 2 GiB, as the page does (FIntWasmMemoryPages)
 const WEB_BASE: &str = "https://www.roblox.com/";
 const ASSET_BASE: &str =
-    "https://setup.rbxcdn.com/webclient/version-f807b21caba84809-RobloxWebClient/";
+    "https://setup.rbxcdn.com/webclient/version-1ef59424f70d4932-RobloxWebClient/";
+
+fn place_arg() -> Result<i64> {
+    let a = std::env::var("WC_PLACE")
+        .ok()
+        .or_else(|| std::env::args().skip(1).find(|a| a.chars().all(|c| c.is_ascii_digit())))
+        .unwrap_or_default();
+    let a = a.trim().to_string();
+    if a.is_empty() || !a.chars().all(|c| c.is_ascii_digit()) {
+        return Err(anyhow!("usage: WC_COOKIE='...' ./alcohol <placeId>"));
+    }
+    Ok(a.parse()?)
+}
+
+/// `.ROBLOSECURITY`, from the environment or the default cookie file.
+fn cookie() -> Result<String> {
+    let c = match std::env::var("WC_COOKIE") {
+        Ok(v) if !v.trim().is_empty() => v,
+        _ => {
+            let f = std::env::var("WC_COOKIE_FILE").unwrap_or_else(|_| "/home/john/king.txt".into());
+            std::fs::read_to_string(&f).map_err(|e| anyhow!("no cookie (WC_COOKIE or {f}: {e})"))?
+        }
+    };
+    let c = c.trim().trim_start_matches(".ROBLOSECURITY=").to_string();
+    if c.is_empty() {
+        return Err(anyhow!("empty .ROBLOSECURITY value"));
+    }
+    Ok(c)
+}
 
 fn config() -> Result<Config> {
+    let dev = std::env::var_os("WC_DEV").is_some();
     let mut c = Config::new();
     c.wasm_threads(true);
     c.shared_memory(true);
@@ -40,14 +69,33 @@ fn config() -> Result<Config> {
     c.wasm_reference_types(true);
     c.wasm_multi_value(true);
     c.wasm_exceptions(true);
-    c.cranelift_opt_level(OptLevel::None); // development profile
+    c.cranelift_opt_level(if dev { OptLevel::None } else { OptLevel::Speed });
     c.parallel_compilation(true);
-    c.wasm_backtrace_details(WasmBacktraceDetails::Enable);
+    c.wasm_backtrace_details(if dev {
+        WasmBacktraceDetails::Enable
+    } else {
+        WasmBacktraceDetails::Disable
+    });
+
+    // The CPU is the runtime: no per-access software masking. Guard pages make
+    // the MMU the bounds check and the null page the trap.
+    unsafe {
+        c.cranelift_flag_set("enable_heap_access_spectre_mitigation", "false");
+        c.cranelift_flag_set("enable_table_access_spectre_mitigation", "false");
+    }
+    c.cranelift_nan_canonicalization(false);
+    c.memory_reservation(PAGES as u64 * 65536);
+    c.memory_guard_size(2 << 30);
+    c.guard_before_linear_memory(true);
+    if std::env::var_os("WC_NATIVE").is_some() {
+        // only valid while the cached artifact and the host agree
+        unsafe { c.cranelift_flag_enable("has_avx2") };
+    }
     Ok(c)
 }
 
 fn stamp() -> String {
-    let md = std::fs::metadata(WASM).map(|m| (m.len(), m.modified().ok())).ok();
+    let md = std::fs::metadata(wasm_path()).map(|m| (m.len(), m.modified().ok())).ok();
     format!("{:?}", md)
 }
 
@@ -59,8 +107,8 @@ fn module(engine: &Engine) -> Result<Module> {
             return Ok(unsafe { Module::deserialize(engine, &buf) }?);
         }
     }
-    eprintln!("[wasm] compiling {WASM} (cached builds are instant after this)");
-    let bytes = std::fs::read(WASM)?;
+    eprintln!("[wasm] compiling {} (cached builds are instant after this)", wasm_path());
+    let bytes = std::fs::read(wasm_path())?;
     let t = Instant::now();
     let pre = engine.precompile_module(&bytes)?;
     eprintln!("[wasm] compiled in {} ms ({} bytes)", t.elapsed().as_millis(), pre.len());
@@ -83,6 +131,8 @@ fn main() {
 }
 
 fn run() -> Result<()> {
+    let place = place_arg()?;
+    let cookie = cookie()?;
     let engine = Engine::new(&config()?)?;
     let module = module(&engine)?;
     let mem = SharedMemory::new(&engine, MemoryType::shared(PAGES, PAGES))?;
@@ -91,6 +141,7 @@ fn run() -> Result<()> {
     imports::embind::register(&mut linker)?;
     imports::boot::register(&mut linker)?;
     imports::fetch::register(&mut linker)?;
+    imports::http::register(&mut linker)?;
     imports::futex::register(&mut linker)?;
     fibre::register(&mut linker)?;
     imports::mailbox::register(&mut linker)?;
@@ -102,16 +153,47 @@ fn run() -> Result<()> {
     store.data_mut().rt = Some(fibre::Rt::new(sp));
     store.data_mut().engine = Some(engine.clone());
     diag::start();
+    if trace::enabled() {
+        std::thread::spawn(|| loop {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let h = trace::hist();
+            let t: Vec<&str> = h.iter().rev().take(12).rev().cloned().collect();
+            eprintln!("[t] {}", t.join(" "));
+        });
+    }
     store.data_mut().is_main = true;
     store.data_mut().module = Some(module.clone());
+    store.data_mut().place = place;
+    store.data_mut().cookie = Some(cookie);
     linker.define(&mut *store, "env", "memory", Extern::SharedMemory(mem))?;
-    let inst = block_on(linker.instantiate_async(&mut *store, &module))?;
+    let inst = fibre::block_on(linker.instantiate_async(&mut *store, &module))?;
     store.data_mut().inst = Some(inst);
+    if std::env::var_os("WC_SLOT0").is_some() {
+        let t = inst.get_table(&mut *store, "__indirect_function_table").unwrap();
+        if let Some(f) = t.get(&mut *store, std::env::var("WC_SLOT0").unwrap().parse::<u64>().unwrap()) {
+            t.set(&mut *store, 0, f)?;
+            eprintln!("[tbl ] slot0 set; now {}", match t.get(&mut *store, 0) { Some(wasmtime::Ref::Func(Some(_))) => "func", _ => "null" });
+        }
+    }
+    if std::env::var_os("WC_TBL").is_some() {
+        let t = inst.get_table(&mut *store, "__indirect_function_table").unwrap();
+        let n = t.size(&mut *store);
+        let mut s = String::new();
+        for i in 0..6u64 {
+            s.push_str(match t.get(&mut *store, i) {
+                Some(wasmtime::Ref::Func(Some(_))) => " F",
+                Some(wasmtime::Ref::Func(None)) => " n",
+                Some(_) => " ?",
+                None => " -",
+            });
+        }
+        eprintln!("[tbl ] size={n} slots={s}");
+    }
 
     let s: &mut Store<St> = &mut store;
     let ctors = inst.get_typed_func::<(), ()>(&mut *s, "__wasm_call_ctors")?;
     if std::env::var_os("WC_NOCtors").is_none() {
-    if let Err(e) = block_on(ctors.call_async(s, ())) {
+    if let Err(e) = ctors.call(&mut *s, ()) {
         eprintln!("[fatal] ctors threw; registered {} bindings so far", store.data().binds.len());
         dump_exception(&mut *store);
         trace::dump();
@@ -119,11 +201,25 @@ fn run() -> Result<()> {
     }
     eprintln!("[wasm] ctors ok, {} bindings registered", store.data().binds.len());
     } else { eprintln!("[wasm] ctors skipped, {} binds pre-existing", store.data().binds.len()); }
-    block_on(prepare(&mut store, &inst))?;
+    fibre::block_on(prepare(&mut store, &inst))?;
 
     let main_fn = inst.get_typed_func::<(i32, i32), i32>(&mut *store, "__main_argc_argv")?;
-    let argv = block_on(guest_argv(&mut *store, &inst))?;
-    let rc = match block_on(main_fn.call_async(&mut *store, (1, argv as i32))) {
+    let argv = fibre::block_on(guest_argv(&mut *store, &inst))?;
+    let p = store.data().rt.as_ref().expect("rt").store;
+    let mf = main_fn;
+    let argv = argv;
+    let task: fibre::Task = Box::pin(async move {
+        if let Err(e) = mf.call(p.get(), (1, argv as i32)) {
+            static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            if N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 5 {
+                eprintln!("[main] threw: {e:#}");
+            }
+        }
+    });
+    eprintln!("[wasm] main on fibre");
+    fibre::call_fibre(&mut *store, 0x7000_0001, 4 * 1024 * 1024, task)?;
+    eprintln!("[wasm] main fibre done");
+    let rc = match Ok::<i32, wasmtime::Error>(0) {
         Ok(r) => r,
         Err(_) if store.data().exited => {
             eprintln!("[wasm] main exited to live runtime");
@@ -150,21 +246,21 @@ fn run() -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs_f64(secs / 1000.0);
     std::thread::spawn(|| diag::watch(3));
     let mut turns = 0u64;
-    let mut root_id = 0xFFFF_0000u32;
+    let mut root_id = 0u32;
+    fibre::run(&mut *store, 0);
     while Instant::now() < deadline {
-        block_on(imports::mailbox::drop_in(&mut *store));
+        fibre::block_on(imports::mailbox::drop_in(&mut *store));
         if turns % 500 == 0 {
             eprintln!("[iter] turn {turns}");
         }
         turns += 1;
         root_id += 1;
 
+        let fid = 0x8000_0000 | (turns as u32 & 0xffff);
         let p = store.data().rt.as_ref().expect("rt").store;
         let it = iter.clone();
         let task: fibre::Task = Box::pin(async move {
-            let st = p.get();
-            if let Err(e) = it.call_async(st, ()).await {
-                // the glue catches a throw per turn and keeps the loop alive
+            if let Err(e) = it.call(p.get(), ()) {
                 static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
                 let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 if n < 5 {
@@ -172,7 +268,7 @@ fn run() -> Result<()> {
                 }
             }
         });
-        fibre::run(&mut *store, root_id, task)?;
+        fibre::call_fibre(&mut *store, fid, 2 * 1024 * 1024, task)?;
         diag::checkpoint();
         std::thread::sleep(Duration::from_millis(1));
     }
@@ -195,6 +291,27 @@ fn dump_exception(store: &mut Store<St>) {
                 if let Ok(v) = e.field(&mut *store, i) {
                     eprintln!("[exn ]   [{i}] {p:?} = {v:?}");
                     if let Val::I32(ptr) = v {
+                        let d = store.data().mem.data();
+                        {
+                            let mut b = String::new();
+                            for k in 0..96usize {
+                                let c = unsafe { *d[ptr as usize + 4 + k].get() };
+                                b.push(if (0x20..0x7f).contains(&c) { c as char } else { '.' });
+                            }
+                            eprintln!("[exn ]   raw+4: {b}");
+                        }
+                        for off in [4u32, 8, 12] {
+                            let w = unsafe { *(d[ptr as usize + off as usize].get() as *const u32) };
+                            if w > 0x1000 {
+                                let mut b = String::new();
+                                for k in 0..200usize {
+                                    let c = unsafe { *d[w as usize + k].get() };
+                                    if c == 0 { break }
+                                    b.push(if (0x20..0x7f).contains(&c) { c as char } else { '.' });
+                                }
+                                eprintln!("[exn ]   +{off} -> {w:#x}: {b}");
+                            }
+                        }
                         let d = store.data().mem.data();
                         let base = ptr as usize;
                         let mut run = String::new();
@@ -219,8 +336,8 @@ fn dump_exception(store: &mut Store<St>) {
 
 async fn guest_argv(store: &mut Store<St>, inst: &Instance) -> Result<u32> {
     let malloc = inst.get_typed_func::<(i32,), i32>(&mut *store, "malloc")?;
-    let p = malloc.call_async(&mut *store, (16,)).await? as u32;
-    let arr = malloc.call_async(&mut *store, (8,)).await? as u32;
+    let p = malloc.call(&mut *store, (16,))? as u32;
+    let arr = malloc.call(&mut *store, (8,))? as u32;
     let d = store.data().mem.data();
     for (i, b) in b"/content/.keep\0".iter().enumerate() {
         unsafe { *d[p as usize + i].get() = *b };
@@ -248,7 +365,7 @@ async fn prepare(store: &mut Store<St>, inst: &Instance) -> Result<()> {
     let fp = binds::guest_string_bytes(store, inst, flags).await?;
     binds::call(store, inst, "set_preloaded_flags", &[imports::embind::Arg::I32(fp)]).await?;
 
-    let place: i64 = std::env::var("WC_PLACE").ok().and_then(|v| v.parse().ok()).unwrap_or(1818);
+    let place: i64 = std::env::var("WC_PLACE").ok().and_then(|v| v.parse().ok()).unwrap_or(189707);
     binds::call(store, inst, "set_place_id", &[imports::embind::Arg::I64(place as u64)]).await?;
 
     // VFS bootstrap: the metadata tree, then the patch model the loader expects
@@ -256,7 +373,7 @@ async fn prepare(store: &mut Store<St>, inst: &Instance) -> Result<()> {
     let fs_base = std::env::var("WC_CONTENT").unwrap_or_else(|_| "data/content".into());
     let reg = inst.get_typed_func::<(i32, i32), i32>(&mut *store, "rbx_fs_register_asset")?;
     let mut n = 0;
-    let meta = std::fs::read_to_string("data/meta.json").unwrap_or_default();
+    let meta = if std::env::var_os("WC_NOREG").is_some() { String::new() } else { std::fs::read_to_string("data/meta.json").unwrap_or_default() };
     for ent in meta.split('{').skip(1) {
         let path = field(ent, "path");
         let size: u32 = field(ent, "size").parse().unwrap_or(1);
@@ -264,7 +381,7 @@ async fn prepare(store: &mut Store<St>, inst: &Instance) -> Result<()> {
             continue;
         }
         let p = import_bytes(store, inst, path.as_bytes()).await?;
-        reg.call_async(&mut *store, (p as i32, size as i32)).await?;
+        reg.call(&mut *store, (p as i32, size as i32))?;
         n += 1;
     }
     eprintln!("[fs  ] registered {n} asset paths under {fs_base}");
@@ -276,18 +393,19 @@ async fn prepare(store: &mut Store<St>, inst: &Instance) -> Result<()> {
         let Ok(body) = std::fs::read(&disk) else { continue };
         let p = import_bytes(store, inst, rel.as_bytes()).await?;
         let d = import_bytes(store, inst, &body).await?;
-        let rc = pre.call_async(&mut *store, (p as i32, d as i32, body.len() as i32)).await?;
+        let rc = pre.call(&mut *store, (p as i32, d as i32, body.len() as i32))?;
         eprintln!("[fs  ] preload {rel} ({} bytes) -> {rc}", body.len());
     }
 
     let app = import_bytes(store, inst, br#"{"WebLogin":"2","RobloxLocaleId":"en-us","GameLocaleId":"en-us"}"#).await?;
     let add = inst.get_typed_func::<(i32, i32, i32), i32>(&mut *store, "rbx_fs_add_file")?;
     let path = import_bytes(store, inst, b"/appData/LocalStorage/appStorage.json").await?;
-    add.call_async(&mut *store, (path as i32, app as i32, 61)).await?;
+    add.call(&mut *store, (path as i32, app as i32, 61))?;
 
     let sb = inst.get_typed_func::<(i32,), ()>(&mut *store, "rbx_fs_set_base_url")?;
     let bp = import_bytes(store, inst, ASSET_BASE.as_bytes()).await?;
-    sb.call_async(&mut *store, (bp as i32,)).await?;
+    sb.call(&mut *store, (bp as i32,))?;
+    eprintln!("[prep] base now {:?}", store.data().base);
 
     eprintln!("[prep] place={place} canvas={CANVAS_W}x{CANVAS_H} assets={} preload={} files={}", store.data().assets.len(), store.data().preload.len(), store.data().files.len());
     Ok(())
@@ -316,7 +434,7 @@ async fn str_arg(store: &mut Store<St>, inst: &Instance, s: &str) -> Result<impo
 /// Allocate guest memory and copy `b` plus a NUL (engine strings).
 async fn import_bytes(store: &mut Store<St>, inst: &Instance, b: &[u8]) -> Result<u32> {
     let malloc = inst.get_typed_func::<(i32,), i32>(&mut *store, "malloc")?;
-    let p = malloc.call_async(&mut *store, (b.len() as i32 + 1,)).await? as u32;
+    let p = malloc.call(&mut *store, (b.len() as i32 + 1,))? as u32;
     if p == 0 {
         return Err(anyhow!("guest malloc failed"));
     }

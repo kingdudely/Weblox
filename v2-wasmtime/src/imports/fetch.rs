@@ -16,6 +16,10 @@ fn root() -> String {
 
 fn local_path(url: &str) -> Option<String> {
     let mut u = url;
+    if let Some(rest) = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")) {
+        let end = rest.find('/').unwrap_or(rest.len());
+        u = &rest[end..];
+    }
     if let Some(r) = u.strip_prefix("rbxasset://") {
         u = r;
     }
@@ -30,6 +34,9 @@ fn local_path(url: &str) -> Option<String> {
 }
 
 fn remote(url: &str, base: &str) -> String {
+    if url.starts_with("http://") || url.starts_with("https://") {
+        return url.to_string();
+    }
     let mut u = url;
     if let Some(r) = u.strip_prefix("rbxasset://") {
         u = r;
@@ -38,13 +45,13 @@ fn remote(url: &str, base: &str) -> String {
 }
 
 pub fn register(l: &mut Linker<St>) -> Result<()> {
-    l.func_wrap_async("env", "js_fetch_file",
-        |mut c: Caller<'_, St>, (urlp, dst, want): (i32, i32, i32)| Box::new(async move {
+    l.func_wrap("env", "js_fetch_file",
+        |mut c: Caller<'_, St>, urlp: i32, dst: i32, want: i32| -> i32 {
             let url = rstr(&c, urlp as u32);
             let want = want as u32;
             crate::diag::event(format!("fetch {url} want={want}"));
             let Some(path) = local_path(&url) else {
-                return Ok(-1i32);
+                return -1;
             };
 
             let serve = |c: &mut Caller<'_, St>, body: &[u8]| {
@@ -60,23 +67,23 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
                     match std::fs::read(&path) {
                         Ok(b) => {
                             serve(&mut c, &b);
-                            return Ok(0i32);
+                            return 0;
                         }
-                        Err(_) => return Ok(-1i32),
+                        Err(_) => return -1,
                     }
                 }
             }
 
             // miss (or stale): pull the CDN copy and cache it
             let base = c.data().base.clone();
-            if base.is_empty() {
-                return Ok(-1i32);
-            }
             let url2 = remote(&url, &base);
+            if !url2.starts_with("http") {
+                return -1;
+            }
             eprintln!("[fs  ] fetch {url2}");
             let body = match curl(&url2, want as u64) {
                 Some(b) => b,
-                None => return Ok(-1i32),
+                None => return -1,
             };
             if let Some(dir) = std::path::Path::new(&path).parent() {
                 let _ = std::fs::create_dir_all(dir);
@@ -85,8 +92,8 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
                 let _ = f.write_all(&body);
             }
             serve(&mut c, &body);
-            Ok(0i32)
-        }))?;
+            0
+        })?;
     Ok(())
 }
 
