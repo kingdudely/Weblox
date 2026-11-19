@@ -1,0 +1,9 @@
+node_modules/
+*.log
+v2-wasmtime/target/
+v3-wasm2c/gen/obj/
+v3-wasm2c/data/cache/
+*.pch
+*.o
+*.a
+*.so

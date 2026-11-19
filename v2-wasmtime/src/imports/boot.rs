@@ -1,0 +1,438 @@
+//! Imports the boot path needs: console, misc timing/entropy, host info, the
+//! EM_ASM table, and the VFS hooks. Everything here mirrors what
+//! WebClient.js/WasmPlayer.js does for the same entry.
+use std::io::Write;
+
+use std::cell::Cell;
+
+use wasmtime::{Caller, Linker, SharedMemory};
+
+thread_local! {
+    static CLK: Cell<u32> = const { Cell::new(0) };
+}
+
+use crate::state::{rbytes, rstr, wbytes, wstr, St, CANVAS_H, CANVAS_W};
+
+fn now_ms() -> f64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let d = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    d.as_secs_f64() * 1000.0
+}
+
+fn cores() -> i32 {
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) as i32
+}
+
+/// ASM_CONSTS: the module passes a numeric key, a signature string and a packed
+/// argument buffer; the glue decodes the signature and spreads the values.
+fn asm_eval(c: &mut Caller<'_, St>, key: u32, sigp: u32, buf: u32) -> f64 {
+    let sig = rstr(c, sigp);
+    let mut off = buf as usize;
+    let mut vals: Vec<f64> = Vec::new();
+    for ch in sig.bytes() {
+        let wide = ch == b'j' || ch == b'f' || ch == b'd';
+        if wide && off % 8 != 0 {
+            off += 4;
+        }
+        let d = c.data().mem.data();
+        let v = match ch {
+            b'f' => unsafe { (*(d.as_ptr().add(off) as *const f32)) as f64 },
+            b'd' | b'j' => unsafe { (*(d.as_ptr().add(off) as *const u64)) as f64 },
+            _ => unsafe { (*(d.as_ptr().add(off) as *const u32)) as f64 },
+        };
+        vals.push(v);
+        off += if wide { 8 } else { 4 };
+    }
+    let a = |i: usize| *vals.get(i).unwrap_or(&0.0) as u32;
+
+    match key {
+        8667121 => now_ms(),                       // performance.now
+        8667344 => 0.0,                            // wasmPreInitTime
+        8667510 => 0.0,                            // navigator.webdriver
+        8667550 => {
+            eprintln!("[asm] main entered");
+            0.0
+        }
+        8687293 => 0.0,                            // HaveOffsetConverter
+        8687350 => {                               // getRandomValue
+            let mut b = [0u8; 4];
+            let _ = getrandom(&mut b);
+            u32::from_le_bytes(b) as f64
+        }
+        8687386 => {                               // install getRandomValue
+            eprintln!("[asm] random_init");
+            0.0
+        }
+        8667715 => {                               // engine loading status
+            let kind = if a(0) != 0 { "FAILURE" } else { "status" };
+            let msg = rstr(c, a(2));
+            eprintln!("[asm] loading {kind} source={} msg={msg:?} err={} status={}",
+                      a(1) as i32, a(3) as i32, a(4) as i32);
+            0.0
+        }
+        8667386 => {                               // join failed
+            eprintln!("[asm] JOIN FAILED statusCode={}", a(0) as i32);
+            0.0
+        }
+        8666895 => {
+            eprintln!("[asm] TELEPORT FAILED statusCode={}", a(0) as i32);
+            0.0
+        }
+        8679911 => {                               // crash
+            eprintln!("[asm] CRASH type={} msg={}", rstr(c, a(0)), rstr(c, a(1)));
+            0.0
+        }
+        8667151 => {
+            eprintln!("[asm] EXPERIENCE JOINED");
+            0.0
+        }
+        8667221 => {
+            eprintln!("[asm] EXPERIENCE LEFT");
+            0.0
+        }
+        8666972 => {
+            eprintln!("[asm] loading screen removed");
+            0.0
+        }
+        8667459 | 8667064 | 8667287 => {
+            eprintln!("[asm] exit {key}");
+            0.0
+        }
+        8686787 => {
+            eprintln!("[asm] cors: non-allowlisted header {:?}", rstr(c, a(0)));
+            0.0
+        }
+        8683155 | 8686439 | 8680027 => 48000.0,    // FMOD sample rates
+        8668001 | 8670980 | 8671094 | 8671524 | 8673319 | 8674510 | 8678994
+        | 8679585 | 8680489 | 8680778 | 8681161 | 8681223 | 8681495 | 8681910
+        | 8682303 | 8682589 | 8682631 | 8683356 | 8683776 | 8683994 | 8684412
+        | 8685416 | 8685627 | 8685650 | 8685888 | 8686089 | 8686142 | 8686417
+        | 8686645 | 8686709 | 8686884 => 0.0,
+        _ => {
+            eprintln!("[asm] unknown key {key} sig={sig:?}");
+            0.0
+        }
+    }
+}
+
+fn getrandom(b: &mut [u8]) -> std::io::Result<()> {
+    use std::io::Read;
+    std::fs::File::open("/dev/urandom")?.read_exact(b)
+}
+
+const INFO: &[(&str, &str)] = &[
+    ("hostOS", "5"),
+    ("osName", "Linux"),
+    ("osVersion", ""),
+    ("deviceModel", ""),
+    ("browserName", "Chrome"),
+    ("browserVersion", "140.0.0.0"),
+    ("gpuVendor", "Mesa"),
+    ("gpuRenderer", "llvmpipe"),
+    ("screenWidthDip", "1280"),
+    ("screenHeightDip", "720"),
+    ("screenWidthPx", "1280"),
+    ("screenHeightPx", "720"),
+    ("dpi", "96"),
+    ("mobile", "0"),
+    ("memoryMB", "2048"),
+];
+
+pub fn register(l: &mut Linker<St>) -> anyhow::Result<()> {
+    // console
+    l.func_wrap("env", "emscripten_console_log", |_c: Caller<'_, St>, p: i32| {
+        eprintln!("[log ] {}", rstr(&_c, p as u32));
+    })?;
+    l.func_wrap("env", "emscripten_console_warn", |_c: Caller<'_, St>, p: i32| {
+        eprintln!("[warn] {}", rstr(&_c, p as u32));
+    })?;
+    l.func_wrap("env", "emscripten_console_error", |_c: Caller<'_, St>, p: i32| {
+        eprintln!("[err ] {}", rstr(&_c, p as u32));
+    })?;
+    l.func_wrap("env", "emscripten_outn", |c: Caller<'_, St>, p: i32, n: i32| {
+        let b = rbytes(&c, p as u32, n as u32);
+        let _ = std::io::stdout().write_all(&b);
+    })?;
+    l.func_wrap("env", "emscripten_errn", |c: Caller<'_, St>, p: i32, n: i32| {
+        let b = rbytes(&c, p as u32, n as u32);
+        let _ = std::io::stderr().write_all(&b);
+    })?;
+    l.func_wrap("env", "_emscripten_log_formatted", |c: Caller<'_, St>,
+     _flags: i32, fmt: i32| {
+        eprintln!("[log ] {}", rstr(&c, fmt as u32));
+    })?;
+
+    // The glue throws an "unwind" here; main() must stop, not continue.
+    l.func_wrap("env", "emscripten_exit_with_live_runtime", |mut c: Caller<'_, St>| -> wasmtime::Result<()> {
+        c.data_mut().exited = true;
+        Err(wasmtime::Error::msg("unwind"))
+    })?;
+
+    // failure
+    l.func_wrap("env", "__assert_fail", |c: Caller<'_, St>, cond: i32, file: i32,
+     line: i32, func: i32| -> wasmtime::Result<()> {
+        let msg = format!("Assertion failed: {}, at: {}:{} {}",
+            rstr(&c, cond as u32), rstr(&c, file as u32), line, rstr(&c, func as u32));
+        eprintln!("[assert] {msg}");
+        Err(wasmtime::Error::msg(msg))
+    })?;
+    l.func_wrap("env", "_abort_js", || -> wasmtime::Result<()> {
+        eprintln!("[abort]");
+        Err(wasmtime::Error::msg("abort"))
+    })?;
+
+    // clock / entropy / heap
+    l.func_wrap("env", "emscripten_get_now", || now_ms())?;
+    l.func_wrap("env", "emscripten_date_now", || {
+        let v = now_ms();
+        static DN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = DN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if n < 8 {
+            eprintln!("[clk ] date_now -> {v:.0}");
+        }
+        v
+    })?;
+    // wasi/emscripten convention: 0 on success
+    l.func_wrap("env", "random_get", |mut c: Caller<'_, St>, p: i32, n: i32| -> i32 {
+        let mut b = vec![0u8; n.max(0) as usize];
+        if getrandom(&mut b).is_err() {
+            return -1;
+        }
+        wbytes(&mut c, p as u32, &b);
+        0
+    })?;
+    l.func_wrap("env", "emscripten_get_heap_max", || i32::MIN)?;
+    l.func_wrap("env", "emscripten_resize_heap", |c: Caller<'_, St>, want: i32| -> i32 {
+        (want as u32 as u64 <= c.data().mem.data().len() as u64) as i32
+    })?;
+    l.func_wrap("env", "emscripten_num_logical_cores", || cores())?;
+    l.func_wrap("env", "get_hardware_concurrency", || cores())?;
+    l.func_wrap("env", "HaveOffsetConverter", || 0i32)?;
+    l.func_wrap("env", "RBX_setFullWasmStackTrace", || 0.0f64)?;
+    l.func_wrap("env", "RBX_restoreWasmStackTraceLimit", |_n: f64| {})?;
+
+    // EM_ASM
+    l.func_wrap("env", "emscripten_asm_const_int",
+        |mut c: Caller<'_, St>, key: i32, sig: i32, buf: i32| -> i32 {
+            asm_eval(&mut c, key as u32, sig as u32, buf as u32) as u32 as i32
+        })?;
+    l.func_wrap("env", "emscripten_asm_const_double",
+        |mut c: Caller<'_, St>, key: i32, sig: i32, buf: i32| -> f64 {
+            asm_eval(&mut c, key as u32, sig as u32, buf as u32)
+        })?;
+    l.func_wrap("env", "emscripten_asm_const_int_sync_on_main_thread",
+        |mut c: Caller<'_, St>, key: i32, sig: i32, buf: i32| -> i32 {
+            asm_eval(&mut c, key as u32, sig as u32, buf as u32) as u32 as i32
+        })?;
+    l.func_wrap("env", "emscripten_asm_const_async_on_main_thread",
+        |mut c: Caller<'_, St>, key: i32, sig: i32, buf: i32| {
+            asm_eval(&mut c, key as u32, sig as u32, buf as u32);
+        })?;
+
+    // canvas / device
+    l.func_wrap("env", "emscripten_get_canvas_element_size",
+        |mut c: Caller<'_, St>, _t: i32, w: i32, h: i32| -> i32 {
+            wbytes(&mut c, w as u32, &CANVAS_W.to_le_bytes());
+            wbytes(&mut c, h as u32, &CANVAS_H.to_le_bytes());
+            1
+        })?;
+    l.func_wrap("env", "emscripten_set_canvas_element_size", |_a: i32, _b: i32, _c: i32| 1i32)?;
+    l.func_wrap("env", "get_effective_device_pixel_ratio", || 1.0f64)?;
+    l.func_wrap("env", "emscripten_get_device_pixel_ratio", || 1.0f64)?;
+
+    // host info
+    l.func_wrap("env", "read_host_info_int", |c: Caller<'_, St>, k: i32| -> i32 {
+        let key = rstr(&c, k as u32);
+        match key.as_str() {
+            "cpuLogicalCount" => cores(),
+            "hostOS" => 5,
+            "mobile" => 0,
+            "screenWidthDip" | "screenWidthPx" => CANVAS_W as i32,
+            "screenHeightDip" | "screenHeightPx" => CANVAS_H as i32,
+            "dpi" => 96,
+            "memoryMB" => 2048,
+            _ => 0,
+        }
+    })?;
+    l.func_wrap("env", "read_host_info_string", |mut c: Caller<'_, St>, k: i32,
+     dst: i32, cap: i32| {
+        let key = rstr(&c, k as u32);
+        let v = INFO.iter().find(|(n, _)| *n == key).map(|(_, v)| *v).unwrap_or("");
+        wstr(&mut c, dst as u32, v, cap as u32);
+    })?;
+    l.func_wrap("env", "has_keyboard", || 1i32)?;
+    l.func_wrap("env", "has_mouse", || 1i32)?;
+    l.func_wrap("env", "is_mobile_browser", || 0i32)?;
+    l.func_wrap("env", "is_touch_mobile", || 0i32)?;
+    l.func_wrap("env", "is_touch_screen_device", || 0i32)?;
+    l.func_wrap("env", "js_web_client_page_visible", || 1i32)?;
+
+    // VFS
+    l.func_wrap("env", "rbx_fs_set_base_url", |mut c: Caller<'_, St>, p: i32| {
+        c.data_mut().base = rstr(&c, p as u32);
+        eprintln!("[fs  ] base url {}", c.data().base);
+    })?;
+    l.func_wrap("env", "rbx_fs_register_asset", |mut c: Caller<'_, St>, p: i32, size: i32| {
+        let path = rstr(&c, p as u32);
+        c.data_mut().assets.insert(path, size as u32);
+    })?;
+    l.func_wrap("env", "rbx_fs_add_file", |mut c: Caller<'_, St>, p: i32, data: i32,
+     len: i32| {
+        let path = rstr(&c, p as u32);
+        let b = rbytes(&c, data as u32, len as u32);
+        c.data_mut().files.insert(path, b);
+    })?;
+    l.func_wrap("env", "rbx_fs_preload_asset", |mut c: Caller<'_, St>, p: i32,
+     data: i32, len: i32| {
+        let path = rstr(&c, p as u32);
+        let b = rbytes(&c, data as u32, len as u32);
+        eprintln!("[fs  ] preload {path} ({} bytes)", b.len());
+        c.data_mut().preload.insert(path, b);
+    })?;
+    // civil time. The glue writes a 7-word breakdown (sec, min, hour, day,
+    // month, year-1900, yday); we run in UTC and report "UTC" for the zone.
+    l.func_wrap("env", "_gmtime_js", |mut c: Caller<'_, St>, secs: i64, p: i32| -> i32 {
+        let n = c.data_mut().gm_calls;
+        c.data_mut().gm_calls += 1;
+        let cn = CLK.with(|c| { let x = c.get(); c.set(x + 1); x });
+        if cn < 30 {
+            eprintln!("[clk ] gmtime in={secs}");
+        }
+        if n < 6 {
+            let (y, mo, d, h, mi, se) = civil_from(secs);
+            eprintln!("[gm  ] in={secs} -> {y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{se:02}");
+        }
+        civil_write(&mut c, secs as f64, p as u32) as i32
+    })?;
+    l.func_wrap("env", "_localtime_js", |mut c: Caller<'_, St>, secs: i64, p: i32| -> i32 {
+        civil_write(&mut c, secs as f64, p as u32) as i32
+    })?;
+    l.func_wrap("env", "_mktime_js", |mut c: Caller<'_, St>, p: i32| -> i64 {
+        let mut w = [0u32; 9];
+        {
+            let d = c.data().mem.data();
+            for (i, slot) in w.iter_mut().enumerate() {
+                *slot = unsafe { *(d[p as usize + i * 4].get() as *const u32) };
+            }
+        }
+        let (y, mo, d, h, mi, se) = (w[5] as i64 + 1900, w[4], w[3], w[2] as i64, w[1] as i64, w[0] as i64);
+        let out = days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + se;
+        let n = c.data().mk_calls;
+        c.data_mut().mk_calls += 1;
+        let cn = CLK.with(|c| { let x = c.get(); c.set(x + 1); x });
+        if cn < 30 {
+            eprintln!("[clk ] mktime");
+        }
+        if n < 8 {
+            eprintln!("[mkt ] {y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{se:02} -> {out} (wday={} yday={} isdst={})", w[6], w[7], w[8]);
+        }
+        out
+    })?;
+    l.func_wrap("env", "_tzset_js",
+        |mut c: Caller<'_, St>, a: i32, b: i32, d: i32, e: i32| {
+            let cn = CLK.with(|c| { let x = c.get(); c.set(x + 1); x });
+            if cn < 30 {
+                eprintln!("[clk ] tzset {a:x} {b:x} {d:x} {e:x}");
+            }
+            for p in [a, b, d, e] {
+                if p != 0 {
+                    wstr(&mut c, p as u32, "UTC", 8);
+                }
+            }
+        })?;
+
+    // main-thread pthread/TLS bring-up: the glue calls the module's own
+    // _emscripten_thread_init + tls_init here (lo), so everything after this
+    // point has a valid __pthread and TLS block.
+    l.func_wrap_async("env", "_emscripten_init_main_thread_js",
+        |mut c: Caller<'_, St>, (ptr,): (i32,)| Box::new(async move {
+            let inst = c.data().inst.ok_or_else(|| wasmtime::Error::msg("no instance"))?;
+            let ti = inst.get_typed_func::<(i32, i32, i32, i32, i32, i32), ()>(
+                &mut c, "_emscripten_thread_init")?;
+            ti.call_async(&mut c, (ptr, 1, 1, 1, 262144, 0)).await?;
+            let tls = inst.get_typed_func::<(), (i32,)>(&mut c, "_emscripten_tls_init")?;
+            tls.call_async(&mut c, ()).await?;
+            eprintln!("[wasm] main thread init, tls done");
+            Ok(())
+        }))?;
+
+    // wasi_snapshot_preview1: the module only needs wall clock, no environ, exit
+    l.func_wrap("wasi_snapshot_preview1", "clock_time_get",
+        |mut c: Caller<'_, St>, _id: i32, _prec: i64, out: i32| -> i32 {
+            let ns = (now_ms() * 1e6) as u64;
+            wbytes(&mut c, out as u32, &ns.to_le_bytes());
+            0
+        })?;
+    l.func_wrap("wasi_snapshot_preview1", "environ_sizes_get",
+        |mut c: Caller<'_, St>, n: i32, sz: i32| -> i32 {
+            wbytes(&mut c, n as u32, &0u32.to_le_bytes());
+            wbytes(&mut c, sz as u32, &0u32.to_le_bytes());
+            0
+        })?;
+    l.func_wrap("wasi_snapshot_preview1", "environ_get", |_a: i32, _b: i32| 0i32)?;
+    l.func_wrap("wasi_snapshot_preview1", "proc_exit", |c: Caller<'_, St>, code: i32| -> wasmtime::Result<()> {
+        eprintln!("[wasi] exit {code}");
+        Err(wasmtime::Error::msg("proc_exit"))
+    })?;
+    l.func_wrap("wasi_snapshot_preview1", "random_get",
+        |mut c: Caller<'_, St>, p: i32, n: i32| -> i32 {
+            let mut b = vec![0u8; n.max(0) as usize];
+            if getrandom(&mut b).is_err() {
+                return 29; // ENOSYS-ish
+            }
+            wbytes(&mut c, p as u32, &b);
+            0
+        })?;
+    Ok(())
+}
+
+fn civil_write(c: &mut Caller<'_, St>, secs: f64, p: u32) -> u32 {
+    let t = secs as i64;
+    let (y, mo, d, h, mi, se) = civil_from(t);
+    let wday = weekday(t);
+    let yday = day_of_year(y, mo, d);
+    // musl wasm32 struct tm order: sec, min, hour, mday, mon, year, wday, yday, isdst
+    let words = [se, mi, h, d as i64, mo as i64, y - 1900, wday, yday, 0];
+    for (i, w) in words.iter().enumerate() {
+        wbytes(c, p + i as u32 * 4, &(*w as u32).to_le_bytes());
+    }
+    0
+}
+
+// --- civil date maths (Howard Hinnant's algorithms, UTC only) ---
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = ((m as i64 + 9) % 12) as i64;
+    let doy = (153 * mp + 2) / 5 + d as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+fn civil_from(secs: i64) -> (i64, u32, u32, i64, i64, i64) {
+    let days = secs.div_euclid(86400);
+    let rem = secs.rem_euclid(86400);
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d, rem / 3600, (rem % 3600) / 60, rem % 60)
+}
+
+/// 0 = Sunday, matching struct tm.
+fn weekday(secs: i64) -> i64 {
+    (secs.div_euclid(86400) + 4).rem_euclid(7)
+}
+
+fn day_of_year(y: i64, m: u32, d: u32) -> i64 {
+    const CUM: [i64; 13] = [0, 0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+    let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    CUM[m as usize] + if leap && m > 2 { 1 } else { 0 } + d as i64 - 1
+}
