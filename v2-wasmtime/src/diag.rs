@@ -45,6 +45,7 @@ pub fn checkpoint() -> u64 {
 pub fn watch(secs: u64) {
     let mut prev = checkpoint();
     let mut stalls = 0u32;
+    let mut dumped = false;
     loop {
         std::thread::sleep(std::time::Duration::from_millis(1000));
         let now = EVENTS.load(Ordering::Relaxed);
@@ -52,14 +53,33 @@ pub fn watch(secs: u64) {
         let last = LAST.lock().unwrap().clone().unwrap_or_else(|| "<none>".into());
         eprintln!("[rate {ms}ms] events/s={} nested={} notify={} live_workers={} last={last}",
                   now - prev, NESTED.load(Ordering::Relaxed), NOTIFY.load(Ordering::Relaxed), LIVE.load(Ordering::Relaxed));
+        if !dumped {
+            if let Ok(at) = std::env::var("WC_DUMP_AT") {
+                if ms as u64 >= at.parse::<u64>().unwrap_or(u64::MAX) {
+                    dumped = true;
+                    let names: Vec<String> = crate::fibre::TRACE_T
+                        .lock().unwrap().iter().map(|(t, _, _, _)| t.clone()).collect();
+                    for t in names {
+                        let h = crate::trace::hist_of(&t);
+                        let tail: Vec<&str> = h.iter().rev().take(16).cloned().collect();
+                        eprintln!("[at  ] {t} last: {}", tail.join(" "));
+                    }
+                }
+            }
+        }
         if now == prev {
             stalls += 1;
             if stalls as u64 >= secs {
                 eprintln!("[stall] nothing moved for {stalls}s");
-                let h = crate::trace::hist();
-                let tail: Vec<&str> = h.iter().rev().take(70).cloned().collect();
-                eprintln!("[stall] before the gamepad spin (newest first): {}",
-                          tail.join(" "));
+                let names: Vec<String> = {
+                    let m = crate::fibre::TRACE_T.lock().unwrap();
+                    m.iter().map(|(t, _, _, _)| t.clone()).collect()
+                };
+                for t in names {
+                    let h = crate::trace::hist_of(&t);
+                    let tail: Vec<&str> = h.iter().rev().take(14).cloned().collect();
+                    eprintln!("[stall] {t} last: {}", tail.join(" "));
+                }
                 for (t, c, sp, w) in crate::fibre::TRACE_T.lock().unwrap().iter() {
                     eprintln!("[stall]   thread {t} cur={c:#x} sp={sp:#x} waiting={w}");
                 }

@@ -33,7 +33,7 @@ use wasmtime_internal_fiber::{Fiber, FiberStack, Suspend};
 use crate::state::St;
 
 const TASK_STACK: usize = 2 << 20;
-const FIBRE_STACK: usize = 512 << 10;
+const FIBRE_STACK: usize = 2 << 20;
 const FIRST_ID: u32 = 0x9000_0000;
 
 /// What the trampoline runs next: a fibre, the value handed back to the
@@ -343,8 +343,10 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
             let raw = c.data().rt.as_ref().expect("rt").store;
             let id = new_id(c.data_mut().rt.as_mut().expect("rt"));
             if std::env::var_os("WC_FX").is_some() {
-                eprintln!("[fbr ] create tok={tok:#x} base={base:#x} limit={limit:#x} entry={entry} n={}",
-                    c.data().rt.as_ref().unwrap().fibres.len());
+                let d = c.data();
+                let w = |o: usize| unsafe { *(d.mem.data()[arg as usize + o].get() as *const u32) };
+                eprintln!("[fbr ] {} create tok={tok:#x} entry={entry} arg={arg:#x} obj=[{:#x} {:#x} {:#x} {:#x} {:#x} {:#x}]",
+                    std::thread::current().name().unwrap_or("?"), w(0), w(4), w(8), w(12), w(16), w(20));
             }
             spawn(raw.get(), id, FIBRE_STACK, tok, entry, arg)?;
             c.data_mut().rt.as_mut().expect("rt").slots.insert(tok, cur);
@@ -371,7 +373,13 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
         })?;
 
     l.func_wrap("env", "fiber_destroy_js", |mut c: Caller<'_, St>, tok: u32| -> Result<()> {
+        if std::env::var_os("WC_FX").is_some() {
+            eprintln!("[fbr ] {} destroy {tok:#x}", std::thread::current().name().unwrap_or("?"));
+        }
         let Some(fid) = c.data_mut().rt.as_mut().expect("rt").slots.remove(&tok) else {
+            if std::env::var_os("WC_FX").is_some() {
+                eprintln!("[fbr ] {} destroy {tok:#x} MISS", std::thread::current().name().unwrap_or("?"));
+            }
             return Ok(());
         };
         // Resuming with 0 makes the dead context fall out of `fiber_entry`'s
@@ -472,6 +480,11 @@ fn waiting(store: &Store<St>, id: u32) -> bool {
         .as_ref()
         .map(|r| r.slots.values().any(|v| *v == id))
         .unwrap_or(false)
+}
+
+/// The store of this thread, for callbacks that only have a caller.
+pub fn store_ptr() -> *mut Store<St> {
+    STORE.with(|c| c.get())
 }
 
 pub fn is_live(store: &Store<St>, id: u32) -> bool {

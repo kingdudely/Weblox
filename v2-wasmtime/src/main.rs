@@ -144,6 +144,18 @@ fn run() -> Result<()> {
     let cookie = cookie()?;
     let engine = Engine::new(&config()?)?;
     let module = module(&engine)?;
+    if let Ok(path) = std::env::var("WC_MAP") {
+        // address -> wasm function, for translating a PC sampled with gdb
+        if let Some(m) = module.address_map() {
+            let mut out = String::new();
+            for (addr, f) in m {
+                if let Some(f) = f {
+                    out.push_str(&format!("{addr:x} {f}\n"));
+                }
+            }
+            let _ = std::fs::write(path, out);
+        }
+    }
     let mem = SharedMemory::new(&engine, MemoryType::shared(PAGES, PAGES))?;
 
     let mut linker = Linker::new(&engine);
@@ -154,6 +166,7 @@ fn run() -> Result<()> {
     imports::futex::register(&mut linker)?;
     fibre::register(&mut linker)?;
     imports::mailbox::register(&mut linker)?;
+    imports::gl::register(&mut linker)?;
     imports::stubs::register(&mut linker)?;
     imports::thread::register(&mut linker)?;
 
@@ -166,7 +179,7 @@ fn run() -> Result<()> {
     if trace::enabled() {
         std::thread::spawn(|| loop {
             std::thread::sleep(std::time::Duration::from_secs(2));
-            let h = trace::hist();
+            let h = trace::hist_of("main");
             let t: Vec<&str> = h.iter().rev().take(12).rev().cloned().collect();
             eprintln!("[t] {}", t.join(" "));
         });
@@ -181,7 +194,11 @@ fn run() -> Result<()> {
     // `emscripten_futex_wait` blocks in `memory.atomic.wait32` unless this
     // counter says there is an async runtime; the main thread has to take the
     // host path or the turn loop freezes.
-    unsafe { *(store.data().mem.data()[9515280].get() as *mut u32) = 1 }
+    // leave the async depth at 0: with a nonzero value `emscripten_futex_wait`
+    // spins internally instead of calling the host import
+    if std::env::var_os("WC_WASYNC").is_some() {
+        unsafe { *(store.data().mem.data()[9515280].get() as *mut u32) = 0 }
+    }
     if std::env::var_os("WC_SLOT0").is_some() {
         let t = inst.get_table(&mut *store, "__indirect_function_table").unwrap();
         if let Some(f) = t.get(&mut *store, std::env::var("WC_SLOT0").unwrap().parse::<u64>().unwrap()) {
@@ -418,9 +435,13 @@ async fn prepare(store: &mut Store<St>, inst: &Instance) -> Result<()> {
     let pre = inst.get_typed_func::<(i32, i32, i32), i32>(&mut *store, "rbx_fs_preload_asset")?;
     for rel in ["/models/InExperience/InExperience.rbxm",
                 "/models/InExperience/InExperience_checksum"] {
-        let disk = format!("{fs_base}{rel}");
+        // the mirror keeps the engine's own directory layout, so find the file
+        // by its tail rather than assuming where it sits
+        let disk = find_under(std::path::Path::new(&fs_base), rel.trim_start_matches('/'))
+            .unwrap_or_else(|| std::path::PathBuf::from(format!("{fs_base}{rel}")).to_string_lossy().into_owned());
         let Ok(body) = std::fs::read(&disk) else { continue };
         let p = import_bytes(store, inst, rel.as_bytes()).await?;
+        reg.call(&mut *store, (p as i32, body.len() as i32))?;
         let d = import_bytes(store, inst, &body).await?;
         let rc = pre.call(&mut *store, (p as i32, d as i32, body.len() as i32))?;
         eprintln!("[fs  ] preload {rel} ({} bytes) -> {rc}", body.len());
@@ -438,6 +459,21 @@ async fn prepare(store: &mut Store<St>, inst: &Instance) -> Result<()> {
 
     eprintln!("[prep] place={place} canvas={CANVAS_W}x{CANVAS_H} assets={} preload={} files={}", store.data().assets.len(), store.data().preload.len(), store.data().files.len());
     Ok(())
+}
+
+/// Find a file whose path ends with `tail`, recursively.
+fn find_under(root: &std::path::Path, tail: &str) -> Option<String> {
+    for e in std::fs::read_dir(root).ok()? {
+        let p = e.ok()?.path();
+        if p.is_dir() {
+            if let Some(f) = find_under(&p, tail) {
+                return Some(f);
+            }
+        } else if p.to_string_lossy().ends_with(tail) {
+            return Some(p.to_string_lossy().into_owned());
+        }
+    }
+    None
 }
 
 /// WebClientApp settings, as `WasmPlayer.js` fetches them, with the two keys

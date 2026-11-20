@@ -2,6 +2,7 @@ pub mod boot;
 pub mod embind;
 pub mod fetch;
 pub mod futex;
+pub mod gl;
 pub mod http;
 pub mod mailbox;
 pub mod stubs;

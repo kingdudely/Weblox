@@ -30,6 +30,10 @@ pub struct St {
     pub root: u32,
     pub in_drain: bool,
     pub mbx_task: bool,
+    /// this thread's mailbox word, once armed
+    pub mbx_ptr: Option<u32>,
+    /// this thread called `schedule_main_loop`
+    pub main_loop: bool,
     pub mk_calls: u32,
     pub turn_depth: u32,
     /// embind type id -> kind, from _embind_register_*
@@ -62,6 +66,8 @@ impl St {
             root: 0,
             in_drain: false,
             mbx_task: false,
+            mbx_ptr: None,
+            main_loop: false,
             mk_calls: 0,
             turn_depth: 0,
             types: Default::default(),

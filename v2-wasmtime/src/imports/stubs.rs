@@ -4,7 +4,13 @@ use anyhow::Result;
 use wasmtime::{Caller, Linker};
 
 pub fn register(l: &mut Linker<St>) -> Result<()> {
-    l.func_wrap("env", "schedule_main_loop", |_c: Caller<'_, St>, | { crate::trace::hit("schedule_main_loop");  })?;
+    l.func_wrap("env", "schedule_main_loop", |mut c: Caller<'_, St>, | {
+        crate::trace::hit("schedule_main_loop");
+        if std::env::var_os("WC_ML").is_some() {
+            eprintln!("[ml  ] schedule_main_loop on {}", std::thread::current().name().unwrap_or("?"));
+        }
+        c.data_mut().main_loop = true;
+    })?;
     l.func_wrap("env", "emscripten_request_pointerlock", |_c: Caller<'_, St>, a0: i32, a1: i32, | -> i32 { crate::trace::hit("emscripten_request_pointerlock"); 0 })?;
     l.func_wrap("env", "emscripten_exit_pointerlock", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("emscripten_exit_pointerlock"); 0 })?;
     l.func_wrap("env", "is_mouse_sourced_event", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("is_mouse_sourced_event"); 0 })?;
@@ -27,7 +33,7 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
     l.func_wrap("env", "emscripten_set_blur_callback_on_thread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, | -> i32 { crate::trace::hit("emscripten_set_blur_callback_on_thread"); 0 })?;
     l.func_wrap("env", "emscripten_set_focus_callback_on_thread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, | -> i32 { crate::trace::hit("emscripten_set_focus_callback_on_thread"); 0 })?;
     l.func_wrap("env", "js_linking_open_url", |_c: Caller<'_, St>, a0: i32, a1: i32, | -> i32 { crate::trace::hit("js_linking_open_url"); 0 })?;
-    l.func_wrap("env", "js_web_client_ms_since_navigation", |_c: Caller<'_, St>, | -> f64 { crate::trace::hit("js_web_client_ms_since_navigation"); 0.0 })?;
+    l.func_wrap("env", "js_web_client_ms_since_navigation", |_c: Caller<'_, St>, | -> f64 { crate::trace::hit("js_web_client_ms_since_navigation"); crate::imports::boot::perf_ms() })?;
     l.func_wrap("env", "js_web_client_wasm_cache_state", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("js_web_client_wasm_cache_state"); 0 })?;
     l.func_wrap("env", "sync_text_and_pos", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, | { crate::trace::hit("sync_text_and_pos");  })?;
     l.func_wrap("env", "setup_font", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: f32, a4: i32, a5: i32, | { crate::trace::hit("setup_font");  })?;
@@ -54,7 +60,37 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
     l.func_wrap("env", "js_keyboard_layout_status", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("js_keyboard_layout_status"); 0 })?;
     l.func_wrap("env", "js_copy_keyboard_layout_key", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, | { crate::trace::hit("js_copy_keyboard_layout_key");  })?;
     l.func_wrap("env", "exit", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("exit");  })?;
-    l.func_wrap("env", "emscripten_async_call", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, | { crate::trace::hit("emscripten_async_call");  })?;
+    l.func_wrap("env", "emscripten_async_call", |mut c: Caller<'_, St>, f: i32, arg: i32, delay: i32| {
+        crate::trace::hit("emscripten_async_call");
+        eprintln!("[asyn] hit");
+        let Some(inst) = c.data().inst else { return };
+        let Some(table) = inst.get_table(&mut c, "__indirect_function_table") else { return };
+        let Some(wasmtime::Ref::Func(Some(func))) = table.get(&mut c, f as u64) else { return };
+        // negative delay is the glue's "run at the next frame" case
+        let ms = if delay < 0 { 1 } else { delay.max(0) as u64 };
+        if std::env::var_os("WC_ASYNC").is_some() {
+            eprintln!("[asyn] {} call f={f} arg={arg} delay={delay}", std::thread::current().name().unwrap_or("?"));
+        }
+        let id = {
+            static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x7000_0000);
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        };
+        let task: crate::fibre::Task = Box::pin(async move {
+            let p = crate::fibre::store_ptr();
+            let st = unsafe { &mut *p };
+            crate::fibre::sleep(&mut *st, std::time::Duration::from_millis(ms)).await;
+            if std::env::var_os("WC_ASYNC").is_some() {
+                eprintln!("[asyn] {} fire f={f} arg={arg}", std::thread::current().name().unwrap_or("?"));
+            }
+            let mut out = [];
+            if let Err(e) = func.call(&mut *st, &[wasmtime::Val::I32(arg)], &mut out) {
+                if std::env::var_os("WC_FX").is_some() {
+                    eprintln!("[async] callback {f} threw: {e:#}");
+                }
+            }
+        });
+        let _ = crate::fibre::spawn_on_new_stack(&mut c, id, 256 * 1024, task);
+    })?;
     l.func_wrap("env", "rbx_wasm_rna_send_connection_close_js", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("rbx_wasm_rna_send_connection_close_js");  })?;
     l.func_wrap("env", "rbx_wasm_rna_write_stream_js", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, | { crate::trace::hit("rbx_wasm_rna_write_stream_js");  })?;
     l.func_wrap("env", "rbx_wasm_rna_open_stream_js", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("rbx_wasm_rna_open_stream_js");  })?;
@@ -64,119 +100,15 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
     l.func_wrap("env", "rbx_wasm_rna_shutdown_stream_read_js", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("rbx_wasm_rna_shutdown_stream_read_js");  })?;
     l.func_wrap("env", "rbx_wasm_rna_pause_stream_read_js", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("rbx_wasm_rna_pause_stream_read_js");  })?;
     l.func_wrap("env", "rbx_wasm_rna_send_datagram_js", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, | { crate::trace::hit("rbx_wasm_rna_send_datagram_js");  })?;
-    l.func_wrap("env", "rbx_wasm_rna_is_supported_js", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("rbx_wasm_rna_is_supported_js"); 1 })?;
+    l.func_wrap("env", "rbx_wasm_rna_is_supported_js", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("rbx_wasm_rna_is_supported_js"); eprintln!("[rna ] is_supported"); 1 })?;
     l.func_wrap("env", "rbx_wasm_rna_connect_js", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i32, a6: i32, a7: i32, a8: i32, a9: i32, a10: i32, a11: i32, a12: i32, a13: i32, | { crate::trace::hit("rbx_wasm_rna_connect_js");  })?;
     l.func_wrap("env", "rbx_wasm_rna_resume_stream_read_js", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("rbx_wasm_rna_resume_stream_read_js");  })?;
-    l.func_wrap("env", "glScissor", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, | { crate::trace::hit("glScissor");  })?;
-    l.func_wrap("env", "glInvalidateFramebuffer", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, | { crate::trace::hit("glInvalidateFramebuffer");  })?;
-    l.func_wrap("env", "glBindFramebuffer", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("glBindFramebuffer");  })?;
-    l.func_wrap("env", "glActiveTexture", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("glActiveTexture");  })?;
-    l.func_wrap("env", "glBindTexture", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("glBindTexture");  })?;
-    l.func_wrap("env", "glCopyTexSubImage2D", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i32, a6: i32, a7: i32, | { crate::trace::hit("glCopyTexSubImage2D");  })?;
-    l.func_wrap("env", "glBindBufferRange", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, | { crate::trace::hit("glBindBufferRange");  })?;
-    l.func_wrap("env", "glBlitFramebuffer", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i32, a6: i32, a7: i32, a8: i32, a9: i32, | { crate::trace::hit("glBlitFramebuffer");  })?;
-    l.func_wrap("env", "glDisable", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("glDisable");  })?;
-    l.func_wrap("env", "glEnable", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("glEnable");  })?;
-    l.func_wrap("env", "glCullFace", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("glCullFace");  })?;
-    l.func_wrap("env", "glPolygonOffset", |_c: Caller<'_, St>, a0: f32, a1: f32, | { crate::trace::hit("glPolygonOffset");  })?;
-    l.func_wrap("env", "glColorMask", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, | { crate::trace::hit("glColorMask");  })?;
-    l.func_wrap("env", "glBlendFunc", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("glBlendFunc");  })?;
-    l.func_wrap("env", "glBlendFuncSeparate", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, | { crate::trace::hit("glBlendFuncSeparate");  })?;
-    l.func_wrap("env", "glDepthFunc", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("glDepthFunc");  })?;
-    l.func_wrap("env", "glDepthMask", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("glDepthMask");  })?;
-    l.func_wrap("env", "glStencilFunc", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, | { crate::trace::hit("glStencilFunc");  })?;
-    l.func_wrap("env", "glStencilOp", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, | { crate::trace::hit("glStencilOp");  })?;
-    l.func_wrap("env", "glUseProgram", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("glUseProgram");  })?;
-    l.func_wrap("env", "glStencilMask", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("glStencilMask");  })?;
-    l.func_wrap("env", "glClearBufferfv", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, | { crate::trace::hit("glClearBufferfv");  })?;
-    l.func_wrap("env", "glClearBufferfi", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: f32, a3: i32, | { crate::trace::hit("glClearBufferfi");  })?;
-    l.func_wrap("env", "glClearBufferiv", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, | { crate::trace::hit("glClearBufferiv");  })?;
-    l.func_wrap("env", "glClearColor", |_c: Caller<'_, St>, a0: f32, a1: f32, a2: f32, a3: f32, | { crate::trace::hit("glClearColor");  })?;
-    l.func_wrap("env", "glClearDepthf", |_c: Caller<'_, St>, a0: f32, | { crate::trace::hit("glClearDepthf");  })?;
-    l.func_wrap("env", "glClearStencil", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("glClearStencil");  })?;
-    l.func_wrap("env", "glClear", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("glClear");  })?;
-    l.func_wrap("env", "glBindBufferBase", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, | { crate::trace::hit("glBindBufferBase");  })?;
-    l.func_wrap("env", "glViewport", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, | { crate::trace::hit("glViewport");  })?;
-    l.func_wrap("env", "glDrawBuffers", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("glDrawBuffers");  })?;
-    l.func_wrap("env", "glGenerateMipmap", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("glGenerateMipmap");  })?;
-    l.func_wrap("env", "glGenFramebuffers", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("glGenFramebuffers");  })?;
-    l.func_wrap("env", "glFramebufferTextureLayer", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, | { crate::trace::hit("glFramebufferTextureLayer");  })?;
-    l.func_wrap("env", "glCheckFramebufferStatus", |_c: Caller<'_, St>, a0: i32, | -> i32 { crate::trace::hit("glCheckFramebufferStatus"); 0 })?;
-    l.func_wrap("env", "glDeleteFramebuffers", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("glDeleteFramebuffers");  })?;
-    l.func_wrap("env", "glDeleteBuffers", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("glDeleteBuffers");  })?;
-    l.func_wrap("env", "glDeleteShader", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("glDeleteShader");  })?;
-    l.func_wrap("env", "glDeleteProgram", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("glDeleteProgram");  })?;
-    l.func_wrap("env", "glDeleteTextures", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("glDeleteTextures");  })?;
-    l.func_wrap("env", "glDeleteRenderbuffers", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("glDeleteRenderbuffers");  })?;
-    l.func_wrap("env", "glGetProgramiv", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, | { crate::trace::hit("glGetProgramiv");  })?;
-    l.func_wrap("env", "glBindBuffer", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("glBindBuffer");  })?;
-    l.func_wrap("env", "glMapBufferRange", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, | -> i32 { crate::trace::hit("glMapBufferRange"); 0 })?;
-    l.func_wrap("env", "glGetError", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("glGetError"); 0 })?;
-    l.func_wrap("env", "glGetString", |_c: Caller<'_, St>, a0: i32, | -> i32 { crate::trace::hit("glGetString"); 0 })?;
-    l.func_wrap("env", "glGetIntegerv", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("glGetIntegerv");  })?;
-    l.func_wrap("env", "glGenVertexArrays", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("glGenVertexArrays");  })?;
-    l.func_wrap("env", "glBindVertexArray", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("glBindVertexArray");  })?;
-    l.func_wrap("env", "glDeleteVertexArrays", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("glDeleteVertexArrays");  })?;
-    l.func_wrap("env", "glUnmapBuffer", |_c: Caller<'_, St>, a0: i32, | -> i32 { crate::trace::hit("glUnmapBuffer"); 0 })?;
-    l.func_wrap("env", "glBufferSubData", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, | { crate::trace::hit("glBufferSubData");  })?;
-    l.func_wrap("env", "glGenBuffers", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("glGenBuffers");  })?;
-    l.func_wrap("env", "glBufferData", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, | { crate::trace::hit("glBufferData");  })?;
-    l.func_wrap("env", "glClientWaitSync", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i64, | -> i32 { crate::trace::hit("glClientWaitSync"); 0 })?;
-    l.func_wrap("env", "glDeleteSync", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("glDeleteSync");  })?;
-    l.func_wrap("env", "glFenceSync", |_c: Caller<'_, St>, a0: i32, a1: i32, | -> i32 { crate::trace::hit("glFenceSync"); 0 })?;
-    l.func_wrap("env", "glFramebufferTexture2D", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, | { crate::trace::hit("glFramebufferTexture2D");  })?;
-    l.func_wrap("env", "glFramebufferRenderbuffer", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, | { crate::trace::hit("glFramebufferRenderbuffer");  })?;
-    l.func_wrap("env", "glEnableVertexAttribArray", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("glEnableVertexAttribArray");  })?;
-    l.func_wrap("env", "glVertexAttribPointer", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i32, | { crate::trace::hit("glVertexAttribPointer");  })?;
-    l.func_wrap("env", "glDisableVertexAttribArray", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("glDisableVertexAttribArray");  })?;
-    l.func_wrap("env", "glDrawElements", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, | { crate::trace::hit("glDrawElements");  })?;
-    l.func_wrap("env", "glDrawArrays", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, | { crate::trace::hit("glDrawArrays");  })?;
-    l.func_wrap("env", "glDrawElementsInstanced", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, | { crate::trace::hit("glDrawElementsInstanced");  })?;
-    l.func_wrap("env", "glDrawArraysInstanced", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, | { crate::trace::hit("glDrawArraysInstanced");  })?;
-    l.func_wrap("env", "glGetUniformLocation", |_c: Caller<'_, St>, a0: i32, a1: i32, | -> i32 { crate::trace::hit("glGetUniformLocation"); 0 })?;
-    l.func_wrap("env", "glCreateProgram", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("glCreateProgram"); 0 })?;
-    l.func_wrap("env", "glAttachShader", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("glAttachShader");  })?;
-    l.func_wrap("env", "glBindAttribLocation", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, | { crate::trace::hit("glBindAttribLocation");  })?;
-    l.func_wrap("env", "glLinkProgram", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("glLinkProgram");  })?;
-    l.func_wrap("env", "glGetProgramInfoLog", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, | { crate::trace::hit("glGetProgramInfoLog");  })?;
-    l.func_wrap("env", "glUniform1i", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("glUniform1i");  })?;
-    l.func_wrap("env", "glGetUniformBlockIndex", |_c: Caller<'_, St>, a0: i32, a1: i32, | -> i32 { crate::trace::hit("glGetUniformBlockIndex"); 0 })?;
-    l.func_wrap("env", "glUniformBlockBinding", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, | { crate::trace::hit("glUniformBlockBinding");  })?;
-    l.func_wrap("env", "glGetActiveUniformBlockiv", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, | { crate::trace::hit("glGetActiveUniformBlockiv");  })?;
-    l.func_wrap("env", "glGetActiveUniform", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i32, a6: i32, | { crate::trace::hit("glGetActiveUniform");  })?;
-    l.func_wrap("env", "glCreateShader", |_c: Caller<'_, St>, a0: i32, | -> i32 { crate::trace::hit("glCreateShader"); 0 })?;
-    l.func_wrap("env", "glShaderSource", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, | { crate::trace::hit("glShaderSource");  })?;
-    l.func_wrap("env", "glCompileShader", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("glCompileShader");  })?;
-    l.func_wrap("env", "glGetShaderiv", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, | { crate::trace::hit("glGetShaderiv");  })?;
-    l.func_wrap("env", "glGetShaderInfoLog", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, | { crate::trace::hit("glGetShaderInfoLog");  })?;
-    l.func_wrap("env", "glGenTextures", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("glGenTextures");  })?;
-    l.func_wrap("env", "glTexStorage3D", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i32, | { crate::trace::hit("glTexStorage3D");  })?;
-    l.func_wrap("env", "glTexStorage2D", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, | { crate::trace::hit("glTexStorage2D");  })?;
-    l.func_wrap("env", "glCompressedTexImage3D", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i32, a6: i32, a7: i32, a8: i32, | { crate::trace::hit("glCompressedTexImage3D");  })?;
-    l.func_wrap("env", "glCompressedTexImage2D", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i32, a6: i32, a7: i32, | { crate::trace::hit("glCompressedTexImage2D");  })?;
-    l.func_wrap("env", "glTexImage3D", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i32, a6: i32, a7: i32, a8: i32, a9: i32, | { crate::trace::hit("glTexImage3D");  })?;
-    l.func_wrap("env", "glTexImage2D", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i32, a6: i32, a7: i32, a8: i32, | { crate::trace::hit("glTexImage2D");  })?;
-    l.func_wrap("env", "glTexParameteri", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, | { crate::trace::hit("glTexParameteri");  })?;
-    l.func_wrap("env", "glPixelStorei", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("glPixelStorei");  })?;
-    l.func_wrap("env", "glReadPixels", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i32, a6: i32, | { crate::trace::hit("glReadPixels");  })?;
-    l.func_wrap("env", "glGenRenderbuffers", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("glGenRenderbuffers");  })?;
-    l.func_wrap("env", "glBindRenderbuffer", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("glBindRenderbuffer");  })?;
-    l.func_wrap("env", "glRenderbufferStorageMultisample", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, | { crate::trace::hit("glRenderbufferStorageMultisample");  })?;
-    l.func_wrap("env", "glRenderbufferStorage", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, | { crate::trace::hit("glRenderbufferStorage");  })?;
-    l.func_wrap("env", "glCompressedTexSubImage3D", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i32, a6: i32, a7: i32, a8: i32, a9: i32, a10: i32, | { crate::trace::hit("glCompressedTexSubImage3D");  })?;
-    l.func_wrap("env", "glCompressedTexSubImage2D", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i32, a6: i32, a7: i32, a8: i32, | { crate::trace::hit("glCompressedTexSubImage2D");  })?;
-    l.func_wrap("env", "glTexSubImage3D", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i32, a6: i32, a7: i32, a8: i32, a9: i32, a10: i32, | { crate::trace::hit("glTexSubImage3D");  })?;
-    l.func_wrap("env", "glTexSubImage2D", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i32, a6: i32, a7: i32, a8: i32, | { crate::trace::hit("glTexSubImage2D");  })?;
-    l.func_wrap("env", "glTexParameterfv", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, | { crate::trace::hit("glTexParameterfv");  })?;
-    l.func_wrap("env", "glTexParameterf", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: f32, | { crate::trace::hit("glTexParameterf");  })?;
-    l.func_wrap("env", "glClipControlEXT", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("glClipControlEXT");  })?;
-    l.func_wrap("env", "applyPendingCanvasResize", |_c: Caller<'_, St>, a0: i32, a1: i32, | -> i32 { crate::trace::hit("applyPendingCanvasResize"); 0 })?;
-    l.func_wrap("env", "emscripten_webgl_make_context_current", |_c: Caller<'_, St>, a0: i32, | -> i32 { crate::trace::hit("emscripten_webgl_make_context_current"); 0 })?;
-    l.func_wrap("env", "emscripten_webgl_create_context", |_c: Caller<'_, St>, a0: i32, a1: i32, | -> i32 { crate::trace::hit("emscripten_webgl_create_context"); 0 })?;
-    l.func_wrap("env", "emscripten_webgl_destroy_context", |_c: Caller<'_, St>, a0: i32, | -> i32 { crate::trace::hit("emscripten_webgl_destroy_context"); 0 })?;
-    l.func_wrap("env", "emscripten_webgl_get_context_attributes", |_c: Caller<'_, St>, a0: i32, a1: i32, | -> i32 { crate::trace::hit("emscripten_webgl_get_context_attributes"); 0 })?;
+    l.func_wrap("env", "wgpuDeviceHasFeature", |_c: Caller<'_, St>, _d: i32, f: i32| -> i32 {
+        crate::trace::hit("wgpuDeviceHasFeature");
+        matches!(f, 4 | 5) as i32
+    })?;
     l.func_wrap("env", "wgpuQueueSubmit", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, | { crate::trace::hit("wgpuQueueSubmit");  })?;
-    l.func_wrap("env", "emscripten_webgpu_get_device", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("emscripten_webgpu_get_device"); 0 })?;
+    l.func_wrap("env", "emscripten_webgpu_get_device", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("emscripten_webgpu_get_device"); 0x00c0_0001 })?;
     l.func_wrap("env", "wgpuDeviceCreateBindGroupLayout", |_c: Caller<'_, St>, a0: i32, a1: i32, | -> i32 { crate::trace::hit("wgpuDeviceCreateBindGroupLayout"); 0 })?;
     l.func_wrap("env", "wgpuDeviceCreatePipelineLayout", |_c: Caller<'_, St>, a0: i32, a1: i32, | -> i32 { crate::trace::hit("wgpuDeviceCreatePipelineLayout"); 0 })?;
     l.func_wrap("env", "wgpuDeviceCreateRenderPipeline", |_c: Caller<'_, St>, a0: i32, a1: i32, | -> i32 { crate::trace::hit("wgpuDeviceCreateRenderPipeline"); 0 })?;
@@ -214,8 +146,7 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
     l.func_wrap("env", "presentBrowserFrame", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, | { crate::trace::hit("presentBrowserFrame");  })?;
     l.func_wrap("env", "wgpuCommandEncoderCopyBufferToBuffer", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i64, a3: i32, a4: i64, a5: i64, | { crate::trace::hit("wgpuCommandEncoderCopyBufferToBuffer");  })?;
     l.func_wrap("env", "wgpuDeviceCreateCommandEncoder", |_c: Caller<'_, St>, a0: i32, a1: i32, | -> i32 { crate::trace::hit("wgpuDeviceCreateCommandEncoder"); 0 })?;
-    l.func_wrap("env", "wgpuDeviceHasFeature", |_c: Caller<'_, St>, a0: i32, a1: i32, | -> i32 { crate::trace::hit("wgpuDeviceHasFeature"); 0 })?;
-    l.func_wrap("env", "wgpuInstanceCreateSurface", |_c: Caller<'_, St>, a0: i32, a1: i32, | -> i32 { crate::trace::hit("wgpuInstanceCreateSurface"); 0 })?;
+        l.func_wrap("env", "wgpuInstanceCreateSurface", |_c: Caller<'_, St>, a0: i32, a1: i32, | -> i32 { crate::trace::hit("wgpuInstanceCreateSurface"); 0 })?;
     l.func_wrap("env", "wgpuSurfaceConfigure", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("wgpuSurfaceConfigure");  })?;
     l.func_wrap("env", "applyPendingBrowserCanvasResize", |_c: Caller<'_, St>, | { crate::trace::hit("applyPendingBrowserCanvasResize");  })?;
     l.func_wrap("env", "wgpuCommandEncoderResolveQuerySet", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i64, | { crate::trace::hit("wgpuCommandEncoderResolveQuerySet");  })?;
@@ -227,7 +158,7 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
     l.func_wrap("env", "wgpuTextureGetDepthOrArrayLayers", |_c: Caller<'_, St>, a0: i32, | -> i32 { crate::trace::hit("wgpuTextureGetDepthOrArrayLayers"); 0 })?;
     l.func_wrap("env", "wgpuTextureGetDimension", |_c: Caller<'_, St>, a0: i32, | -> i32 { crate::trace::hit("wgpuTextureGetDimension"); 0 })?;
     l.func_wrap("env", "wgpuTextureGetUsage", |_c: Caller<'_, St>, a0: i32, | -> i64 { crate::trace::hit("wgpuTextureGetUsage"); 0 })?;
-    l.func_wrap("env", "emwgpuGetPreferredFormat", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("emwgpuGetPreferredFormat"); 0 })?;
+    l.func_wrap("env", "emwgpuGetPreferredFormat", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("emwgpuGetPreferredFormat"); 0x1b })?;
     l.func_wrap("env", "emwgpuDeviceCreateBuffer", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, | -> i32 { crate::trace::hit("emwgpuDeviceCreateBuffer"); 0 })?;
     l.func_wrap("env", "emwgpuDelete", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("emwgpuDelete");  })?;
     l.func_wrap("env", "emwgpuDeviceDestroy", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("emwgpuDeviceDestroy");  })?;
@@ -273,7 +204,14 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
     l.func_wrap("env", "__syscall_getuid32", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("__syscall_getuid32"); 0 })?;
     l.func_wrap("env", "_msync_js", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i64, | -> i32 { crate::trace::hit("_msync_js"); 0 })?;
     l.func_wrap("wasi_snapshot_preview1", "fd_pread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i64, a4: i32, | -> i32 { crate::trace::hit("fd_pread"); 0 })?;
-    l.func_wrap("env", "_emscripten_receive_on_main_thread_js", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i32, a6: i32, | -> f64 { crate::trace::hit("_emscripten_receive_on_main_thread_js"); 0.0 })?;
+    l.func_wrap("env", "_emscripten_receive_on_main_thread_js", |c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i32, a6: i32, | -> f64 {
+        crate::trace::hit("recv_mt");
+        if std::env::var_os("WC_MBX").is_some() {
+            eprintln!("[mbx ] receive fn={a0:#x} name={:?} caller={a2:#x} len={a3} done={a5:#x}",
+                      crate::state::rstr(&c, a1 as u32));
+        }
+        0.0
+    })?;
     l.func_wrap("env", "emscripten_check_blocking_allowed", |_c: Caller<'_, St>, | { crate::trace::hit("emscripten_check_blocking_allowed");  })?;
     l.func_wrap("env", "_emscripten_thread_cleanup", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("_emscripten_thread_cleanup");  })?;
     l.func_wrap("env", "emscripten_unwind_to_js_event_loop", |_c: Caller<'_, St>, | { crate::trace::hit("emscripten_unwind_to_js_event_loop");  })?;

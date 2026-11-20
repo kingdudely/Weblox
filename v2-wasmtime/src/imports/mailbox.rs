@@ -60,18 +60,28 @@ fn disarm(target: u32) {
 }
 
 
-/// The glue's `runAndCheckMailbox`: re-arm, then drain. Called at the main
-/// thread's safe points.
-pub async fn drop_in<T: AsContextMut<Data = St>>(cx: &mut T) -> bool {
-    let Some(main) = cx.as_context().data().main_ptr else {
+/// The glue's `runAndCheckMailbox`: re-arm, then drain. Called at this
+/// thread's safe points (the turn loop on the main thread, a wait on a
+/// worker).
+pub async fn pump_mailbox<T: AsContextMut<Data = St>>(cx: &mut T) -> bool {
+    let d = cx.as_context().data();
+    let Some(ptr) = (if d.is_main { d.main_ptr } else { d.mbx_ptr }) else {
         return false;
     };
-    if !take_ring(main) {
+    if !take_ring(ptr) {
         return false;
     }
-    set_ready(cx, main);
+    set_ready(cx, ptr);
     check(cx).await;
     true
+}
+
+/// `pump_mailbox` for the main thread only.
+pub async fn drop_in<T: AsContextMut<Data = St>>(cx: &mut T) -> bool {
+    if !cx.as_context().data().is_main {
+        return false;
+    }
+    pump_mailbox(cx).await
 }
 
 fn set_ready<T: AsContextMut<Data = St>>(cx: &mut T, ptr: u32) {
@@ -141,27 +151,19 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
                 return;
             }
 
-            if std::env::var_os("WC_MBX").is_some() {
-                eprintln!("[mbx ] worker await {ptr:#x}");
-            }
-            loop {
-                if take_ring(ptr) {
-                    if std::env::var_os("WC_MBX").is_some() {
-                        eprintln!("[mbx ] worker ring {ptr:#x}");
-                    }
-                    break;
-                }
-                crate::fibre::block_on(crate::fibre::sleep(
-                    &mut c, std::time::Duration::from_millis(1)));
-            }
+            // as on the page: arm and return; the ring is drained at this
+            // thread's next safe point (`pump_mailbox`)
+            c.data_mut().mbx_ptr = Some(ptr);
             set_ready(&mut c, ptr);
-            crate::fibre::block_on(check(&mut c));
         })?;
 
     l.func_wrap("env", "_emscripten_notify_mailbox_postmessage",
         |target: i32, self_thread: i32| {
             crate::trace::hit("mbx_notify");
             crate::diag::notify();
+            if std::env::var_os("WC_MBX").is_some() {
+                eprintln!("[mbx ] notify {target:#x} from {self_thread:#x}");
+            }
             add_ring(target as u32);
             let _ = self_thread;
         })?;

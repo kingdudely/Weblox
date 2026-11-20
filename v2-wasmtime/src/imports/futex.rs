@@ -13,6 +13,9 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
     l.func_wrap("env", "__asyncjs__rbxFutexWaitMainJspi",
         |mut c: Caller<'_, St>, addr: i32, expected: i32, timeout: f64| -> wasmtime::Result<i32> {
             crate::trace::hit("futex_wait");
+            if std::env::var_os("WC_FUTEX").is_some() {
+                eprintln!("[futc] {} enter", std::thread::current().name().unwrap_or("?"));
+            }
             let mem = c.data().mem.clone();
             let addr = addr as u32;
             let expected = expected as u32;
@@ -25,7 +28,8 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
                 None
             };
             if std::env::var_os("WC_FUTEX").is_some() {
-                eprintln!("[fut ] addr={addr:#x} expect={expected:#x} val={:#x} timeout={timeout}", word(&mem, addr));
+                eprintln!("[fut ] {} addr={addr:#x} expect={expected:#x} val={:#x} timeout={timeout}",
+                          std::thread::current().name().unwrap_or("?"), word(&mem, addr));
             }
             // An unbounded wait still gets a short deadline: `Atomics.waitAsync`
             // wakes on a notify we cannot observe, so spurious wake-ups are the
@@ -60,7 +64,7 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
                     }
                 }
                 // drain anything the mailbox is holding, then park this fibre
-                let _ = crate::fibre::block_on(crate::imports::mailbox::drop_in(&mut c));
+                let _ = crate::fibre::block_on(crate::imports::mailbox::pump_mailbox(&mut c));
                 crate::fibre::block_on(crate::fibre::sleep(&mut c, std::time::Duration::from_millis(1)));
             }
         })?;

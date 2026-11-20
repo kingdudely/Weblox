@@ -30,9 +30,10 @@ pub fn start_clock() {
     });
 }
 
-fn perf_ms() -> f64 {
+pub fn perf_ms() -> f64 {
     FRAME_MS.load(std::sync::atomic::Ordering::Relaxed) as f64
 }
+
 
 fn now_ms() -> f64 {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -104,6 +105,8 @@ fn asm_eval(c: &mut Caller<'_, St>, key: u32, sigp: u32, buf: u32) -> f64 {
             eprintln!("[asm] cors: non-allowlisted header {:?}", rstr(c, a(0)));
             0.0
         }
+        9118661 => 1.0,                            // preinitializedWebGPUDevice
+        9118945 => 0.0,                            // device lost
         9119603 => 0.0,                            // wasmOffsetConverter
         9119660 => 0.0,                            // install getRandomValue
         9120436 => {                               // getRandomValue
@@ -118,7 +121,7 @@ fn asm_eval(c: &mut Caller<'_, St>, key: u32, sigp: u32, buf: u32) -> f64 {
         9115094 | 9115715 | 9116344 | 9117920 => 0.0,
         9116868 | 9115514 => 48000.0,              // sample rate
         9115926 | 9117251 | 9117293 | 9117579 | 9117632 | 9118195
-        | 9114286 | 9118945 | 9118661 | 9118718 => 0.0,
+        | 9114286 | 9118718 => 0.0,
         _ => {
             eprintln!("[asm] unknown key {key} sig={sig:?}");
             0.0

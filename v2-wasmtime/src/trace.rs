@@ -4,7 +4,8 @@ use std::cell::RefCell;
 
 const N: usize = 48;
 
-static HIST: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+static HIST: std::sync::Mutex<Option<std::collections::HashMap<String, Vec<&'static str>>>> =
+    std::sync::Mutex::new(None);
 
 thread_local! {
     static RING: RefCell<[(&'static str, u32); N]> = const { RefCell::new([("", 0); N]) };
@@ -17,14 +18,15 @@ pub fn enabled() -> bool {
 
 pub fn hit(name: &'static str) {
     if enabled() {
-        let mut h = HIST.lock().unwrap();
-        if h.last() == Some(&name) {
-            return;
+        let mut g = HIST.lock().unwrap();
+        let m = g.get_or_insert_with(std::collections::HashMap::new);
+        let h = m.entry(std::thread::current().name().unwrap_or("?").to_string()).or_default();
+        if h.last() != Some(&name) {
+            if h.len() == 40 {
+                h.remove(0);
+            }
+            h.push(name);
         }
-        if h.len() == 4096 {
-            h.remove(0);
-        }
-        h.push(name);
     }
     let s = SEQ.with(|c| {
         let v = c.get() + 1;
@@ -34,8 +36,13 @@ pub fn hit(name: &'static str) {
     RING.with(|r| r.borrow_mut()[(s as usize) % N] = (name, s));
 }
 
-pub fn hist() -> Vec<&'static str> {
-    HIST.lock().unwrap().clone()
+pub fn hist_of(thread: &str) -> Vec<&'static str> {
+    HIST.lock()
+        .unwrap()
+        .as_ref()
+        .and_then(|m| m.get(thread))
+        .cloned()
+        .unwrap_or_default()
 }
 
 pub fn dump() {
