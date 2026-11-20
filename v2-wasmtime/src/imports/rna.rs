@@ -36,7 +36,13 @@ enum Ev {
     CloseComplete(u32),
 }
 
-static Q: Mutex<Option<HashMap<u32, Vec<Ev>>>> = Mutex::new(None);
+/// A thread of its own that runs the engine's completions. On the page these
+/// run from the worker's JS event loop, i.e. from outside whatever the wasm
+/// thread is blocked in; here the same thing is a host thread with its own
+/// store and a wasm thread identity.
+static Q: OnceLock<std::sync::mpsc::Sender<Ev>> = OnceLock::new();
+static ENGINE: Mutex<Option<(wasmtime::Engine, wasmtime::Module, wasmtime::SharedMemory)>> =
+    Mutex::new(None);
 static RINGS: Mutex<Option<HashMap<u32, Ring>>> = Mutex::new(None);
 static OWNER: Mutex<Option<HashMap<u32, u32>>> = Mutex::new(None);
 static TX: Mutex<Option<HashMap<(u32, u32), std::sync::Arc<tokio::sync::Mutex<wtransport::SendStream>>>>> =
@@ -88,15 +94,9 @@ fn rt() -> &'static tokio::runtime::Runtime {
 const MAIN_Q: u32 = u32::MAX;
 static MAIN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-fn push(owner: u32, ev: Ev) {
-    Q.lock().unwrap().get_or_insert_with(HashMap::new).entry(owner).or_default().push(ev);
-    let owner = if owner == MAIN_Q { MAIN.load(std::sync::atomic::Ordering::Relaxed) } else { owner };
-    if owner == 0 {
-        return;
-    }
-    if let Some(mem) = MEM.get() {
-        // a lost wake is fine: the owner also pumps at its next wait point
-        let _ = mem.atomic_notify(owner as u64, 1);
+fn push(_owner: u32, ev: Ev) {
+    if let Some(tx) = Q.get() {
+        let _ = tx.send(ev);
     }
 }
 
@@ -182,9 +182,6 @@ fn connect(id: u32, url: String, owner: u32, ring: Ring) {
                         Ok(Some(n)) => {
                             eprintln!("[rna ] recv sid={sid} n={n}");
                             if let Some((slot, n)) = ring_write(id, &buf[..n]) {
-                                // one slot at a time: wait for the engine to
-                                // consume it before reading more
-                                PAUSED.lock().unwrap().get_or_insert_with(Default::default).insert((id, sid));
                                 push(own, Ev::Slot(id, 0, sid, (slot << 24) as i32 | n as i32));
                             } else {
                                 PAUSED.lock().unwrap().get_or_insert_with(Default::default).insert((id, sid));
@@ -278,71 +275,110 @@ fn stream(id: u32, sid: u32) -> Option<std::sync::Arc<tokio::sync::Mutex<wtransp
     TX.lock().unwrap().as_ref()?.get(&(id, sid)).cloned()
 }
 
-/// Deliver this thread's completions, oldest first.
-pub fn pump<T: wasmtime::AsContextMut<Data = St>>(cx: &mut T) {
-    let d = cx.as_context().data();
-    let Some(me) = (if d.is_main { d.main_ptr } else { d.mbx_ptr }) else { return };
-    MAIN.store(me, std::sync::atomic::Ordering::Relaxed);
-    if cx.as_context().data().in_rna {
-        return;
+/// A thread of its own runs the engine's completions. On the page they run from
+/// the worker's JavaScript event loop - i.e. from outside whatever the wasm
+/// thread is blocked in - and a wasm thread blocked in `memory.atomic.wait`
+/// cannot run them here either. This thread owns a store over the same memory.
+fn rna_tx() -> Option<&'static std::sync::mpsc::Sender<Ev>> {
+    if let Some(t) = Q.get() {
+        return Some(t);
     }
-    let evs = Q.lock().unwrap().get_or_insert_with(HashMap::new).remove(&me).unwrap_or_default();
-    if evs.is_empty() {
-        return;
-    }
-    let Some(inst) = cx.as_context().data().inst else { return };
-    cx.as_context_mut().data_mut().in_rna = true;
-    for ev in evs {
-        let (name, mut args): (&str, Vec<i32>) = match ev {
-            Ev::Connected(id, max) => ("rbx_wasm_rna_on_connect_success", vec![id as i32, max]),
-            Ev::ConnectError(id) => ("rbx_wasm_rna_on_connect_error", vec![id as i32]),
-            Ev::Accepted(id, sid) => ("rbx_wasm_rna_on_stream_accepted", vec![id as i32, sid]),
-            Ev::Slot(id, kind, sid, packed) => (
-                "rbx_wasm_rna_on_receive_ring_slot",
-                vec![id as i32, kind as i32, sid, packed >> 24, packed & 0xff_ffff],
-            ),
-            Ev::Fin(id, sid) => ("rbx_wasm_rna_on_stream_fin", vec![id as i32, sid]),
-            Ev::StreamError(id, sid, code) =>
-                ("rbx_wasm_rna_on_stream_error", vec![id as i32, sid, code]),
-            Ev::WriteOk(id, sid, n) =>
-                ("rbx_wasm_rna_on_stream_write_success", vec![id as i32, sid, n]),
-            Ev::WriteErr(id, sid) => ("rbx_wasm_rna_on_stream_write_error", vec![id as i32, sid]),
-            Ev::Closed(id, code, cls, has) => (
-                "rbx_wasm_rna_on_connection_closed",
-                vec![id as i32, code as i32, cls as i32, has],
-            ),
-            Ev::CloseComplete(id) => ("rbx_wasm_rna_on_close_complete", vec![id as i32]),
-        };
-        // embind calls the invoker as (fn id, ...args)
-        let Some(binding) = crate::imports::embind::binds().lock().unwrap().get(name).cloned() else {
-            eprintln!("[rna ] no binding {name}");
-            continue;
-        };
-        let Some(table) = inst.get_table(&mut *cx, "__indirect_function_table") else { continue };
-        let Some(wasmtime::Ref::Func(Some(f))) = table.get(&mut *cx, binding.0 as u64) else {
-            continue;
-        };
-        eprintln!("[rna ] -> {name} {args:?}");
-        let mut vals = vec![wasmtime::Val::I32(binding.1 as i32)];
-        for a in args.drain(..) {
-            vals.push(wasmtime::Val::I32(a));
+    let (engine, module, mem) = ENGINE.lock().unwrap().clone()?;
+    let (tx, rx) = std::sync::mpsc::channel::<Ev>();
+    std::thread::Builder::new().name("rbx-rna".into()).spawn(move || {
+        if let Err(e) = run_thread(engine, module, mem, rx) {
+            eprintln!("[rna ] thread died: {e:#}");
         }
-        // run each completion on its own fibre: the engine's handlers wait on
-        // futexes and must not do that on the scheduler's own stack
-        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x7100_0000);
-        let id = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let task: crate::fibre::Task = Box::pin(async move {
-            let p = crate::fibre::store_ptr();
-            let st = unsafe { &mut *p };
-            match f.call(&mut *st, &vals, &mut []) {
-                Ok(()) => {}
-                Err(e) => eprintln!("[rna ] {name} threw: {e:#}"),
-            }
-        });
-        let _ = crate::fibre::spawn_on_new_stack(cx, id, 256 * 1024, task);
-    }
-    cx.as_context_mut().data_mut().in_rna = false;
+    }).ok()?;
+    Q.set(tx).ok()?;
+    Q.get()
 }
+
+fn run_thread(
+    engine: wasmtime::Engine,
+    module: wasmtime::Module,
+    mem: wasmtime::SharedMemory,
+    rx: std::sync::mpsc::Receiver<Ev>,
+) -> Result<()> {
+    use wasmtime::{Extern, Linker, Store};
+    let mut store = Box::new(Store::new(&engine, St::new(mem.clone())));
+    let p = crate::fibre::PStore(&mut *store as *mut Store<St>);
+    store.data_mut().rt = Some(crate::fibre::Rt::new(p));
+    store.data_mut().engine = Some(engine.clone());
+    store.data_mut().module = Some(module.clone());
+    let mut l = Linker::new(&engine);
+    crate::imports::register_all(&mut l)?;
+    l.define(&mut *store, "env", "memory", Extern::SharedMemory(mem))?;
+    let inst = l.instantiate(&mut *store, &module)?;
+    store.data_mut().inst = Some(inst);
+    // give it a real wasm thread identity so TLS and locks work
+    let malloc = inst.get_typed_func::<(i32,), i32>(&mut *store, "malloc")?;
+    let pt = malloc.call(&mut *store, (768,))? as u32;
+    let ti = inst.get_typed_func::<(i32, i32, i32, i32, i32, i32), ()>(
+        &mut *store, "_emscripten_thread_init")?;
+    ti.call(&mut *store, (pt as i32, 0, 0, 1, 0, 0))?;
+    let tls = inst.get_typed_func::<(), (i32,)>(&mut *store, "_emscripten_tls_init")?;
+    tls.call(&mut *store, ())?;
+    store.data_mut().mbx_ptr = Some(pt);
+    crate::fibre::run(&mut *store, 0);
+    eprintln!("[rna ] thread up pthread={pt:#x}");
+
+    let mut n = 0u32;
+    while let Ok(ev) = rx.recv() {
+        n = n.wrapping_add(1);
+        let stp = crate::fibre::store_ptr() as usize;
+        let task: crate::fibre::Task = Box::pin(async move {
+            let st = unsafe { &mut *(stp as *mut wasmtime::Store<St>) };
+            let _ = crate::imports::mailbox::pump_mailbox(st).await;
+            deliver(st, ev);
+        });
+        let _ = crate::fibre::call_fibre(&mut *store, 0x7200_0000 | n, 256 * 1024, task);
+    }
+    Ok(())
+}
+
+fn deliver(cx: &mut wasmtime::Store<St>, ev: Ev) {
+    let d = cx.data();
+    let Some(inst) = d.inst else { return };
+    let (name, mut args): (&str, Vec<i32>) = match ev {
+        Ev::Connected(id, max) => ("rbx_wasm_rna_on_connect_success", vec![id as i32, max]),
+        Ev::ConnectError(id) => ("rbx_wasm_rna_on_connect_error", vec![id as i32]),
+        Ev::Accepted(id, sid) => ("rbx_wasm_rna_on_stream_accepted", vec![id as i32, sid]),
+        Ev::Slot(id, kind, sid, packed) => (
+            "rbx_wasm_rna_on_receive_ring_slot",
+            vec![id as i32, kind as i32, sid, packed >> 24, packed & 0xff_ffff],
+        ),
+        Ev::Fin(id, sid) => ("rbx_wasm_rna_on_stream_fin", vec![id as i32, sid]),
+        Ev::StreamError(id, sid, code) =>
+            ("rbx_wasm_rna_on_stream_error", vec![id as i32, sid, code]),
+        Ev::WriteOk(id, sid, n) =>
+            ("rbx_wasm_rna_on_stream_write_success", vec![id as i32, sid, n]),
+        Ev::WriteErr(id, sid) => ("rbx_wasm_rna_on_stream_write_error", vec![id as i32, sid]),
+        Ev::Closed(id, code, cls, has) => (
+            "rbx_wasm_rna_on_connection_closed",
+            vec![id as i32, code as i32, cls as i32, has],
+        ),
+        Ev::CloseComplete(id) => ("rbx_wasm_rna_on_close_complete", vec![id as i32]),
+    };
+    let Some(binding) = crate::imports::embind::binds().lock().unwrap().get(name).cloned() else {
+        return;
+    };
+    let Some(table) = inst.get_table(&mut *cx, "__indirect_function_table") else { return };
+    let Some(wasmtime::Ref::Func(Some(f))) = table.get(&mut *cx, binding.0 as u64) else { return };
+    eprintln!("[rna ] -> {name} {args:?}");
+    let mut vals = vec![wasmtime::Val::I32(binding.1 as i32)];
+    for a in args.drain(..) {
+        vals.push(wasmtime::Val::I32(a));
+    }
+    match f.call(&mut *cx, &vals, &mut []) {
+        Ok(()) => {}
+        Err(e) => eprintln!("[rna ] {name} threw: {e:#}"),
+    }
+}
+
+/// Completions are delivered from their own thread now; kept for the callers
+/// that used to drive them at wait points.
+pub fn pump<T: wasmtime::AsContextMut<Data = St>>(_cx: &mut T) {}
 
 pub fn register(l: &mut Linker<St>) -> Result<()> {
     l.func_wrap("env", "rbx_wasm_rna_is_supported_js", |_c: Caller<'_, St>| -> i32 { 1 })?;
@@ -353,6 +389,10 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
         |c: Caller<'_, St>, id: i32, url: i32, _n: i32, _certs: i32, data: i32, head: i32,
          tail: i32, slot: i32, count: i32, _err: i32, _fix: i32, _dg: i32, _a: i32, _b: i32| {
             MEM.get_or_init(|| c.data().mem.clone());
+            if let (Some(e), Some(m)) = (c.data().engine.clone(), c.data().module.clone()) {
+                ENGINE.lock().unwrap().get_or_insert((e, m, c.data().mem.clone()));
+            }
+            let _ = rna_tx();
             let u = crate::state::rstr(&c, url as u32);
             let owner = self_ptr(&c);
             connect(

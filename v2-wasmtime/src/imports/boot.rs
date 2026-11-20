@@ -37,6 +37,8 @@ fn start() -> &'static std::time::Instant {
 
 pub fn perf_ms() -> f64 {
     let _ = &FRAME_MS;
+    // the page runs at 60 Hz and this host runs the loop far faster; a fixed
+    // multiple keeps timers ordered without a runaway clock
     1000.0 + start().elapsed().as_secs_f64() * 1000.0
 }
 

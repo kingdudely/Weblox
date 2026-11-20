@@ -325,25 +325,13 @@ fn run() -> Result<()> {
     let mem = SharedMemory::new(&engine, MemoryType::shared(PAGES, PAGES))?;
 
     let mut linker = Linker::new(&engine);
-    imports::embind::register(&mut linker)?;
-    imports::boot::register(&mut linker)?;
-    imports::fetch::register(&mut linker)?;
-    imports::http::register(&mut linker)?;
-    imports::futex::register(&mut linker)?;
-    fibre::register(&mut linker)?;
-    imports::mailbox::register(&mut linker)?;
-    imports::gl::register(&mut linker)?;
-    imports::opfs::register(&mut linker)?;
-    imports::rna::register(&mut linker)?;
-    imports::stubs::register(&mut linker)?;
-    imports::thread::register(&mut linker)?;
+    imports::register_all(&mut linker)?;
 
     let mut store = Box::new(Store::new(&engine, St::new(mem.clone())));
     let sp = fibre::PStore(&mut *store as *mut Store<St>);
     store.data_mut().rt = Some(fibre::Rt::new(sp));
     store.data_mut().engine = Some(engine.clone());
     diag::start();
-    imports::boot::start_clock();
     if trace::enabled() {
         std::thread::spawn(|| loop {
             std::thread::sleep(std::time::Duration::from_secs(2));
@@ -366,7 +354,7 @@ fn run() -> Result<()> {
     // A nonzero async depth keeps `emscripten_futex_wait` spinning in wasm
     // instead of calling the host import; that is what keeps the main thread
     // moving (a host call cannot be serviced while `main` is on the stack).
-    unsafe { *(store.data().mem.data()[9515280].get() as *mut u32) = 0 }
+    unsafe { *(store.data().mem.data()[9515280].get() as *mut u32) = 1 }
     if std::env::var_os("WC_SLOT0").is_some() {
         let t = inst.get_table(&mut *store, "__indirect_function_table").unwrap();
         if let Some(f) = t.get(&mut *store, std::env::var("WC_SLOT0").unwrap().parse::<u64>().unwrap()) {
