@@ -103,6 +103,11 @@ fn start_worker(
                     wasmtime::Ref::Func(Some(f)) => f,
                     _ => return Err(anyhow!("start routine is not a func")),
                 };
+                let raw = f.to_raw(&mut *store);
+                let lib = inst.get_func(&mut *store, "main_loop_iteration").map(|g| g.to_raw(&mut *store) as usize);
+                let ma = inst.get_func(&mut *store, "main_loop_iteration").map(|g| unsafe { *(g.to_raw(&mut *store) as *const usize) });
+                let code = unsafe { *((raw as *const usize).add(1)) };
+                eprintln!("[pthr] {pthread:x} start slot={start} code={code:x} raw={raw:?} (lib raw={lib:x?} libcode={ma:x?})");
                 crate::fibre::run(&mut *store, 0);
                 let ex = inst.get_typed_func::<(i32,), ()>(&mut *store, "_emscripten_thread_exit").ok();
                 let p = store.data().rt.as_ref().unwrap().store;
@@ -119,13 +124,25 @@ fn start_worker(
                     }
                     let mut out = [Val::I32(0)];
                     let mut unwound = false;
+                    let mut returned = false;
                     match f.call(&mut *st, &[Val::I32(arg as i32)], &mut out) {
                         Err(e) if was_unwind(&e) => unwound = true,
                         Err(e) => eprintln!("[pthr] entry {pthread:x} threw: {e:#}"),
                         Ok(()) => {
+                            if std::env::var_os("WC_PTHR").is_some() {
+                                eprintln!("[pthr] entry {pthread:x} returned");
+                            }
+                            // keep the pthread addressable: a routine that
+                            // returns still gets rings dispatched to it on the
+                            // page (the worker is only pooled, not freed)
                             let rc = match out[0] { Val::I32(v) => v, _ => 0 };
-                            if let Some(ex) = ex {
-                                let _ = ex.call(&mut *st, (rc,));
+                            if std::env::var_os("WC_PEXIT").is_some() {
+                                if let Some(ex) = &ex {
+                                    let _ = ex.call(&mut *st, (rc,));
+                                }
+                            } else {
+                                unwound = true;
+                                returned = true;
                             }
                         }
                     }
@@ -136,7 +153,7 @@ fn start_worker(
                         loop {
                             crate::fibre::sleep(&mut *st, std::time::Duration::from_millis(1)).await;
                             let _ = crate::imports::mailbox::pump_mailbox(&mut *st).await;
-                            if let Some(iter) = &iter {
+                            if let (Some(iter), false) = (&iter, returned) {
                                 if let Err(e) = iter.call(&mut *st, ()) {
                                     if !was_unwind(&e) {
                                         eprintln!("[pthr] loop {pthread:x} threw: {e:#}");

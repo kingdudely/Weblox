@@ -100,7 +100,11 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
     l.func_wrap("env", "rbx_wasm_rna_pause_stream_read_js", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("rbx_wasm_rna_pause_stream_read_js");  })?;
     l.func_wrap("env", "rbx_wasm_rna_send_datagram_js", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, | { crate::trace::hit("rbx_wasm_rna_send_datagram_js");  })?;
     l.func_wrap("env", "rbx_wasm_rna_is_supported_js", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("rbx_wasm_rna_is_supported_js"); eprintln!("[rna ] is_supported"); 1 })?;
-    l.func_wrap("env", "rbx_wasm_rna_connect_js", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i32, a6: i32, a7: i32, a8: i32, a9: i32, a10: i32, a11: i32, a12: i32, a13: i32, | { crate::trace::hit("rbx_wasm_rna_connect_js");  })?;
+    l.func_wrap("env", "rbx_wasm_rna_connect_js", |c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i32, a6: i32, a7: i32, a8: i32, a9: i32, a10: i32, a11: i32, a12: i32, a13: i32, | {
+        crate::trace::hit("rbx_wasm_rna_connect_js");
+        eprintln!("[rna ] connect id={a0} url={:?} n={a2} data={a3:#x} head={a4:#x} tail={a5:#x} slot={a6} count={a7}",
+            if a1 == 0 { String::new() } else { crate::state::rstr(&c, a1 as u32) });
+    })?;
     l.func_wrap("env", "rbx_wasm_rna_resume_stream_read_js", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("rbx_wasm_rna_resume_stream_read_js");  })?;
     l.func_wrap("env", "wgpuDeviceHasFeature", |_c: Caller<'_, St>, _d: i32, f: i32| -> i32 {
         crate::trace::hit("wgpuDeviceHasFeature");

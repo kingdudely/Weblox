@@ -94,7 +94,14 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
                 // drain anything the mailbox is holding, then spin: a sleep
                 // would need the turn pump, which is busy inside `main`
                 let _ = crate::fibre::block_on(crate::imports::mailbox::pump_mailbox(&mut c));
-                std::thread::yield_now();
+                // the page leaves this call suspended and keeps running the
+                // main loop, which is what services the HTTP queue; standing
+                // still here instead starves it
+                if c.data().is_main {
+                    crate::nested_frame();
+                } else {
+                    std::thread::yield_now();
+                }
             }
         })?;
     Ok(())

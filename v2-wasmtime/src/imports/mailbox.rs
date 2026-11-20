@@ -68,10 +68,11 @@ pub async fn pump_mailbox<T: AsContextMut<Data = St>>(cx: &mut T) -> bool {
     let Some(ptr) = (if d.is_main { d.main_ptr } else { d.mbx_ptr }) else {
         return false;
     };
-    if !take_ring(ptr) {
-        return false;
-    }
-    if std::env::var_os("WC_MBX").is_some() {
+    // The sender only calls the notify import when the target is parked in
+    // `Atomics.waitAsync`; a busy target just gets the ring appended.  So the
+    // ring cannot be counted from here - always run the drain.
+    let rang = take_ring(ptr);
+    if rang && std::env::var_os("WC_MBX").is_some() {
         eprintln!("[mbx ] ring {} {ptr:#x}", std::thread::current().name().unwrap_or("?"));
     }
     set_ready(cx, ptr);
@@ -83,6 +84,20 @@ pub async fn pump_mailbox<T: AsContextMut<Data = St>>(cx: &mut T) -> bool {
 pub async fn drop_in<T: AsContextMut<Data = St>>(cx: &mut T) -> bool {
     if !cx.as_context().data().is_main {
         return false;
+    }
+    if cx.as_context().data().main_ptr.is_none() {
+        let inst = cx.as_context().data().inst;
+        if let Some(inst) = inst {
+            if let Ok(f) = inst.get_typed_func::<(), (i32,)>(&mut *cx, "pthread_self") {
+                if let Ok((me,)) = f.call(&mut *cx, ()) {
+                    if me != 0 {
+                        let me = me as u32;
+                        cx.as_context_mut().data_mut().main_ptr = Some(me);
+                        set_ready(cx, me);
+                    }
+                }
+            }
+        }
     }
     pump_mailbox(cx).await
 }

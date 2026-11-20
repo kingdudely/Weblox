@@ -42,11 +42,104 @@ fn pump_enabled() -> bool {
     *ON.get_or_init(|| std::env::var_os("WC_PUMP").is_some())
 }
 
+fn find_once(st: &mut crate::state::St) {
+    let st = &*st;
+    use std::sync::OnceLock;
+    static HIT: OnceLock<bool> = OnceLock::new();
+    if HIT.get().is_some() {
+        return;
+    }
+    let Ok(n) = std::env::var("WC_FIND") else { return };
+    let needle = n.into_bytes();
+    let mem = &st.mem;
+    let end = mem.data_size().min(900 << 20);
+    let d = mem.data();
+    let mut at: usize = 0x400;
+    while at + needle.len() < end {
+        let mut k = 0;
+        while k < needle.len()
+            && unsafe { *(d[at + k].get() as *const u8) } == needle[k]
+        {
+            k += 1;
+        }
+        if k == needle.len() {
+            HIT.set(true).ok();
+            eprintln!("[find] needle at {at:#x}");
+            let lo = at.saturating_sub(48);
+            let hex: String = (0..112)
+                .map(|i| format!("{:02x}", unsafe { *(d[lo + i].get() as *const u8) }))
+                .collect();
+            eprintln!("[find] mem {lo:#x} {hex}");
+            let target = (at as u32).wrapping_sub(8).to_le_bytes();
+            let mut hits = 0;
+            let mut q: usize = 0x400;
+            while q + 4 < end && hits < 4 {
+                if unsafe { *(d[q].get() as *const u32) } == u32::from_le_bytes(target) {
+                    let lo2 = q.saturating_sub(32);
+                    let h2: String = (0..80)
+                        .map(|i| format!("{:02x}", unsafe { *(d[lo2 + i].get() as *const u8) }))
+                        .collect();
+                    eprintln!("[find] ref {q:#x} {h2}");
+                    hits += 1;
+                }
+                q += 4;
+            }
+            return;
+        }
+        at += 1;
+    }
+}
+
+thread_local!(static NEST: std::cell::Cell<u32> = const { std::cell::Cell::new(0) });
+static NEST_AT: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+
+/// A tick run from inside another tick: the page suspends `main_loop_iteration`
+/// at a futex and the JS event loop calls it again, so the queue keeps being
+/// serviced.  Suspending is not available here, so call it re-entrantly.
+pub fn nested_frame() {
+    if NEST.with(|d| d.get()) >= 8 {
+        return;
+    }
+    {
+        let mut at = NEST_AT.lock().unwrap();
+        let now = Instant::now();
+        if let Some(last) = *at {
+            if now.duration_since(last).as_millis() < 1 {
+                return;
+            }
+        }
+        *at = Some(now);
+    }
+    let p = fibre::store_ptr();
+    if p.is_null() {
+        return;
+    }
+    let st = unsafe { &mut *p };
+    let Some(f) = FRAME_FN.lock().unwrap().clone() else { return };
+    NEST.with(|d| d.set(d.get() + 1));
+    st.set_epoch_deadline(50);
+    if let Err(e) = f.call(&mut *st, ()) {
+        if std::env::var_os("WC_PUMP").is_some() {
+            eprintln!("[nest] threw: {e:#}");
+        }
+    }
+    NEST.with(|d| d.set(d.get() - 1));
+}
+
 pub fn pump_frame() {
+    let p = fibre::store_ptr();
+    if !p.is_null() && std::env::var_os("WC_FIND").is_some() {
+        static LAST: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+        let mut l = LAST.lock().unwrap();
+        if l.map(|t| t.elapsed().as_millis() >= 500).unwrap_or(true) {
+            *l = Some(Instant::now());
+            drop(l);
+            find_once(unsafe { &mut *p }.data_mut());
+        }
+    }
     if !pump_enabled() {
         return;
     }
-    let p = fibre::store_ptr();
     if p.is_null() {
         return;
     }
@@ -68,6 +161,7 @@ pub fn pump_frame() {
             _ => *at = Some(now),
         }
     }
+    find_once(st.data_mut());
     if let Some(f) = FRAME_FN.lock().unwrap().clone() {
         static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -260,6 +354,7 @@ fn run() -> Result<()> {
     store.data_mut().is_main = true;
     store.data_mut().module = Some(module.clone());
     store.data_mut().place = place;
+    imports::http::COOKIE.set(cookie.clone()).ok();
     store.data_mut().cookie = Some(cookie);
     linker.define(&mut *store, "env", "memory", Extern::SharedMemory(mem))?;
     let inst = fibre::block_on(linker.instantiate_async(&mut *store, &module))?;
@@ -276,6 +371,39 @@ fn run() -> Result<()> {
         if let Some(f) = t.get(&mut *store, std::env::var("WC_SLOT0").unwrap().parse::<u64>().unwrap()) {
             t.set(&mut *store, 0, f)?;
             eprintln!("[tbl ] slot0 set; now {}", match t.get(&mut *store, 0) { Some(wasmtime::Ref::Func(Some(_))) => "func", _ => "null" });
+        }
+    }
+    if std::env::var_os("WC_ANCHOR").is_some() {
+        let d = store.data().mem.data();
+        for a in [100_000usize, 200_000, 300_000, 380_000, 440_000] {
+            let hex: String = (0..48).map(|i| format!("{:02x}", unsafe { *(d[a + i].get() as *const u8) })).collect();
+            eprintln!("[anch] {a} {hex}");
+        }
+    }
+    // main's mailbox is never armed by the engine on this path; without it a
+    // dispatch back to the main thread is dropped on the floor
+    if let Ok(pself) = inst.get_typed_func::<(), (i32,)>(&mut *store, "pthread_self") {
+        if let Ok((me,)) = pself.call(&mut *store, ()) {
+            if me != 0 {
+                store.data_mut().main_ptr = Some(me as u32);
+            }
+            unsafe { *(store.data().mem.data()[me as usize + 112].get() as *mut u32) = 1 }
+            eprintln!("[mbx ] main pthread {me:#x}");
+        }
+    }
+    if let Ok(ks) = std::env::var("WC_HOOK") {
+        let t = inst.get_table(&mut *store, "__indirect_function_table").unwrap();
+        for k in ks.split(',') {
+            let Ok(i) = k.trim().parse::<u64>() else { continue };
+            let Some(wasmtime::Ref::Func(Some(real))) = t.get(&mut *store, i) else { continue };
+            let w = wasmtime::Func::wrap(&mut *store, move |mut c: Caller<'_, crate::state::St>, a: i32| {
+                eprintln!("[hook] slot {i} called arg={a:#x}");
+                crate::imports::boot::dump_pcs_pub();
+                let mut out = [wasmtime::Val::I32(0)];
+                let _ = real.call(&mut c, &[wasmtime::Val::I32(a)], &mut out);
+            });
+            t.set(&mut *store, i, wasmtime::Ref::Func(Some(w)))?;
+            eprintln!("[hook] wrapped slot {i}");
         }
     }
     if std::env::var_os("WC_TBL").is_some() {

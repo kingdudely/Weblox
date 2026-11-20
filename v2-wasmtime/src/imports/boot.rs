@@ -41,6 +41,8 @@ pub fn perf_ms() -> f64 {
 }
 
 
+pub fn dump_pcs_pub() { dump_pcs() }
+
 fn dump_pcs() {
     unsafe {
         let mut fp: usize;
@@ -176,7 +178,29 @@ const INFO: &[(&str, &str)] = &[
 pub fn register(l: &mut Linker<St>) -> anyhow::Result<()> {
     // console
     l.func_wrap("env", "emscripten_console_log", |_c: Caller<'_, St>, p: i32| {
-        eprintln!("[log ] {}", rstr(&_c, p as u32));
+        let s = rstr(&_c, p as u32);
+        if let Ok(k) = std::env::var("WC_BT_MSG") {
+            if s.contains(&k) {
+                let mem = _c.data().mem.clone();
+                let d = mem.data();
+                let needle = k.as_bytes();
+                let end = mem.data_size().min(400 << 20);
+                let mut at = 0x400;
+                while at + needle.len() < end {
+                    let mut j = 0;
+                    while j < needle.len() && unsafe { *(d[at + j].get() as *const u8) } == needle[j] {
+                        j += 1;
+                    }
+                    if j == needle.len() {
+                        eprintln!("[pc] === {k} at {at:#x}");
+                        break;
+                    }
+                    at += 1;
+                }
+                dump_pcs();
+            }
+        }
+        eprintln!("[log ] {s}");
     })?;
     l.func_wrap("env", "emscripten_console_warn", |_c: Caller<'_, St>, p: i32| {
         let s = rstr(&_c, p as u32);
