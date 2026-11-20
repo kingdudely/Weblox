@@ -144,8 +144,11 @@ fn config() -> Result<Config> {
     c.parallel_compilation(true);
     // The unwinder walks one contiguous stack; our fibres are separate stacks
     // per activation, so leave it off unless asked (it panics on a trap).
-    c.wasm_backtrace(std::env::var_os("WC_BT").is_some());
-    c.wasm_backtrace_details(if dev {
+    // Both settings follow the same env so a cached artifact stays valid
+    // whatever opt level it was built at.
+    let bt = std::env::var_os("WC_BT").is_some();
+    c.wasm_backtrace(bt);
+    c.wasm_backtrace_details(if bt {
         WasmBacktraceDetails::Enable
     } else {
         WasmBacktraceDetails::Disable
