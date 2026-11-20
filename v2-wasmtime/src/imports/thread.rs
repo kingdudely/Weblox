@@ -6,6 +6,14 @@ use wasmtime::{Caller, Extern, Linker, Store, Val};
 
 use crate::state::St;
 
+thread_local! {
+    static CONSUMER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub fn is_consumer() -> bool {
+    CONSUMER.with(|c| c.get())
+}
+
 fn start_worker(
     engine: wasmtime::Engine,
     module: wasmtime::Module,
@@ -113,6 +121,12 @@ fn start_worker(
                         }
                     }
                     let mut out = [Val::I32(0)];
+                    if start == 152880 && std::env::var_os("WC_FIND").is_some() {
+                        CONSUMER.with(|c| c.set(true));
+                    }
+                    if std::env::var_os("WC_PTHR").is_some() {
+                        eprintln!("[pthr] entry {pthread:x} start={start} begin");
+                    }
                     let mut unwound = false;
                     let mut returned = false;
                     match f.call(&mut *st, &[Val::I32(arg as i32)], &mut out) {
@@ -183,6 +197,16 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
             };
             if std::env::var_os("WC_PTHR").is_some() {
                 eprintln!("[pthc] {} start_slot={start} arg={arg:#x}", std::thread::current().name().unwrap_or("?"));
+                unsafe {
+                    let mut fp: usize;
+                    std::arch::asm!("mov {}, rbp", out(reg) fp);
+                    for _ in 0..22 {
+                        if fp == 0 { break }
+                        let ret = *((fp + 8) as *const usize);
+                        eprintln!("[pthc]   pc {ret:x}");
+                        fp = *(fp as *const usize);
+                    }
+                }
             }
             match start_worker(engine, module, c.data().mem.clone(), pthread as u32,
                                start as u32, arg as u32) {

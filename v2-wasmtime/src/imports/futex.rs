@@ -13,6 +13,24 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
     l.func_wrap("env", "__asyncjs__rbxFutexWaitMainJspi",
         |mut c: Caller<'_, St>, addr: i32, expected: i32, timeout: f64| -> wasmtime::Result<i32> {
             crate::trace::hit("futex_wait");
+            if crate::imports::thread::is_consumer() {
+                use std::sync::atomic::{AtomicU32, Ordering};
+                static N: AtomicU32 = AtomicU32::new(0);
+                let n = N.fetch_add(1, Ordering::Relaxed);
+                if n < 3 {
+                    eprintln!("[cons] futex_wait #{n} addr={addr:#x} expect={expected:#x} timeout={timeout}");
+                    unsafe {
+                        let mut fp: usize;
+                        std::arch::asm!("mov {}, rbp", out(reg) fp);
+                        for _ in 0..18 {
+                            if fp == 0 { break }
+                            let ret = *((fp + 8) as *const usize);
+                            eprintln!("[cons]   pc {ret:x}");
+                            fp = *(fp as *const usize);
+                        }
+                    }
+                }
+            }
             if std::env::var_os("WC_FUTEX").is_some() {
                 eprintln!("[futc] {} enter", std::thread::current().name().unwrap_or("?"));
             }

@@ -354,7 +354,8 @@ fn run() -> Result<()> {
     // A nonzero async depth keeps `emscripten_futex_wait` spinning in wasm
     // instead of calling the host import; that is what keeps the main thread
     // moving (a host call cannot be serviced while `main` is on the stack).
-    unsafe { *(store.data().mem.data()[9515280].get() as *mut u32) = 1 }
+    let flag = std::env::var_os("WC_ASYNC_FUTEX").map(|_| 0).unwrap_or(1);
+    unsafe { *(store.data().mem.data()[9515280].get() as *mut u32) = flag }
     if std::env::var_os("WC_SLOT0").is_some() {
         let t = inst.get_table(&mut *store, "__indirect_function_table").unwrap();
         if let Some(f) = t.get(&mut *store, std::env::var("WC_SLOT0").unwrap().parse::<u64>().unwrap()) {
