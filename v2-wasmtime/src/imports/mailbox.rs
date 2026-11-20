@@ -76,6 +76,7 @@ pub async fn pump_mailbox<T: AsContextMut<Data = St>>(cx: &mut T) -> bool {
         eprintln!("[mbx ] ring {} {ptr:#x}", std::thread::current().name().unwrap_or("?"));
     }
     set_ready(cx, ptr);
+    crate::imports::rna::pump(cx);
     check(cx).await;
     true
 }

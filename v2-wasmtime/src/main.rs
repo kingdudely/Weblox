@@ -334,6 +334,7 @@ fn run() -> Result<()> {
     imports::mailbox::register(&mut linker)?;
     imports::gl::register(&mut linker)?;
     imports::opfs::register(&mut linker)?;
+    imports::rna::register(&mut linker)?;
     imports::stubs::register(&mut linker)?;
     imports::thread::register(&mut linker)?;
 
@@ -365,7 +366,7 @@ fn run() -> Result<()> {
     // A nonzero async depth keeps `emscripten_futex_wait` spinning in wasm
     // instead of calling the host import; that is what keeps the main thread
     // moving (a host call cannot be serviced while `main` is on the stack).
-    unsafe { *(store.data().mem.data()[9515280].get() as *mut u32) = 1 }
+    unsafe { *(store.data().mem.data()[9515280].get() as *mut u32) = 0 }
     if std::env::var_os("WC_SLOT0").is_some() {
         let t = inst.get_table(&mut *store, "__indirect_function_table").unwrap();
         if let Some(f) = t.get(&mut *store, std::env::var("WC_SLOT0").unwrap().parse::<u64>().unwrap()) {
@@ -428,13 +429,13 @@ fn run() -> Result<()> {
     let ctors = inst.get_typed_func::<(), ()>(&mut *s, "__wasm_call_ctors")?;
     if std::env::var_os("WC_NOCtors").is_none() {
     if let Err(e) = ctors.call(&mut *s, ()) {
-        eprintln!("[fatal] ctors threw; registered {} bindings so far", store.data().binds.len());
+        eprintln!("[fatal] ctors threw; registered {} bindings so far", imports::embind::binds().lock().unwrap().len());
         dump_exception(&mut *store);
         trace::dump();
         return Err(e.into());
     }
-    eprintln!("[wasm] ctors ok, {} bindings registered", store.data().binds.len());
-    } else { eprintln!("[wasm] ctors skipped, {} binds pre-existing", store.data().binds.len()); }
+    eprintln!("[wasm] ctors ok, {} bindings registered", imports::embind::binds().lock().unwrap().len());
+    } else { eprintln!("[wasm] ctors skipped, {} binds pre-existing", imports::embind::binds().lock().unwrap().len()); }
     if let Err(e) = fibre::block_on(prepare(&mut store, &inst)) {
         eprintln!("[prep] failed: {e:#}");
         return Err(e);
@@ -468,7 +469,7 @@ fn run() -> Result<()> {
         trace::dump();
             eprintln!(
                 "[fatal] binds={} assets={} files={} preload={}",
-                store.data().binds.len(),
+                imports::embind::binds().lock().unwrap().len(),
                 store.data().assets.len(),
                 store.data().files.len(),
                 store.data().preload.len()

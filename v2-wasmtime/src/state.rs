@@ -29,6 +29,7 @@ pub struct St {
     /// id of this thread root fibre
     pub root: u32,
     pub in_drain: bool,
+    pub in_rna: bool,
     pub mbx_task: bool,
     /// this thread's mailbox word, once armed
     pub mbx_ptr: Option<u32>,
@@ -65,6 +66,7 @@ impl St {
             cur: 0,
             root: 0,
             in_drain: false,
+            in_rna: false,
             mbx_task: false,
             mbx_ptr: None,
             main_loop: false,

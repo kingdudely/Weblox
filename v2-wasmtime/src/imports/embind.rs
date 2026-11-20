@@ -24,6 +24,14 @@ pub fn ret_is_void(sig: &str) -> bool {
     sig.starts_with('v')
 }
 
+/// Embind registrations are process wide: a worker store never sees the
+/// initialiser pass that creates them.
+pub fn binds() -> &'static std::sync::Mutex<std::collections::HashMap<String, (u32, u32, String)>> {
+    static B: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, (u32, u32, String)>>> =
+        std::sync::OnceLock::new();
+    B.get_or_init(Default::default)
+}
+
 pub fn register(l: &mut Linker<St>) -> anyhow::Result<()> {
     // (name, argcount, raw arg types, invoker, signature)
     l.func_wrap("env", "_embind_register_function",
@@ -33,7 +41,8 @@ pub fn register(l: &mut Linker<St>) -> anyhow::Result<()> {
             let s = rstr(&c, sig as u32);
             crate::trace::hit("_embind_register_function");
             eprintln!("[bind] {n} sig={s} invoker={invoker}");
-            c.data_mut().binds.insert(n, (invoker as u32, _id as u32, s));
+            let _ = &c;
+            binds().lock().unwrap().insert(n, (invoker as u32, _id as u32, s));
         })?;
 
     // type registry: ids are what the engine uses for its own type checks

@@ -6,5 +6,6 @@ pub mod gl;
 pub mod http;
 pub mod mailbox;
 pub mod opfs;
+pub mod rna;
 pub mod stubs;
 pub mod thread;

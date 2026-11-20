@@ -34,6 +34,7 @@ fn start_worker(
                 crate::imports::mailbox::register(&mut l)?;
                 crate::imports::gl::register(&mut l)?;
                 crate::imports::opfs::register(&mut l)?;
+                crate::imports::rna::register(&mut l)?;
                 crate::imports::stubs::register(&mut l)?;
                 crate::imports::thread::register(&mut l)?;
                 l.define(&mut *store, "env", "memory", Extern::SharedMemory(mem))?;

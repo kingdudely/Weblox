@@ -6,9 +6,9 @@ use crate::imports::embind::{kind, ret_is_void, Arg};
 use crate::state::St;
 
 pub async fn call(store: &mut Store<St>, inst: &Instance, name: &str, args: &[Arg]) -> Result<Option<Val>> {
-    let (invoker, id, sig) = store
-        .data()
-        .binds
+    let (invoker, id, sig) = crate::imports::embind::binds()
+        .lock()
+        .unwrap()
         .get(name)
         .cloned()
         .ok_or_else(|| anyhow!("binding {name} not registered"))?;

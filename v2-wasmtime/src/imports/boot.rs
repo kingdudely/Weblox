@@ -24,20 +24,20 @@ use crate::state::{rbytes, rstr, wbytes, wstr, St, CANVAS_H, CANVAS_W};
 /// frame pacing nondeterministic).
 static FRAME_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1000);
 
-pub fn advance_frame() {
-    FRAME_MS.fetch_add(16, std::sync::atomic::Ordering::Relaxed);
-}
+/// The engine clock is wall time, not frames: this host runs the turn loop far
+/// faster than 60 Hz, and a frame-counted clock runs away with it.
+pub fn advance_frame() {}
 
-/// Host-driven 60 Hz clock for the engine.
-pub fn start_clock() {
-    std::thread::spawn(|| loop {
-        std::thread::sleep(std::time::Duration::from_millis(16));
-        advance_frame();
-    });
+pub fn start_clock() {}
+
+fn start() -> &'static std::time::Instant {
+    static S: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    S.get_or_init(std::time::Instant::now)
 }
 
 pub fn perf_ms() -> f64 {
-    FRAME_MS.load(std::sync::atomic::Ordering::Relaxed) as f64
+    let _ = &FRAME_MS;
+    1000.0 + start().elapsed().as_secs_f64() * 1000.0
 }
 
 
