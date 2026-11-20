@@ -62,6 +62,12 @@ fn config() -> Result<Config> {
     c.wasm_threads(true);
     c.shared_memory(true);
     c.async_support(true);
+    // Every guest fibre runs on its own host stack but wasmtime keeps one stack
+    // limit per store, so the prologue check must be loose enough that a stale
+    // limit from the stack we came from never trips it.  Overflow is caught by
+    // the fibre guard page instead.
+    c.max_wasm_stack(1 << 30);
+    c.async_stack_size(1 << 30);
     c.wasm_tail_call(true);
     c.wasm_simd(true);
     c.wasm_relaxed_simd(true);
@@ -71,6 +77,9 @@ fn config() -> Result<Config> {
     c.wasm_exceptions(true);
     c.cranelift_opt_level(if dev { OptLevel::None } else { OptLevel::Speed });
     c.parallel_compilation(true);
+    // The unwinder walks one contiguous stack; our fibres are separate stacks
+    // per activation, so leave it off unless asked (it panics on a trap).
+    c.wasm_backtrace(std::env::var_os("WC_BT").is_some());
     c.wasm_backtrace_details(if dev {
         WasmBacktraceDetails::Enable
     } else {
@@ -153,6 +162,7 @@ fn run() -> Result<()> {
     store.data_mut().rt = Some(fibre::Rt::new(sp));
     store.data_mut().engine = Some(engine.clone());
     diag::start();
+    imports::boot::start_clock();
     if trace::enabled() {
         std::thread::spawn(|| loop {
             std::thread::sleep(std::time::Duration::from_secs(2));
@@ -178,6 +188,9 @@ fn run() -> Result<()> {
     if std::env::var_os("WC_TBL").is_some() {
         let t = inst.get_table(&mut *store, "__indirect_function_table").unwrap();
         let n = t.size(&mut *store);
+        for i in [0u64, 446] {
+            eprintln!("[tbl ] slot {i} = {:?}", t.get(&mut *store, i));
+        }
         let mut s = String::new();
         for i in 0..6u64 {
             s.push_str(match t.get(&mut *store, i) {
@@ -201,7 +214,10 @@ fn run() -> Result<()> {
     }
     eprintln!("[wasm] ctors ok, {} bindings registered", store.data().binds.len());
     } else { eprintln!("[wasm] ctors skipped, {} binds pre-existing", store.data().binds.len()); }
-    fibre::block_on(prepare(&mut store, &inst))?;
+    if let Err(e) = fibre::block_on(prepare(&mut store, &inst)) {
+        eprintln!("[prep] failed: {e:#}");
+        return Err(e);
+    }
 
     let main_fn = inst.get_typed_func::<(i32, i32), i32>(&mut *store, "__main_argc_argv")?;
     let argv = fibre::block_on(guest_argv(&mut *store, &inst))?;
@@ -246,21 +262,20 @@ fn run() -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs_f64(secs / 1000.0);
     std::thread::spawn(|| diag::watch(3));
     let mut turns = 0u64;
-    let mut root_id = 0u32;
-    fibre::run(&mut *store, 0);
+    fibre::host_root(&mut *store);
     while Instant::now() < deadline {
-        fibre::block_on(imports::mailbox::drop_in(&mut *store));
-        if turns % 500 == 0 {
-            eprintln!("[iter] turn {turns}");
+        if turns % 100 == 0 {
+            eprintln!("[iter] turn {turns} at {}ms", deadline.saturating_duration_since(Instant::now()).as_millis());
         }
         turns += 1;
-        root_id += 1;
 
         let fid = 0x8000_0000 | (turns as u32 & 0xffff);
         let p = store.data().rt.as_ref().expect("rt").store;
         let it = iter.clone();
         let task: fibre::Task = Box::pin(async move {
-            if let Err(e) = it.call(p.get(), ()) {
+            let st = p.get();
+            imports::mailbox::drop_in(&mut *st).await;
+            if let Err(e) = it.call(&mut *st, ()) {
                 static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
                 let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 if n < 5 {
@@ -268,13 +283,21 @@ fn run() -> Result<()> {
                 }
             }
         });
-        fibre::call_fibre(&mut *store, fid, 2 * 1024 * 1024, task)?;
+        if let Err(e) = fibre::call_fibre(&mut *store, fid, 2 * 1024 * 1024, task) {
+            eprintln!("[iter] turn {turns} failed: {e:#}");
+            fibre::shutdown(&mut *store);
+            return Err(e.into());
+        }
         diag::checkpoint();
         std::thread::sleep(Duration::from_millis(1));
     }
     eprintln!("[wasm] {turns} turns; last event {}", diag::last());
     trace::dump();
     eprintln!("[wasm] loop done");
+    for (t, c, sp) in fibre::TRACE_T.lock().unwrap().iter() {
+        eprintln!("[dump] thread {t} cur={c:#x} sp={sp:#x}");
+    }
+    fibre::shutdown(&mut *store);
     Ok(())
 }
 
@@ -361,8 +384,10 @@ async fn prepare(store: &mut Store<St>, inst: &Instance) -> Result<()> {
     let b = str_arg(store, inst, "en-us").await?;
     binds::call(store, inst, "set_account_locales", &[a, b]).await?;
 
-    let flags = br#"{"applicationSettings":{"BaseUrl":"https://www.roblox.com/","FIntWasmMemoryPages":"32768"},"RobloxLocaleId":"en-us","GameLocaleId":"en-us"}"#;
-    let fp = binds::guest_string_bytes(store, inst, flags).await?;
+    // The page preloads the live WebClientApp settings and only then adds the
+    // two host keys; the transport/join flags live in that blob.
+    let flags = settings().await;
+    let fp = binds::guest_string_bytes(store, inst, flags.as_bytes()).await?;
     binds::call(store, inst, "set_preloaded_flags", &[imports::embind::Arg::I32(fp)]).await?;
 
     let place: i64 = std::env::var("WC_PLACE").ok().and_then(|v| v.parse().ok()).unwrap_or(189707);
@@ -409,6 +434,59 @@ async fn prepare(store: &mut Store<St>, inst: &Instance) -> Result<()> {
 
     eprintln!("[prep] place={place} canvas={CANVAS_W}x{CANVAS_H} assets={} preload={} files={}", store.data().assets.len(), store.data().preload.len(), store.data().files.len());
     Ok(())
+}
+
+/// WebClientApp settings, as `WasmPlayer.js` fetches them, with the two keys
+/// the page always overrides.  Falls back to the bare minimum.
+async fn settings() -> String {
+    const URL: &str = "https://clientsettingscdn.roblox.com/v2/settings/application/WebClientApp";
+    const MIN: &str = r#"{"applicationSettings":{"BaseUrl":"https://www.roblox.com/","FIntWasmMemoryPages":"32768"},"RobloxLocaleId":"en-us","GameLocaleId":"en-us"}"#;
+    let raw = std::process::Command::new("curl")
+        .args(["-fsSL", "--max-time", "10", URL])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+    let Some(body) = raw else {
+        eprintln!("[prep] settings fetch failed");
+        return MIN.to_string();
+    };
+    let Some(open) = body.find("\"applicationSettings\":{").map(|i| i + "\"applicationSettings\":".len()) else {
+        eprintln!("[prep] settings had no applicationSettings");
+        return MIN.to_string();
+    };
+    // walk to the matching brace of the applicationSettings object
+    let mut depth = 0i32;
+    let mut in_str = false;
+    let mut esc = false;
+    let mut close = None;
+    for (k, ch) in body[open..].char_indices() {
+        match ch {
+            _ if esc => esc = false,
+            '\\' if in_str => esc = true,
+            '"' => in_str = !in_str,
+            '{' if !in_str => depth += 1,
+            '}' if !in_str => {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(open + k);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some(close) = close else {
+        eprintln!("[prep] settings object unterminated");
+        return MIN.to_string();
+    };
+    eprintln!("[prep] {} bytes of settings", body.len());
+    let mut out = String::with_capacity(body.len() + 128);
+    out.push_str(&body[..=open]);
+    out.push_str(r#""BaseUrl":"https://www.roblox.com/","FIntWasmMemoryPages":"32768","#);
+    out.push_str(&body[open + 1..close]);
+    out.push_str(r#"},"RobloxLocaleId":"en-us","GameLocaleId":"en-us"}"#);
+    out
 }
 
 fn field(ent: &str, name: &str) -> String {

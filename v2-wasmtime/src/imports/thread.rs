@@ -59,11 +59,15 @@ fn start_worker(
                 let sp = inst.get_typed_func::<(i32,), ()>(&mut *store, "set_stack_ptr")?;
                 sp.call(&mut *store, (top as i32,))?;
 
+                // per-instance TLS first, then the instance's own static
+                // initialisers, as the page does for every worker
+                let tls = inst.get_typed_func::<(), (i32,)>(&mut *store, "_emscripten_tls_init")?;
+                tls.call(&mut *store, ())?;
+                inst.get_typed_func::<(), ()>(&mut *store, "__wasm_call_ctors")?
+                    .call(&mut *store, ())?;
                 let ti = inst.get_typed_func::<(i32, i32, i32, i32, i32, i32), ()>(
                     &mut *store, "_emscripten_thread_init")?;
                 ti.call(&mut *store, (pthread as i32, 0, 0, 1, 0, 0))?;
-                let tls = inst.get_typed_func::<(), (i32,)>(&mut *store, "_emscripten_tls_init")?;
-                tls.call(&mut *store, ())?;
                 if std::env::var_os("WC_NOSTS").is_none() {
                     let sts = inst.get_typed_func::<(i32, i32, i32, i32), ()>(&mut *store, "__set_thread_state")?;
                     sts.call(&mut *store, (pthread as i32, 0, 0, 0))?;
@@ -107,6 +111,7 @@ fn start_worker(
                     }
                 });
                 crate::fibre::call_fibre(&mut *store, 0, 4 * 1024 * 1024, task)?;
+                crate::fibre::shutdown(&mut *store);
                 crate::diag::worker_down();
                 eprintln!("[pthr] worker {pthread:x} finished");
                 Ok(())

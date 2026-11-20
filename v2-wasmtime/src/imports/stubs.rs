@@ -64,7 +64,7 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
     l.func_wrap("env", "rbx_wasm_rna_shutdown_stream_read_js", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("rbx_wasm_rna_shutdown_stream_read_js");  })?;
     l.func_wrap("env", "rbx_wasm_rna_pause_stream_read_js", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("rbx_wasm_rna_pause_stream_read_js");  })?;
     l.func_wrap("env", "rbx_wasm_rna_send_datagram_js", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, | { crate::trace::hit("rbx_wasm_rna_send_datagram_js");  })?;
-    l.func_wrap("env", "rbx_wasm_rna_is_supported_js", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("rbx_wasm_rna_is_supported_js"); 0 })?;
+    l.func_wrap("env", "rbx_wasm_rna_is_supported_js", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("rbx_wasm_rna_is_supported_js"); 1 })?;
     l.func_wrap("env", "rbx_wasm_rna_connect_js", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i32, a6: i32, a7: i32, a8: i32, a9: i32, a10: i32, a11: i32, a12: i32, a13: i32, | { crate::trace::hit("rbx_wasm_rna_connect_js");  })?;
     l.func_wrap("env", "rbx_wasm_rna_resume_stream_read_js", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("rbx_wasm_rna_resume_stream_read_js");  })?;
     l.func_wrap("env", "glScissor", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, | { crate::trace::hit("glScissor");  })?;

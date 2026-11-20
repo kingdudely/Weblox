@@ -141,8 +141,14 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
                 return;
             }
 
+            if std::env::var_os("WC_MBX").is_some() {
+                eprintln!("[mbx ] worker await {ptr:#x}");
+            }
             loop {
                 if take_ring(ptr) {
+                    if std::env::var_os("WC_MBX").is_some() {
+                        eprintln!("[mbx ] worker ring {ptr:#x}");
+                    }
                     break;
                 }
                 crate::fibre::block_on(crate::fibre::sleep(

@@ -218,7 +218,11 @@ fn run(req: &Req, cookie: Option<&str>) -> std::io::Result<(u16, String, String,
 pub fn register(l: &mut Linker<St>) -> Result<()> {
     l.func_wrap("env", "emscripten_start_fetch",
         |mut c: Caller<'_, St>, fetch: i32| {
+            crate::trace::hit("http_start");
             let f = fetch as u32;
+            if std::env::var_os("WC_HTTP").is_some() {
+                eprintln!("[http] start fetch={f:#x}");
+            }
             if f == 0 {
                 return;
             }

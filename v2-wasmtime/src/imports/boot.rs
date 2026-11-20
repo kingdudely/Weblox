@@ -13,6 +13,27 @@ thread_local! {
 
 use crate::state::{rbytes, rstr, wbytes, wstr, St, CANVAS_H, CANVAS_W};
 
+/// The engine's clock: one tick per host frame, so it is stable inside a frame
+/// and still advances (a frozen clock starves the scheduler, a wall clock makes
+/// frame pacing nondeterministic).
+static FRAME_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1000);
+
+pub fn advance_frame() {
+    FRAME_MS.fetch_add(16, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Host-driven 60 Hz clock for the engine.
+pub fn start_clock() {
+    std::thread::spawn(|| loop {
+        std::thread::sleep(std::time::Duration::from_millis(16));
+        advance_frame();
+    });
+}
+
+fn perf_ms() -> f64 {
+    FRAME_MS.load(std::sync::atomic::Ordering::Relaxed) as f64
+}
+
 fn now_ms() -> f64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let d = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
@@ -46,68 +67,58 @@ fn asm_eval(c: &mut Caller<'_, St>, key: u32, sigp: u32, buf: u32) -> f64 {
     let a = |i: usize| *vals.get(i).unwrap_or(&0.0) as u32;
 
     match key {
-        8667121 => now_ms(),                       // performance.now
-        8667344 => 0.0,                            // wasmPreInitTime
-        8667510 => 0.0,                            // navigator.webdriver
-        8667550 => {
-            eprintln!("[asm] main entered");
+        // The keys are the `ASM_CONSTS` table indices from this build's glue.
+        9098847 => 0.0,                            // navigator.webdriver
+        9098887 => 0.0,                            // main() entered
+        9099052 => 0.0,                            // experience left
+        9099118 => {                               // engine loading status
+            let kind = if a(0) != 0 { "FAILURE" } else { "status" };
+            let src = match a(1) { 1 => "join", 2 => "teleport", _ => "gui-service" };
+            eprintln!("[asm] loading {kind} source={src} msg={:?} err={} status={}",
+                      rstr(c, a(2)), a(3) as i32, a(4) as i32);
             0.0
         }
-        8687293 => 0.0,                            // HaveOffsetConverter
-        8687350 => {                               // getRandomValue
+        9099404 | 9099461 => 0.0,                  // native exit
+        9099518 => {                               // teleport failed
+            eprintln!("[asm] teleport failed status={}", a(0) as i32);
+            0.0
+        }
+        9099595 => 0.0,                            // loading screen removed
+        9099687 => perf_ms(),                      // performance.now
+        9099717 => {                               // join failed
+            eprintln!("[asm] JOIN FAILED status={}", a(0) as i32);
+            0.0
+        }
+        9099790 => 0.0,                            // wasmPreInitTime
+        9099832 => {                               // experience joined
+            eprintln!("[asm] EXPERIENCE JOINED userId={}", a(0) as i32);
+            0.0
+        }
+        9099902 => 0.0,                            // leave
+        9111863 => {                               // crash report
+            eprintln!("[asm] CRASH {} {}", rstr(c, a(0)), rstr(c, a(1)));
+            0.0
+        }
+        9119019 => 0.0,                            // saveIxpSettings
+        9119097 => {                               // cors: non-allowlisted header
+            eprintln!("[asm] cors: non-allowlisted header {:?}", rstr(c, a(0)));
+            0.0
+        }
+        9119603 => 0.0,                            // wasmOffsetConverter
+        9119660 => 0.0,                            // install getRandomValue
+        9120436 => {                               // getRandomValue
             let mut b = [0u8; 4];
             let _ = getrandom(&mut b);
             u32::from_le_bytes(b) as f64
         }
-        8687386 => {                               // install getRandomValue
-            eprintln!("[asm] random_init");
-            0.0
-        }
-        8667715 => {                               // engine loading status
-            let kind = if a(0) != 0 { "FAILURE" } else { "status" };
-            let msg = rstr(c, a(2));
-            eprintln!("[asm] loading {kind} source={} msg={msg:?} err={} status={}",
-                      a(1) as i32, a(3) as i32, a(4) as i32);
-            0.0
-        }
-        8667386 => {                               // join failed
-            eprintln!("[asm] JOIN FAILED statusCode={}", a(0) as i32);
-            0.0
-        }
-        8666895 => {
-            eprintln!("[asm] TELEPORT FAILED statusCode={}", a(0) as i32);
-            0.0
-        }
-        8679911 => {                               // crash
-            eprintln!("[asm] CRASH type={} msg={}", rstr(c, a(0)), rstr(c, a(1)));
-            0.0
-        }
-        8667151 => {
-            eprintln!("[asm] EXPERIENCE JOINED");
-            0.0
-        }
-        8667221 => {
-            eprintln!("[asm] EXPERIENCE LEFT");
-            0.0
-        }
-        8666972 => {
-            eprintln!("[asm] loading screen removed");
-            0.0
-        }
-        8667459 | 8667064 | 8667287 => {
-            eprintln!("[asm] exit {key}");
-            0.0
-        }
-        8686787 => {
-            eprintln!("[asm] cors: non-allowlisted header {:?}", rstr(c, a(0)));
-            0.0
-        }
-        8683155 | 8686439 | 8680027 => 48000.0,    // FMOD sample rates
-        8668001 | 8670980 | 8671094 | 8671524 | 8673319 | 8674510 | 8678994
-        | 8679585 | 8680489 | 8680778 | 8681161 | 8681223 | 8681495 | 8681910
-        | 8682303 | 8682589 | 8682631 | 8683356 | 8683776 | 8683994 | 8684412
-        | 8685416 | 8685627 | 8685650 | 8685888 | 8686089 | 8686142 | 8686417
-        | 8686645 | 8686709 | 8686884 => 0.0,
+        // audio context probes: pretend they worked
+        9112441 | 9117655 | 9118217 | 9112554 => 0.0,
+        9114701 | 9117856 | 9118423 | 9112730 | 9113734 | 9113952 => 0.0,
+        9114224 => 0.0,                            // worklet node
+        9115094 | 9115715 | 9116344 | 9117920 => 0.0,
+        9116868 | 9115514 => 48000.0,              // sample rate
+        9115926 | 9117251 | 9117293 | 9117579 | 9117632 | 9118195
+        | 9114286 | 9118945 | 9118661 | 9118718 => 0.0,
         _ => {
             eprintln!("[asm] unknown key {key} sig={sig:?}");
             0.0
@@ -182,7 +193,7 @@ pub fn register(l: &mut Linker<St>) -> anyhow::Result<()> {
     })?;
 
     // clock / entropy / heap
-    l.func_wrap("env", "emscripten_get_now", || now_ms())?;
+    l.func_wrap("env", "emscripten_get_now", || perf_ms())?;
     l.func_wrap("env", "emscripten_date_now", || {
         let v = now_ms();
         static DN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
