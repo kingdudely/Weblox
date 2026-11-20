@@ -5,5 +5,6 @@ pub mod futex;
 pub mod gl;
 pub mod http;
 pub mod mailbox;
+pub mod opfs;
 pub mod stubs;
 pub mod thread;

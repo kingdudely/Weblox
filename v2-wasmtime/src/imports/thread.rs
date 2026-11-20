@@ -33,6 +33,7 @@ fn start_worker(
                 crate::imports::futex::register(&mut l)?;
                 crate::imports::mailbox::register(&mut l)?;
                 crate::imports::gl::register(&mut l)?;
+                crate::imports::opfs::register(&mut l)?;
                 crate::imports::stubs::register(&mut l)?;
                 crate::imports::thread::register(&mut l)?;
                 l.define(&mut *store, "env", "memory", Extern::SharedMemory(mem))?;
@@ -77,6 +78,9 @@ fn start_worker(
                         let _ = b.call(&mut *store, ());
                     }
                 }
+                // the glue arms each worker's mailbox (`Er`) right after TLS:
+                // mark it ready and remember it so rings can be drained here
+                store.data_mut().mbx_ptr = Some(pthread);
                 unsafe {
                     *(store.data().mem.data()[pthread as usize + 112].get() as *mut u32) = 1
                 };
@@ -125,15 +129,14 @@ fn start_worker(
                             }
                         }
                     }
-                    // `emscripten_set_main_loop` returns by unwinding to the
-                    // event loop; the thread then keeps running its loop.
-                    if unwound && st.data().main_loop {
-                        if let Some(iter) = iter {
-                            loop {
-                                crate::fibre::sleep(&mut *st, std::time::Duration::from_millis(16)).await;
-                                if std::env::var_os("WC_ML").is_some() {
-                                    eprintln!("[ml  ] iter {pthread:x}");
-                                }
+                    // Unwinding to the event loop leaves the thread alive on
+                    // the page: the JS loop keeps it around for mailbox work,
+                    // timers and (if it asked) its own main loop.  Do the same.
+                    if unwound {
+                        loop {
+                            crate::fibre::sleep(&mut *st, std::time::Duration::from_millis(1)).await;
+                            let _ = crate::imports::mailbox::pump_mailbox(&mut *st).await;
+                            if let Some(iter) = &iter {
                                 if let Err(e) = iter.call(&mut *st, ()) {
                                     if !was_unwind(&e) {
                                         eprintln!("[pthr] loop {pthread:x} threw: {e:#}");

@@ -9,6 +9,12 @@ use wasmtime::{Caller, Linker, SharedMemory};
 
 thread_local! {
     static CLK: Cell<u32> = const { Cell::new(0) };
+    /// set once this thread logged the start-game task
+    static SUBMIT: Cell<bool> = const { Cell::new(false) };
+}
+
+pub fn submit_thread() -> bool {
+    SUBMIT.with(|c| c.get())
 }
 
 use crate::state::{rbytes, rstr, wbytes, wstr, St, CANVAS_H, CANVAS_W};
@@ -34,6 +40,21 @@ pub fn perf_ms() -> f64 {
     FRAME_MS.load(std::sync::atomic::Ordering::Relaxed) as f64
 }
 
+
+fn dump_pcs() {
+    unsafe {
+        let mut fp: usize;
+        std::arch::asm!("mov {}, rbp", out(reg) fp);
+        for _ in 0..20 {
+            if fp == 0 {
+                break;
+            }
+            let ret = *((fp + 8) as *const usize);
+            eprintln!("[pc] {ret:x}");
+            fp = *(fp as *const usize);
+        }
+    }
+}
 
 fn now_ms() -> f64 {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -85,7 +106,7 @@ fn asm_eval(c: &mut Caller<'_, St>, key: u32, sigp: u32, buf: u32) -> f64 {
             0.0
         }
         9099595 => 0.0,                            // loading screen removed
-        9099687 => perf_ms(),                      // performance.now
+        9099687 => { crate::trace::hit("perf_now"); crate::pump_frame(); perf_ms() }  // performance.now
         9099717 => {                               // join failed
             eprintln!("[asm] JOIN FAILED status={}", a(0) as i32);
             0.0
@@ -158,7 +179,11 @@ pub fn register(l: &mut Linker<St>) -> anyhow::Result<()> {
         eprintln!("[log ] {}", rstr(&_c, p as u32));
     })?;
     l.func_wrap("env", "emscripten_console_warn", |_c: Caller<'_, St>, p: i32| {
-        eprintln!("[warn] {}", rstr(&_c, p as u32));
+        let s = rstr(&_c, p as u32);
+        if std::env::var_os("WC_BT2").is_some() && s.contains("abort") {
+            dump_pcs();
+        }
+        eprintln!("[warn] {s}");
     })?;
     l.func_wrap("env", "emscripten_console_error", |_c: Caller<'_, St>, p: i32| {
         eprintln!("[err ] {}", rstr(&_c, p as u32));
@@ -173,7 +198,23 @@ pub fn register(l: &mut Linker<St>) -> anyhow::Result<()> {
     })?;
     l.func_wrap("env", "_emscripten_log_formatted", |c: Caller<'_, St>,
      _flags: i32, fmt: i32| {
-        eprintln!("[log ] {}", rstr(&c, fmt as u32));
+        let s = rstr(&c, fmt as u32);
+        if std::env::var_os("WC_BT2").is_some() && s.contains("abort") {
+            unsafe {
+                let mut fp: usize;
+                std::arch::asm!("mov {}, rbp", out(reg) fp);
+                for _ in 0..18 {
+                    if fp == 0 { break }
+                    let ret = *((fp + 8) as *const usize);
+                    eprintln!("[pc] {ret:x}");
+                    fp = *(fp as *const usize);
+                }
+            }
+        }
+        if s.contains("submitStartGameTask") {
+            SUBMIT.with(|f| f.set(true));
+        }
+        eprintln!("[log ] {s}");
     })?;
 
     // The glue throws an "unwind" here; main() must stop, not continue.
@@ -196,8 +237,9 @@ pub fn register(l: &mut Linker<St>) -> anyhow::Result<()> {
     })?;
 
     // clock / entropy / heap
-    l.func_wrap("env", "emscripten_get_now", || perf_ms())?;
+    l.func_wrap("env", "emscripten_get_now", || { crate::trace::hit("get_now"); crate::pump_frame(); perf_ms() })?;
     l.func_wrap("env", "emscripten_date_now", || {
+        crate::pump_frame();
         let v = now_ms();
         static DN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let n = DN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -208,6 +250,7 @@ pub fn register(l: &mut Linker<St>) -> anyhow::Result<()> {
     })?;
     // wasi/emscripten convention: 0 on success
     l.func_wrap("env", "random_get", |mut c: Caller<'_, St>, p: i32, n: i32| -> i32 {
+        crate::pump_frame();
         let mut b = vec![0u8; n.max(0) as usize];
         if getrandom(&mut b).is_err() {
             return -1;
@@ -228,6 +271,7 @@ pub fn register(l: &mut Linker<St>) -> anyhow::Result<()> {
     // EM_ASM
     l.func_wrap("env", "emscripten_asm_const_int",
         |mut c: Caller<'_, St>, key: i32, sig: i32, buf: i32| -> i32 {
+            crate::trace::hit("asm_int");
             asm_eval(&mut c, key as u32, sig as u32, buf as u32) as u32 as i32
         })?;
     l.func_wrap("env", "emscripten_asm_const_double",
@@ -236,6 +280,7 @@ pub fn register(l: &mut Linker<St>) -> anyhow::Result<()> {
         })?;
     l.func_wrap("env", "emscripten_asm_const_int_sync_on_main_thread",
         |mut c: Caller<'_, St>, key: i32, sig: i32, buf: i32| -> i32 {
+            crate::trace::hit("asm_int");
             asm_eval(&mut c, key as u32, sig as u32, buf as u32) as u32 as i32
         })?;
     l.func_wrap("env", "emscripten_asm_const_async_on_main_thread",

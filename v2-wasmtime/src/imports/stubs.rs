@@ -34,7 +34,7 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
     l.func_wrap("env", "emscripten_set_focus_callback_on_thread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, | -> i32 { crate::trace::hit("emscripten_set_focus_callback_on_thread"); 0 })?;
     l.func_wrap("env", "js_linking_open_url", |_c: Caller<'_, St>, a0: i32, a1: i32, | -> i32 { crate::trace::hit("js_linking_open_url"); 0 })?;
     l.func_wrap("env", "js_web_client_ms_since_navigation", |_c: Caller<'_, St>, | -> f64 { crate::trace::hit("js_web_client_ms_since_navigation"); crate::imports::boot::perf_ms() })?;
-    l.func_wrap("env", "js_web_client_wasm_cache_state", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("js_web_client_wasm_cache_state"); 0 })?;
+    l.func_wrap("env", "js_web_client_wasm_cache_state", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("js_web_client_wasm_cache_state"); 2 })?;
     l.func_wrap("env", "sync_text_and_pos", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, | { crate::trace::hit("sync_text_and_pos");  })?;
     l.func_wrap("env", "setup_font", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: f32, a4: i32, a5: i32, | { crate::trace::hit("setup_font");  })?;
     l.func_wrap("env", "set_text_box_horiz_alignment", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("set_text_box_horiz_alignment");  })?;
@@ -62,7 +62,6 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
     l.func_wrap("env", "exit", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("exit");  })?;
     l.func_wrap("env", "emscripten_async_call", |mut c: Caller<'_, St>, f: i32, arg: i32, delay: i32| {
         crate::trace::hit("emscripten_async_call");
-        eprintln!("[asyn] hit");
         let Some(inst) = c.data().inst else { return };
         let Some(table) = inst.get_table(&mut c, "__indirect_function_table") else { return };
         let Some(wasmtime::Ref::Func(Some(func))) = table.get(&mut c, f as u64) else { return };
@@ -177,23 +176,6 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
     l.func_wrap("env", "emscripten_websocket_set_onmessage_callback_on_thread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, | -> i32 { crate::trace::hit("emscripten_websocket_set_onmessage_callback_on_thread"); 0 })?;
     l.func_wrap("env", "emscripten_websocket_set_onerror_callback_on_thread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, | -> i32 { crate::trace::hit("emscripten_websocket_set_onerror_callback_on_thread"); 0 })?;
     l.func_wrap("env", "emscripten_websocket_set_onclose_callback_on_thread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, | -> i32 { crate::trace::hit("emscripten_websocket_set_onclose_callback_on_thread"); 0 })?;
-    l.func_wrap("env", "rbx_opfs_close", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("rbx_opfs_close");  })?;
-    l.func_wrap("env", "rbx_opfs_free", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("rbx_opfs_free");  })?;
-    l.func_wrap("env", "rbx_opfs_install_helpers", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("rbx_opfs_install_helpers");  })?;
-    l.func_wrap("env", "__asyncjs__rbx_opfs_set", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, | -> i32 { crate::trace::hit("__asyncjs__rbx_opfs_set"); 0 })?;
-    l.func_wrap("env", "rbx_opfs_read_sync_if_cached", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, | -> i32 { crate::trace::hit("rbx_opfs_read_sync_if_cached"); 0 })?;
-    l.func_wrap("env", "__asyncjs__rbx_opfs_get_buffer", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, | -> i32 { crate::trace::hit("__asyncjs__rbx_opfs_get_buffer"); 0 })?;
-    l.func_wrap("env", "__asyncjs__rbx_opfs_open", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("__asyncjs__rbx_opfs_open");  })?;
-    l.func_wrap("env", "__asyncjs__rbx_opfs_clear", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("__asyncjs__rbx_opfs_clear"); 0 })?;
-    l.func_wrap("env", "__asyncjs__rbx_opfs_get_offset", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, | -> i32 { crate::trace::hit("__asyncjs__rbx_opfs_get_offset"); 0 })?;
-    l.func_wrap("env", "__asyncjs__rbx_opfs_contains", |_c: Caller<'_, St>, a0: i32, | -> i32 { crate::trace::hit("__asyncjs__rbx_opfs_contains"); 0 })?;
-    l.func_wrap("env", "__asyncjs__rbx_opfs_remove", |_c: Caller<'_, St>, a0: i32, | -> i32 { crate::trace::hit("__asyncjs__rbx_opfs_remove"); 0 })?;
-    l.func_wrap("env", "__asyncjs__rbx_opfs_get_buffer_offset", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, | -> i32 { crate::trace::hit("__asyncjs__rbx_opfs_get_buffer_offset"); 0 })?;
-    l.func_wrap("env", "__asyncjs__rbx_opfs_file_size", |_c: Caller<'_, St>, a0: i32, | -> i32 { crate::trace::hit("__asyncjs__rbx_opfs_file_size"); 0 })?;
-    l.func_wrap("env", "__asyncjs__rbx_opfs_get", |_c: Caller<'_, St>, a0: i32, a1: i32, | -> i32 { crate::trace::hit("__asyncjs__rbx_opfs_get"); 0 })?;
-    l.func_wrap("env", "__asyncjs__rbx_opfs_list", |_c: Caller<'_, St>, a0: i32, a1: i32, | -> i32 { crate::trace::hit("__asyncjs__rbx_opfs_list"); 0 })?;
-    l.func_wrap("env", "__asyncjs__rbx_opfs_list_sized", |_c: Caller<'_, St>, a0: i32, a1: i32, | -> i32 { crate::trace::hit("__asyncjs__rbx_opfs_list_sized"); 0 })?;
-    l.func_wrap("env", "__asyncjs__rbx_opfs_remove_batch", |_c: Caller<'_, St>, a0: i32, | -> i32 { crate::trace::hit("__asyncjs__rbx_opfs_remove_batch"); 0 })?;
     l.func_wrap("env", "emscripten_stack_snapshot", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("emscripten_stack_snapshot"); 0 })?;
     l.func_wrap("env", "emscripten_stack_unwind_buffer", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, | -> i32 { crate::trace::hit("emscripten_stack_unwind_buffer"); 0 })?;
     l.func_wrap("env", "emscripten_pc_get_function", |_c: Caller<'_, St>, a0: i32, | -> i32 { crate::trace::hit("emscripten_pc_get_function"); 0 })?;

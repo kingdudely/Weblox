@@ -47,6 +47,7 @@ fn remote(url: &str, base: &str) -> String {
 pub fn register(l: &mut Linker<St>) -> Result<()> {
     l.func_wrap("env", "js_fetch_file",
         |mut c: Caller<'_, St>, urlp: i32, dst: i32, want: i32| -> i32 {
+            crate::pump_frame();
             let url = rstr(&c, urlp as u32);
             let want = want as u32;
             crate::diag::event(format!("fetch {url} want={want}"));

@@ -84,6 +84,12 @@ app.whenReady().then(async () => {
     return { action: "deny" };
   });
 
+  if (process.env.WC_LOG === "1") {
+    win.webContents.on("console-message", (_e, level, message) => {
+      console.log(`[page:${level}] ${message}`);
+    });
+  }
+
   win.on("closed", () => {
     win = null;
     app.quit();

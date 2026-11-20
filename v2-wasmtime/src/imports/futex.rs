@@ -43,7 +43,35 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
                 n += 1;
                 if let Ok(t) = std::env::var("WC_TRAP_AT") {
                     if let Ok(t) = t.parse::<u64>() {
-                        if n == t {
+                        let ok = match std::env::var("WC_TRAP_THREAD") {
+                            Ok(name) => std::thread::current().name() == Some(name.as_str()),
+                            Err(_) => true,
+                        };
+                        let late = match std::env::var("WC_TRAP_AFTER") {
+                            Ok(ms) => {
+                                use std::sync::OnceLock;
+                                static START: OnceLock<std::time::Instant> = OnceLock::new();
+                                START.get_or_init(std::time::Instant::now).elapsed().as_millis()
+                                    >= ms.parse::<u128>().unwrap_or(0)
+                            }
+                            Err(_) => true,
+                        };
+                        let ok = ok && (std::env::var_os("WC_TRAP_SUBMIT").is_none()
+                            || crate::imports::boot::submit_thread());
+                        if n == t && ok && late {
+                            eprintln!("[pc] thread={}", std::thread::current().name().unwrap_or("?"));
+                            unsafe {
+                                let mut fp: usize;
+                                std::arch::asm!("mov {}, rbp", out(reg) fp);
+                                for _ in 0..14 {
+                                    if fp == 0 {
+                                        break;
+                                    }
+                                    let ret = *((fp + 8) as *const usize);
+                                    eprintln!("[pc] {ret:x}");
+                                    fp = *(fp as *const usize);
+                                }
+                            }
                             return Err(wasmtime::Error::msg("futex spin"));
                         }
                     }
@@ -63,9 +91,10 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
                         return Ok(2);
                     }
                 }
-                // drain anything the mailbox is holding, then park this fibre
+                // drain anything the mailbox is holding, then spin: a sleep
+                // would need the turn pump, which is busy inside `main`
                 let _ = crate::fibre::block_on(crate::imports::mailbox::pump_mailbox(&mut c));
-                crate::fibre::block_on(crate::fibre::sleep(&mut c, std::time::Duration::from_millis(1)));
+                std::thread::yield_now();
             }
         })?;
     Ok(())

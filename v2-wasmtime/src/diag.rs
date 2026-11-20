@@ -51,8 +51,9 @@ pub fn watch(secs: u64) {
         let now = EVENTS.load(Ordering::Relaxed);
         let ms = START.lock().unwrap().map(|s| s.elapsed().as_millis()).unwrap_or(0);
         let last = LAST.lock().unwrap().clone().unwrap_or_else(|| "<none>".into());
-        eprintln!("[rate {ms}ms] events/s={} nested={} notify={} live_workers={} last={last}",
-                  now - prev, NESTED.load(Ordering::Relaxed), NOTIFY.load(Ordering::Relaxed), LIVE.load(Ordering::Relaxed));
+        eprintln!("[rate {ms}ms] events/s={} nested={} notify={} live_workers={} clock={:.0} last={last}",
+                  now - prev, NESTED.load(Ordering::Relaxed), NOTIFY.load(Ordering::Relaxed), LIVE.load(Ordering::Relaxed),
+                  crate::imports::boot::perf_ms());
         if !dumped {
             if let Ok(at) = std::env::var("WC_DUMP_AT") {
                 if ms as u64 >= at.parse::<u64>().unwrap_or(u64::MAX) {

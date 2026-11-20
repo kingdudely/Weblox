@@ -71,6 +71,9 @@ pub async fn pump_mailbox<T: AsContextMut<Data = St>>(cx: &mut T) -> bool {
     if !take_ring(ptr) {
         return false;
     }
+    if std::env::var_os("WC_MBX").is_some() {
+        eprintln!("[mbx ] ring {} {ptr:#x}", std::thread::current().name().unwrap_or("?"));
+    }
     set_ready(cx, ptr);
     check(cx).await;
     true
@@ -153,19 +156,27 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
 
             // as on the page: arm and return; the ring is drained at this
             // thread's next safe point (`pump_mailbox`)
+            if std::env::var_os("WC_MBX").is_some() {
+                eprintln!("[mbx ] arm {} {ptr:#x}", std::thread::current().name().unwrap_or("?"));
+            }
             c.data_mut().mbx_ptr = Some(ptr);
             set_ready(&mut c, ptr);
         })?;
 
     l.func_wrap("env", "_emscripten_notify_mailbox_postmessage",
-        |target: i32, self_thread: i32| {
+        |mut c: Caller<'_, St>, target: i32, self_thread: i32| {
             crate::trace::hit("mbx_notify");
             crate::diag::notify();
             if std::env::var_os("WC_MBX").is_some() {
                 eprintln!("[mbx ] notify {target:#x} from {self_thread:#x}");
             }
             add_ring(target as u32);
-            let _ = self_thread;
+            // the receiver is parked in `Atomics.waitAsync` on its mailbox
+            // word; a post has to wake it there
+            if target as u32 != self_thread as u32 {
+                let mem = c.data().mem.clone();
+                let _ = mem.atomic_notify(target as u64, 1);
+            }
         })?;
     Ok(())
 }

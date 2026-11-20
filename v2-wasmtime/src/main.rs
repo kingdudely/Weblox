@@ -20,6 +20,71 @@ mod state;
 
 use state::{St, CANVAS_H, CANVAS_W};
 
+thread_local! {
+    static IN_FRAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub static FRAME_FN: std::sync::Mutex<Option<TypedFunc<(), ()>>> = std::sync::Mutex::new(None);
+pub static FRAME_AT: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+
+/// Hand the frame pump to the import layer so the engine's deferred work runs
+/// while `main` is still on the stack.
+pub fn give_frame(f: TypedFunc<(), ()>) {
+    *FRAME_FN.lock().unwrap() = Some(f);
+    *FRAME_AT.lock().unwrap() = Some(Instant::now());
+}
+
+/// Run one deferred-work iteration, at most once per millisecond and never
+/// re-entrantly.  Called from imports that the engine hits while it is busy.
+fn pump_enabled() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("WC_PUMP").is_some())
+}
+
+pub fn pump_frame() {
+    if !pump_enabled() {
+        return;
+    }
+    let p = fibre::store_ptr();
+    if p.is_null() {
+        return;
+    }
+    let st = unsafe { &mut *p };
+    if !st.data().is_main || st.data().inst.is_none() {
+        return;
+    }
+    if IN_FRAME.with(|f| f.replace(true)) {
+        return;
+    }
+    {
+        let mut at = FRAME_AT.lock().unwrap();
+        let now = Instant::now();
+        match *at {
+            Some(last) if now.duration_since(last).as_millis() < 16 => {
+                IN_FRAME.with(|f| f.set(false));
+                return;
+            }
+            _ => *at = Some(now),
+        }
+    }
+    if let Some(f) = FRAME_FN.lock().unwrap().clone() {
+        static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if std::env::var_os("WC_PUMP").is_some() && n % 200 == 0 {
+            eprintln!("[pump] {n}");
+        }
+        // the outer call consumed the deadline; give the nested one its own
+        st.set_epoch_deadline(50);
+        if let Err(e) = f.call(&mut *st, ()) {
+            if std::env::var_os("WC_PUMP").is_some() {
+                eprintln!("[pump] {n} err: {e:#}");
+            }
+        }
+    }
+    IN_FRAME.with(|f| f.set(false));
+}
+
 fn wasm_path() -> String { std::env::var("WC_WASM").unwrap_or_else(|_| "/home/john/rr/WebClient.wasm".into()) }
 const CACHE: &str = "data/cache/webclient.cwasm";
 const CACHE_STAMP: &str = "data/cache/webclient.stamp";
@@ -144,6 +209,10 @@ fn run() -> Result<()> {
     let cookie = cookie()?;
     let engine = Engine::new(&config()?)?;
     let module = module(&engine)?;
+    {
+        let r = module.image_range();
+        eprintln!("[img] {:x} {:x}", r.start as usize, r.end as usize);
+    }
     if let Ok(path) = std::env::var("WC_MAP") {
         // address -> wasm function, for translating a PC sampled with gdb
         if let Some(m) = module.address_map() {
@@ -167,6 +236,7 @@ fn run() -> Result<()> {
     fibre::register(&mut linker)?;
     imports::mailbox::register(&mut linker)?;
     imports::gl::register(&mut linker)?;
+    imports::opfs::register(&mut linker)?;
     imports::stubs::register(&mut linker)?;
     imports::thread::register(&mut linker)?;
 
@@ -194,11 +264,10 @@ fn run() -> Result<()> {
     // `emscripten_futex_wait` blocks in `memory.atomic.wait32` unless this
     // counter says there is an async runtime; the main thread has to take the
     // host path or the turn loop freezes.
-    // leave the async depth at 0: with a nonzero value `emscripten_futex_wait`
-    // spins internally instead of calling the host import
-    if std::env::var_os("WC_WASYNC").is_some() {
-        unsafe { *(store.data().mem.data()[9515280].get() as *mut u32) = 0 }
-    }
+    // A nonzero async depth keeps `emscripten_futex_wait` spinning in wasm
+    // instead of calling the host import; that is what keeps the main thread
+    // moving (a host call cannot be serviced while `main` is on the stack).
+    unsafe { *(store.data().mem.data()[9515280].get() as *mut u32) = 1 }
     if std::env::var_os("WC_SLOT0").is_some() {
         let t = inst.get_table(&mut *store, "__indirect_function_table").unwrap();
         if let Some(f) = t.get(&mut *store, std::env::var("WC_SLOT0").unwrap().parse::<u64>().unwrap()) {
@@ -279,6 +348,7 @@ fn run() -> Result<()> {
     eprintln!("[wasm] main returned {rc}");
 
     let iter = inst.get_typed_func::<(), ()>(&mut *store, "main_loop_iteration")?;
+    give_frame(iter.clone());
     let secs: f64 = std::env::var("WC_LOOP_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(60_000.0);
     let deadline = Instant::now() + Duration::from_secs_f64(secs / 1000.0);
     std::thread::spawn(|| diag::watch(3));
@@ -289,6 +359,8 @@ fn run() -> Result<()> {
             eprintln!("[iter] turn {turns} at {}ms", deadline.saturating_duration_since(Instant::now()).as_millis());
         }
         turns += 1;
+        // the engine's frame clock must move even if the clock thread is late
+        imports::boot::advance_frame();
 
         let fid = 0x8000_0000 | (turns as u32 & 0xffff);
         let p = store.data().rt.as_ref().expect("rt").store;
@@ -523,7 +595,7 @@ async fn settings() -> String {
     eprintln!("[prep] {} bytes of settings", body.len());
     let mut out = String::with_capacity(body.len() + 128);
     out.push_str(&body[..=open]);
-    out.push_str(r#""BaseUrl":"https://www.roblox.com/","FIntWasmMemoryPages":"32768","#);
+    out.push_str(r#""BaseUrl":"https://www.roblox.com/","FIntWasmMemoryPages":"32768","DFLogHttpTrace":"6","DFLogHttpTraceLight":"1","#);
     out.push_str(&body[open + 1..close]);
     out.push_str(r#"},"RobloxLocaleId":"en-us","GameLocaleId":"en-us"}"#);
     out

@@ -216,6 +216,9 @@ fn run(req: &Req, cookie: Option<&str>) -> std::io::Result<(u16, String, String,
 }
 
 pub fn register(l: &mut Linker<St>) -> Result<()> {
+    if std::env::var_os("WC_HTTP").is_some() {
+        eprintln!("[http] register");
+    }
     l.func_wrap("env", "emscripten_start_fetch",
         |mut c: Caller<'_, St>, fetch: i32| {
             crate::trace::hit("http_start");
@@ -230,6 +233,10 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
             let onload = word(&c, a + A_ONLOAD);
             let onerror = word(&c, a + A_ONERROR);
             let onstate = word(&c, a + A_ONSTATE);
+            if std::env::var_os("WC_HTTP").is_some() {
+                let up = word(&c, f + F_URL);
+                eprintln!("[http] start f={f:#x} url={:?} state={}", if up == 0 { String::new() } else { rstr(&c, up) }, word(&c, f + F_STATE));
+            }
             let Some(req) = parse(&c, f) else {
                 put_u16(&mut c, f + F_STATE, 4);
                 put_u16(&mut c, f + F_STATUS, 0);
@@ -306,6 +313,13 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
         })?;
 
     l.func_wrap("env", "emscripten_fetch_free", |mut c: Caller<'_, St>, fetch: i32| {
+        if std::env::var_os("WC_HTTP").is_some() {
+            let f = fetch as u32;
+            let up = word(&c, f + F_URL);
+            eprintln!("[http] free {f:#x} url={:?} state={} err={}",
+                      if up == 0 { String::new() } else { rstr(&c, up) },
+                      word(&c, f + F_STATE), word(&c, f + 36));
+        }
         c.data_mut().fetch_hdrs.remove(&(fetch as u32));
     })?;
     Ok(())
