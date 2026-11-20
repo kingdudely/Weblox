@@ -33,7 +33,7 @@ use wasmtime_internal_fiber::{Fiber, FiberStack, Suspend};
 use crate::state::St;
 
 const TASK_STACK: usize = 2 << 20;
-const FIBRE_STACK: usize = 256 << 10;
+const FIBRE_STACK: usize = 512 << 10;
 const FIRST_ID: u32 = 0x9000_0000;
 
 /// What the trampoline runs next: a fibre, the value handed back to the
@@ -52,18 +52,29 @@ type Susp = Suspend<u32, Yield, ()>;
 pub type Task = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
 /// Live (thread, fibre, guest sp) for the stall dump.
-pub static TRACE_T: std::sync::Mutex<Vec<(String, u32, u32)>> = std::sync::Mutex::new(Vec::new());
+pub static TRACE_T: std::sync::Mutex<Vec<(String, u32, u32, bool)>> = std::sync::Mutex::new(Vec::new());
 
-fn note(tag: &str, cur: u32, sp: u32) {
+fn note(cur: u32, sp: u32) {
+    if std::env::var_os("WC_HB").is_none() {
+        return;
+    }
+    let parked = {
+        let st = STORE.with(|c| c.get());
+        if st.is_null() {
+            false
+        } else {
+            waiting(unsafe { &*st }, cur)
+        }
+    };
     let name = std::thread::current().name().unwrap_or("?").to_string();
     let mut t = TRACE_T.lock().unwrap();
-    if let Some(e) = t.iter_mut().find(|(n, _, _)| *n == name) {
+    if let Some(e) = t.iter_mut().find(|(n, _, _, _)| *n == name) {
         e.1 = cur;
         e.2 = sp;
+        e.3 = parked;
     } else {
-        t.push((name, cur, sp));
+        t.push((name, cur, sp, parked));
     }
-    let _ = tag;
 }
 
 thread_local! {
@@ -232,7 +243,7 @@ fn resume(st: &mut Store<St>, step: Step) -> Result<Resume> {
     if std::env::var_os("WC_FX").is_some() {
         eprintln!("[fbr ] run {:#x} val={:#x} ctx={ctx:?}", step.fibre, step.val);
     }
-    note("run", step.fibre, ctx.0);
+    note(step.fibre, ctx.0);
     let prev = CUR.with(|c| c.get());
     CUR.with(|c| c.set(step.fibre));
     st.data_mut().cur = step.fibre;
@@ -279,15 +290,22 @@ fn trampoline(st: &mut Store<St>) {
     if TRAMP.with(|t| t.replace(true)) {
         return;
     }
-    while let Some(s) = NEXT.with(|n| n.borrow_mut().take()) {
-        match resume(st, s) {
-            Ok(Resume::Done) => {}
-            Ok(Resume::Parked(n)) => {
-                if let Some(n) = n {
-                    NEXT.with(|q| *q.borrow_mut() = Some(n));
+    loop {
+        while let Some(s) = NEXT.with(|n| n.borrow_mut().take()) {
+            match resume(st, s) {
+                Ok(Resume::Done) => {}
+                Ok(Resume::Parked(n)) => {
+                    if let Some(n) = n {
+                        NEXT.with(|q| *q.borrow_mut() = Some(n));
+                    }
                 }
+                Err(e) => eprintln!("[fbr ] scheduler: {e:#}"),
             }
-            Err(e) => eprintln!("[fbr ] scheduler: {e:#}"),
+        }
+        // Nothing queued: let the timers have a turn before parking.
+        tick(st);
+        if NEXT.with(|n| n.borrow().is_none()) {
+            break;
         }
     }
     TRAMP.with(|t| t.set(false));
@@ -303,7 +321,9 @@ fn spawn(st: &mut Store<St>, id: u32, size: usize, tok: u32, entry: u32, arg: u3
         let st = raw.get();
         let Ok(o) = ops(st) else { return };
         if let Err(e) = o.entry.call(st, (tok, entry, arg)) {
-            eprintln!("[fbr ] fibre tok={tok:#x} entry={entry} died: {e:#}");
+            if std::env::var_os("WC_FX").is_some() {
+                eprintln!("[fbr ] fibre tok={tok:#x} entry={entry} died: {e:#}");
+            }
         }
     })
     .map_err(|(e, _)| wasmtime::Error::msg(e.to_string()))?;
@@ -415,7 +435,7 @@ pub fn call_fibre<T: wasmtime::AsContextMut<Data = St>>(
         if !is_live(st, id) {
             return Ok(());
         }
-        if st.data().cur != id {
+        if st.data().cur != id && !waiting(st, id) {
             schedule(st, Step { fibre: id, val: id, ctx: None });
         }
     }
@@ -441,6 +461,17 @@ pub fn shutdown(store: &mut Store<St>) {
     for (_, f) in rt.fibres.drain() {
         std::mem::forget(f);
     }
+}
+
+/// Whether a fibre is parked under some token, i.e. waiting for a real
+/// transfer rather than for the host.
+fn waiting(store: &Store<St>, id: u32) -> bool {
+    store
+        .data()
+        .rt
+        .as_ref()
+        .map(|r| r.slots.values().any(|v| *v == id))
+        .unwrap_or(false)
 }
 
 pub fn is_live(store: &Store<St>, id: u32) -> bool {
@@ -531,7 +562,7 @@ where
         }
         std::thread::sleep(std::time::Duration::from_millis(1));
         tick(st);
-        if st.data().cur != id && is_live(st, id) {
+        if st.data().cur != id && is_live(st, id) && !waiting(st, id) {
             schedule(st, Step { fibre: id, val: id, ctx: None });
         }
     }

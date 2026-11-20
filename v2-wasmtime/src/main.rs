@@ -178,6 +178,10 @@ fn run() -> Result<()> {
     linker.define(&mut *store, "env", "memory", Extern::SharedMemory(mem))?;
     let inst = fibre::block_on(linker.instantiate_async(&mut *store, &module))?;
     store.data_mut().inst = Some(inst);
+    // `emscripten_futex_wait` blocks in `memory.atomic.wait32` unless this
+    // counter says there is an async runtime; the main thread has to take the
+    // host path or the turn loop freezes.
+    unsafe { *(store.data().mem.data()[9515280].get() as *mut u32) = 1 }
     if std::env::var_os("WC_SLOT0").is_some() {
         let t = inst.get_table(&mut *store, "__indirect_function_table").unwrap();
         if let Some(f) = t.get(&mut *store, std::env::var("WC_SLOT0").unwrap().parse::<u64>().unwrap()) {
@@ -294,8 +298,8 @@ fn run() -> Result<()> {
     eprintln!("[wasm] {turns} turns; last event {}", diag::last());
     trace::dump();
     eprintln!("[wasm] loop done");
-    for (t, c, sp) in fibre::TRACE_T.lock().unwrap().iter() {
-        eprintln!("[dump] thread {t} cur={c:#x} sp={sp:#x}");
+    for (t, c, sp, w) in fibre::TRACE_T.lock().unwrap().iter() {
+        eprintln!("[dump] thread {t} cur={c:#x} sp={sp:#x} waiting={w}");
     }
     fibre::shutdown(&mut *store);
     Ok(())

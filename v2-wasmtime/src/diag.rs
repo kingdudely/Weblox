@@ -60,8 +60,8 @@ pub fn watch(secs: u64) {
                 let tail: Vec<&str> = h.iter().rev().take(70).cloned().collect();
                 eprintln!("[stall] before the gamepad spin (newest first): {}",
                           tail.join(" "));
-                for (t, c, sp) in crate::fibre::TRACE_T.lock().unwrap().iter() {
-                    eprintln!("[stall]   thread {t} cur={c:#x} sp={sp:#x}");
+                for (t, c, sp, w) in crate::fibre::TRACE_T.lock().unwrap().iter() {
+                    eprintln!("[stall]   thread {t} cur={c:#x} sp={sp:#x} waiting={w}");
                 }
                 stalls = 0;
             }

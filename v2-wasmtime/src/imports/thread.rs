@@ -38,6 +38,7 @@ fn start_worker(
                 eprintln!("[pthr] {pthread:x} instantiating");
                 let inst = l.instantiate_async(&mut *store, &module).await?;
                 store.data_mut().inst = Some(inst);
+                if std::env::var_os("WC_ST").is_some() { eprintln!("[st  ] {pthread:x} instantiated"); }
                 if let Ok(v) = std::env::var("WC_SLOT0") {
                     if let Ok(k) = v.parse::<u64>() {
                         let t = inst.get_table(&mut *store, "__indirect_function_table").unwrap();
@@ -63,11 +64,24 @@ fn start_worker(
                 // initialisers, as the page does for every worker
                 let tls = inst.get_typed_func::<(), (i32,)>(&mut *store, "_emscripten_tls_init")?;
                 tls.call(&mut *store, ())?;
-                inst.get_typed_func::<(), ()>(&mut *store, "__wasm_call_ctors")?
-                    .call(&mut *store, ())?;
+                if std::env::var_os("WC_ST").is_some() { eprintln!("[st  ] {pthread:x} tls done"); }
+                // give the thread its id and let its futexes use the host path
+                // before any static initialiser runs
+                let sts0 = inst.get_typed_func::<(i32, i32, i32, i32), ()>(&mut *store, "__set_thread_state")?;
+                sts0.call(&mut *store, (pthread as i32, 1, 0, 0))?;
+                if std::env::var_os("WC_WCTORS").is_some() {
+                    inst.get_typed_func::<(), ()>(&mut *store, "__wasm_call_ctors")?
+                        .call(&mut *store, ())?;
+                }
+                if std::env::var_os("WC_ST").is_some() { eprintln!("[st  ] {pthread:x} ctors done"); }
                 let ti = inst.get_typed_func::<(i32, i32, i32, i32, i32, i32), ()>(
                     &mut *store, "_emscripten_thread_init")?;
                 ti.call(&mut *store, (pthread as i32, 0, 0, 1, 0, 0))?;
+                if std::env::var_os("WC_ST").is_some() {
+                    let m = store.data().mem.clone();
+                    let w = |o: usize| unsafe { *(m.data()[pthread as usize + o].get() as *const u32) };
+                    eprintln!("[st  ] {pthread:x} after init: +0={:#x} +8={:#x} +12={:#x} +16={:#x}", w(0), w(8), w(12), w(16));
+                }
                 if std::env::var_os("WC_NOSTS").is_none() {
                     let sts = inst.get_typed_func::<(i32, i32, i32, i32), ()>(&mut *store, "__set_thread_state")?;
                     sts.call(&mut *store, (pthread as i32, 0, 0, 0))?;
@@ -122,6 +136,7 @@ fn start_worker(
             r
         })?;
     eprintln!("[pthr] spawned {pthread:x} start={start} arg={arg}");
+
     Ok(())
 }
 
