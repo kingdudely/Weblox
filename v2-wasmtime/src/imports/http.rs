@@ -123,9 +123,7 @@ fn deliver<T: wasmtime::AsContextMut<Data = St>>(cx: &mut T, r: Reply) {
             let mem = cx.as_context().data().mem.clone();
             let d = mem.data();
             if n > 0 {
-                for (i, b) in body.iter().enumerate() {
-                    unsafe { *(d[data as usize + i].get() as *mut u8) = *b };
-                }
+                unsafe { std::ptr::copy_nonoverlapping(body.as_ptr(), d[data as usize].get(), n) };
             }
             let put = |o: u32, v: u64| unsafe {
                 for i in 0..8 {
@@ -743,8 +741,11 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
             // flow decide it had lost the connection.
             if std::env::var_os("WC_ASYNCHTTP").is_some() {
                 let join = is_join(&req.url);
-                std::thread::spawn(move || {
+                eprintln!("[http*] queued {} me={me:#x}", req.url);
+                crate::imports::rna::rt().spawn_blocking(move || {
+                    eprintln!("[http*] run {} {}", req.method, req.url);
                     let res = run(&req, COOKIE.get().map(String::as_str));
+                    eprintln!("[http*] done {} -> {:?}", req.url, res.as_ref().map(|x| x.0).map_err(|e| e.to_string()));
                     if join && std::env::var_os("WC_NOHOLD").is_none() {
                         std::thread::sleep(std::time::Duration::from_millis(
                             std::env::var("WC_HOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(400),
@@ -756,7 +757,9 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
                 // The engine's fetch wrapper expects the request to occupy the
                 // worker until the answer is in; blocking here is what it does
                 // with the page's XHR too.
+                eprintln!("[http*] sync {} ...", req.url);
                 let res = run(&req, COOKIE.get().map(String::as_str));
+                eprintln!("[http*] sync {} -> {:?}", req.url, res.as_ref().map(|x| x.0).map_err(|e| e.to_string()));
                 deliver(&mut c, Reply { me, fetch: f, onload, onerror, onstate, res, retry: false });
                 pump(&mut c);
             }

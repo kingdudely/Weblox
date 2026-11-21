@@ -91,6 +91,7 @@ pub async fn drop_in<T: AsContextMut<Data = St>>(cx: &mut T) -> bool {
     if !cx.as_context().data().is_main {
         return false;
     }
+    crate::imports::boot::run_main_jobs();
     if cx.as_context().data().main_ptr.is_none() {
         let inst = cx.as_context().data().inst;
         if let Some(inst) = inst {

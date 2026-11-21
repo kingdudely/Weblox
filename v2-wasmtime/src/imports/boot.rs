@@ -28,7 +28,82 @@ static FRAME_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::ne
 /// faster than 60 Hz, and a frame-counted clock runs away with it.
 pub fn advance_frame() {}
 
+/// Set once the engine has an audio sink; the main loop then calls the mix
+/// export the way `onaudioprocess` would.
+pub static AUDIO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub fn start_clock() {}
+
+struct MainJob {
+    key: u32,
+    sig: String,
+    args: Vec<u8>,
+    tx: std::sync::mpsc::Sender<f64>,
+}
+static JOBS: std::sync::Mutex<Vec<MainJob>> = std::sync::Mutex::new(Vec::new());
+
+/// Run one queued "on main thread" job.  Called from the main thread's safe
+/// points, which is where the page's glue would have run it too.
+pub fn run_main_jobs() {
+    let sp = crate::fibre::store_ptr();
+    let cx = unsafe { &mut *sp };
+    loop {
+        let job = {
+            let mut q = JOBS.lock().unwrap();
+            if q.is_empty() { return }
+            q.remove(0)
+        };
+        let sigp = {
+            let mut v = job.sig.clone().into_bytes();
+            v.push(0);
+            let d = cx.data().mem.data();
+            let at = SCRATCH.with(|c| c.get());
+            if at == 0 {
+                let base = d.len() - 0x2000;
+                for (i, b) in v.iter().enumerate() {
+                    unsafe { *d[base + i].get() = *b };
+                }
+                SCRATCH.with(|c| c.set(base as u32));
+                base as u32
+            } else {
+                for (i, b) in v.iter().enumerate() {
+                    unsafe { *d[at as usize + i].get() = *b };
+                }
+                at
+            }
+        };
+        let args = job.args;
+        let buf = SCRATCH2.with(|c| { let v = c.get(); if v == 0 { let b = cx.data().mem.data().len() as u32 - 0x1000; c.set(b); b } else { v } });
+        {
+            let d = cx.data().mem.data();
+            for (i, b) in args.iter().enumerate() {
+                unsafe { *d[buf as usize + i].get() = *b };
+            }
+        }
+        let v = asm_eval(cx, job.key, sigp, buf);
+        let _ = job.tx.send(v);
+    }
+}
+
+thread_local! {
+    static SCRATCH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static SCRATCH2: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Copy a signature's packed arguments out of guest memory.
+fn pack_args(cx: &wasmtime::Store<St>, sig: &str, buf: u32) -> Vec<u8> {
+    let d = cx.data().mem.data();
+    let mut v = Vec::new();
+    let mut off = buf as usize;
+    for ch in sig.bytes() {
+        let wide = ch == b'j' || ch == b'f' || ch == b'd';
+        if wide && off % 8 != 0 { off += 4; }
+        let n = if wide { 8 } else { 4 };
+        for i in 0..n { v.push(unsafe { *d[off + i].get() }); }
+        off += n;
+    }
+    v
+}
 
 fn start() -> &'static std::time::Instant {
     static S: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
@@ -60,6 +135,20 @@ fn dump_pcs() {
     }
 }
 
+fn rstr_ctx(c: &wasmtime::Store<St>, p: u32) -> String {
+    let d = c.data().mem.data();
+    if p == 0 { return String::new(); }
+    let mut v = Vec::new();
+    let mut i = p as usize;
+    loop {
+        let b = unsafe { *d[i].get() };
+        if b == 0 || v.len() > 4096 { break }
+        v.push(b);
+        i += 1;
+    }
+    String::from_utf8_lossy(&v).into_owned()
+}
+
 fn now_ms() -> f64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let d = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
@@ -72,8 +161,8 @@ fn cores() -> i32 {
 
 /// ASM_CONSTS: the module passes a numeric key, a signature string and a packed
 /// argument buffer; the glue decodes the signature and spreads the values.
-fn asm_eval(c: &mut Caller<'_, St>, key: u32, sigp: u32, buf: u32) -> f64 {
-    let sig = rstr(c, sigp);
+fn asm_eval(c: &mut wasmtime::Store<St>, key: u32, sigp: u32, buf: u32) -> f64 {
+    let sig = rstr_ctx(c, sigp);
     let mut off = buf as usize;
     let mut vals: Vec<f64> = Vec::new();
     for ch in sig.bytes() {
@@ -101,7 +190,7 @@ fn asm_eval(c: &mut Caller<'_, St>, key: u32, sigp: u32, buf: u32) -> f64 {
             let kind = if a(0) != 0 { "FAILURE" } else { "status" };
             let src = match a(1) { 1 => "join", 2 => "teleport", _ => "gui-service" };
             eprintln!("[asm] loading {kind} source={src} msg={:?} err={} status={}",
-                      rstr(c, a(2)), a(3) as i32, a(4) as i32);
+                      rstr_ctx(&*c, a(2)), a(3) as i32, a(4) as i32);
             0.0
         }
         9099404 | 9099461 => 0.0,                  // native exit
@@ -122,12 +211,12 @@ fn asm_eval(c: &mut Caller<'_, St>, key: u32, sigp: u32, buf: u32) -> f64 {
         }
         9099902 => 0.0,                            // leave
         9111863 => {                               // crash report
-            eprintln!("[asm] CRASH {} {}", rstr(c, a(0)), rstr(c, a(1)));
+            eprintln!("[asm] CRASH {} {}", rstr_ctx(&*c, a(0)), rstr_ctx(&*c, a(1)));
             0.0
         }
         9119019 => 0.0,                            // saveIxpSettings
         9119097 => {                               // cors: non-allowlisted header
-            eprintln!("[asm] cors: non-allowlisted header {:?}", rstr(c, a(0)));
+            eprintln!("[asm] cors: non-allowlisted header {:?}", rstr_ctx(&*c, a(0)));
             0.0
         }
         9118661 => 1.0,                            // preinitializedWebGPUDevice
@@ -139,8 +228,17 @@ fn asm_eval(c: &mut Caller<'_, St>, key: u32, sigp: u32, buf: u32) -> f64 {
             let _ = getrandom(&mut b);
             u32::from_le_bytes(b) as f64
         }
+        9111979 => {
+            eprintln!("[asm] fmod args={} {}", a(0) as i32, a(1) as i32);
+            0.0
+        }
         // audio context probes: pretend they worked
-        9112441 | 9117655 | 9118217 | 9112554 => 0.0,
+        9112441 => 0.0,                          // prefer the synchronous ScriptProcessor path
+        9117655 | 9118217 | 9115514 => 48000.0,    // AudioContext sample rate probes
+        9114286 => { AUDIO.store(true, std::sync::atomic::Ordering::Relaxed); 1.0 },
+        9118423 => { AUDIO.store(true, std::sync::atomic::Ordering::Relaxed); 1.0 },
+        9117856 => { AUDIO.store(true, std::sync::atomic::Ordering::Relaxed); 0.0 },
+        9112554 => 0.0,
         9114701 | 9117856 | 9118423 | 9112730 | 9113734 | 9113952 => 0.0,
         9114224 => 0.0,                            // worklet node
         9115094 | 9115715 | 9116344 | 9117920 => 0.0,
@@ -148,7 +246,16 @@ fn asm_eval(c: &mut Caller<'_, St>, key: u32, sigp: u32, buf: u32) -> f64 {
         9115926 | 9117251 | 9117293 | 9117579 | 9117632 | 9118195
         | 9114286 | 9118718 => 0.0,
         _ => {
-            eprintln!("[asm] unknown key {key} sig={sig:?}");
+            let d = c.data().mem.data();
+            for probe in [9099118u32, 9111979u32] {
+                let b: Vec<u8> = (probe as usize..probe as usize + 40).map(|i| unsafe { *d[i].get() }).collect();
+                let t: String = b.iter().map(|x| if (0x20..0x7f).contains(x) { *x as char } else { '.' }).collect();
+                eprintln!("[asm*] {probe} = {t:?}");
+            }
+            let a0 = (key as usize).saturating_sub(48);
+            let bytes: Vec<u8> = (a0..key as usize + 160).map(|i| unsafe { *d[i].get() }).collect();
+            let txt: String = bytes.iter().map(|b| if (0x20..0x7f).contains(b) { *b as char } else { '.' }).collect();
+            eprintln!("[asm] unknown key {key} sig={sig:?} args={} {}", a(0) as i32, a(1) as i32);
             0.0
         }
     }
@@ -298,20 +405,38 @@ pub fn register(l: &mut Linker<St>) -> anyhow::Result<()> {
     l.func_wrap("env", "emscripten_asm_const_int",
         |mut c: Caller<'_, St>, key: i32, sig: i32, buf: i32| -> i32 {
             crate::trace::hit("asm_int");
-            asm_eval(&mut c, key as u32, sig as u32, buf as u32) as u32 as i32
+            (({ let sp = crate::fibre::store_ptr(); asm_eval(unsafe { &mut *sp }, key as u32, sig as u32, buf as u32) })) as u32 as i32
         })?;
     l.func_wrap("env", "emscripten_asm_const_double",
         |mut c: Caller<'_, St>, key: i32, sig: i32, buf: i32| -> f64 {
-            asm_eval(&mut c, key as u32, sig as u32, buf as u32)
+            ({ let sp = crate::fibre::store_ptr(); asm_eval(unsafe { &mut *sp }, key as u32, sig as u32, buf as u32) })
         })?;
     l.func_wrap("env", "emscripten_asm_const_int_sync_on_main_thread",
         |mut c: Caller<'_, St>, key: i32, sig: i32, buf: i32| -> i32 {
-            crate::trace::hit("asm_int");
-            asm_eval(&mut c, key as u32, sig as u32, buf as u32) as u32 as i32
+            crate::trace::hit("asm_main");
+            eprintln!("[asmk] {}", key);
+            if c.data().is_main {
+                return (({ let sp = crate::fibre::store_ptr(); asm_eval(unsafe { &mut *sp }, key as u32, sig as u32, buf as u32) })) as u32 as i32;
+            }
+            let sigs = rstr(&c, sig as u32);
+            let sp = crate::fibre::store_ptr(); let args = pack_args(unsafe { &*sp }, &sigs, buf as u32);
+            let (tx, rx) = std::sync::mpsc::channel();
+            JOBS.lock().unwrap().push(MainJob { key: key as u32, sig: sigs, args, tx });
+            match rx.recv_timeout(std::time::Duration::from_secs(30)) {
+                Ok(v) => v as u32 as i32,
+                Err(_) => 0,
+            }
         })?;
     l.func_wrap("env", "emscripten_asm_const_async_on_main_thread",
         |mut c: Caller<'_, St>, key: i32, sig: i32, buf: i32| {
-            asm_eval(&mut c, key as u32, sig as u32, buf as u32);
+            if c.data().is_main {
+                ({ let sp = crate::fibre::store_ptr(); asm_eval(unsafe { &mut *sp }, key as u32, sig as u32, buf as u32) });
+                return;
+            }
+            let sigs = rstr(&c, sig as u32);
+            let sp = crate::fibre::store_ptr(); let args = pack_args(unsafe { &*sp }, &sigs, buf as u32);
+            let (tx, _rx) = std::sync::mpsc::channel();
+            JOBS.lock().unwrap().push(MainJob { key: key as u32, sig: sigs, args, tx });
         })?;
 
     // canvas / device

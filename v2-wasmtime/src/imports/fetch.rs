@@ -52,22 +52,23 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
             let want = want as u32;
             crate::diag::event(format!("fetch {url} want={want}"));
             let Some(path) = local_path(&url) else {
+                eprintln!("[fs  ] no local path {url}");
                 return -1;
             };
 
             let serve = |c: &mut Caller<'_, St>, body: &[u8]| {
                 let d = c.data().mem.data();
-                for (i, b) in body.iter().enumerate() {
-                    unsafe { *d[dst as usize + i].get() = *b };
-                }
+                unsafe { std::ptr::copy_nonoverlapping(body.as_ptr(), d[dst as usize].get(), body.len()) };
             };
 
             // local mirror, exact size only
             if let Ok(meta) = std::fs::metadata(&path) {
+                eprintln!("[fs  ] hit? {path} size={} want={want}", meta.len());
                 if meta.len() == want as u64 {
                     match std::fs::read(&path) {
                         Ok(b) => {
                             serve(&mut c, &b);
+                            eprintln!("[fs  ] served {}", b.len());
                             return 0;
                         }
                         Err(_) => return -1,
@@ -81,7 +82,7 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
             if !url2.starts_with("http") {
                 return -1;
             }
-            eprintln!("[fs  ] fetch {url2}");
+            eprintln!("[fs  ] miss {path}");
             let body = match curl(&url2, want as u64) {
                 Some(b) => b,
                 None => return -1,

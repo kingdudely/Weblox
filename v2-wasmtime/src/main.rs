@@ -495,6 +495,7 @@ fn run() -> Result<()> {
         None
     };
     let mut turns = 0u64;
+    let mut last_audio = Instant::now() - Duration::from_millis(100);
     fibre::host_root(&mut *store);
     while Instant::now() < deadline {
         if turns % 100 == 0 {
@@ -504,6 +505,21 @@ fn run() -> Result<()> {
         // the engine's frame clock must move even if the clock thread is late
         imports::boot::advance_frame();
 
+        if imports::boot::AUDIO.load(std::sync::atomic::Ordering::Relaxed)
+            && last_audio.elapsed() >= Duration::from_millis(10)
+        {
+            static ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !ON.swap(true, std::sync::atomic::Ordering::Relaxed) { eprintln!("[mix ] on"); }
+            last_audio = Instant::now();
+            static MIXN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            if let Ok(mix) = inst.get_typed_func::<(i32,), ()>(&mut *store, "FMOD_JS_MixFunction") {
+                if let Err(e) = mix.call(&mut *store, (4096,)) {
+                    if MIXN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 3 {
+                        eprintln!("[mix ] {e:#}");
+                    }
+                }
+            }
+        }
         let fid = 0x8000_0000 | (turns as u32 & 0xffff);
         let p = store.data().rt.as_ref().expect("rt").store;
         let it = iter.clone();

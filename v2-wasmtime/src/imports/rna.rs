@@ -72,7 +72,7 @@ async fn wait_readable(id: u32, sid: i32) {
 }
 static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
-fn rt() -> &'static tokio::runtime::Runtime {
+pub(crate) fn rt() -> &'static tokio::runtime::Runtime {
     RT.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -82,14 +82,15 @@ fn rt() -> &'static tokio::runtime::Runtime {
     })
 }
 
-/// Everything is delivered on the main thread: the engine's handlers wait on
-/// futexes, and doing that from inside another thread's wait point confuses the
-/// fibre resume.
-const MAIN_Q: u32 = u32::MAX;
+/// Completions belong to the thread that opened the connection, exactly like
+/// the page's deferred callback queue: the RNA code and every object it touches
+/// live on that thread.
+const ANY_Q: u32 = 0;
 static MAIN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-fn push(_owner: u32, ev: Ev) {
-    Q.lock().unwrap().get_or_insert_with(HashMap::new).entry(MAIN_Q).or_default().push(ev);
+fn push(owner: u32, ev: Ev) {
+    let owner = u32::MAX;
+    Q.lock().unwrap().get_or_insert_with(HashMap::new).entry(owner).or_default().push(ev);
     let owner = MAIN.load(std::sync::atomic::Ordering::Relaxed);
     if owner == 0 {
         return;
@@ -475,14 +476,23 @@ fn deliver(cx: &mut Store<St>, ev: Ev) {
 /// deferred callback, so a delivery must not run back-to-back with the next.
 pub fn pump<T: wasmtime::AsContextMut<Data = St>>(cx: &mut T) {
     let d = cx.as_context().data();
-    let Some(me) = (if d.is_main { d.main_ptr } else { d.mbx_ptr }) else { return };
+    let me = (if d.is_main { d.main_ptr } else { d.mbx_ptr }).unwrap_or(ANY_Q);
     MAIN.store(me, std::sync::atomic::Ordering::Relaxed);
     if cx.as_context().data().in_rna {
         return;
     }
+    let me = u32::MAX;
     let ev = {
         let mut q = Q.lock().unwrap();
-        match q.get_or_insert_with(HashMap::new).get_mut(&MAIN_Q) {
+        let q = q.get_or_insert_with(HashMap::new);
+        let key = if q.get(&me).map(|v| !v.is_empty()).unwrap_or(false) {
+            me
+        } else if q.get(&ANY_Q).map(|v| !v.is_empty()).unwrap_or(false) {
+            ANY_Q
+        } else {
+            me
+        };
+        match q.get_mut(&key) {
             Some(v) if !v.is_empty() => Some(v.remove(0)),
             _ => None,
         }
@@ -490,7 +500,7 @@ pub fn pump<T: wasmtime::AsContextMut<Data = St>>(cx: &mut T) {
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     if std::env::var_os("WC_PQ").is_some() && N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 2000 == 0 {
         let q = Q.lock().unwrap();
-        let n = q.as_ref().and_then(|m| m.get(&MAIN_Q)).map(|v| v.len()).unwrap_or(0);
+        let n = q.as_ref().and_then(|m| m.get(&me)).map(|v| v.len()).unwrap_or(0);
         eprintln!("[pq  ] pump#{N:?} q={n}");
     }
     let ready: Vec<_> = TO_CONSUME.lock().unwrap().drain(..).collect();
