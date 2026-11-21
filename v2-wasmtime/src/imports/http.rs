@@ -57,6 +57,51 @@ fn put_u16(c: &mut Caller<'_, St>, p: u32, v: u16) {
 }
 
 /// Invoke a guest callback given its wasm table index.
+/// The glue's XHR callbacks are tasks on the page's single JS thread, not
+/// re-entrant calls into wasm from inside the request.  Queue them and let the
+/// turn loop run them.
+static PENDING: std::sync::Mutex<Option<std::collections::HashMap<u32, Vec<(u32, u32)>>>> =
+    std::sync::Mutex::new(None);
+
+/// Where this thread's deferred callbacks wait: its own mailbox, so they run at
+/// its next host safe point and keep the calling thread's instance.
+fn defer<T: wasmtime::AsContext<Data = St>>(cx: &T, idx: u32, fetch: u32) {
+    if idx == 0 {
+        return;
+    }
+    let d = cx.as_context().data();
+    let me = if d.is_main { d.main_ptr } else { d.mbx_ptr };
+    let Some(me) = me else { return };
+    PENDING
+        .lock()
+        .unwrap()
+        .get_or_insert_with(Default::default)
+        .entry(me)
+        .or_default()
+        .push((idx, fetch));
+}
+
+pub fn pump<T: wasmtime::AsContextMut<Data = St>>(cx: &mut T) {
+    let d = cx.as_context().data();
+    let me = if d.is_main { d.main_ptr } else { d.mbx_ptr };
+    let Some(me) = me else { return };
+    let pending = PENDING.lock().unwrap().get_or_insert_with(Default::default).remove(&me);
+    let Some(pending) = pending else { return };
+    let Some(inst) = cx.as_context().data().inst else { return };
+    for (idx, fetch) in pending {
+        let Some(t) = inst.get_table(&mut *cx, "__indirect_function_table") else { return };
+        let Some(wasmtime::Ref::Func(Some(f))) = t.get(&mut *cx, idx as u64) else { continue };
+        let mut tries = 0;
+        while let Err(e) = f.call(&mut *cx, &[Val::I32(fetch as i32)], &mut []) {
+            tries += 1;
+            eprintln!("[http] callback {idx} threw: {e:#}");
+            if tries == 2 {
+                break;
+            }
+        }
+    }
+}
+
 fn callback(c: &mut Caller<'_, St>, idx: u32, fetch: u32) -> Result<()> {
     let Some(inst) = c.data().inst else { return Ok(()) };
     let t = inst.get_table(&mut *c, "__indirect_function_table");
@@ -484,7 +529,8 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
             let Some(req) = parse(&c, f) else {
                 put_u16(&mut c, f + F_STATE, 4);
                 put_u16(&mut c, f + F_STATUS, 0);
-                let _ = callback(&mut c, onerror, f);
+                defer(&c, onerror, f);
+                pump(&mut c);
                 return;
             };
             crate::diag::event(format!("http {} {}", req.method, req.url));
@@ -533,19 +579,21 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
                     put_u16(&mut c, f + F_STATUS, status);
                     wbytes(&mut c, f + F_TEXT, reason.as_bytes());
                     c.data_mut().fetch_hdrs.insert(f, block.into_bytes());
-                    let _ = callback(&mut c, onstate, f);
+                    defer(&c, onstate, f);
                     if status >= 200 && status < 300 {
-                        let _ = callback(&mut c, onload, f);
+                        defer(&c, onload, f);
                     } else {
-                        let _ = callback(&mut c, onerror, f);
+                        defer(&c, onerror, f);
                     }
+                    pump(&mut c);
                 }
                 Err(e) => {
                     eprintln!("[http] {} {} failed: {e}", req.method, req.url);
                     put_u16(&mut c, f + F_STATE, 4);
                     put_u16(&mut c, f + F_STATUS, 0);
-                    let _ = callback(&mut c, onstate, f);
-                    let _ = callback(&mut c, onerror, f);
+                    defer(&c, onstate, f);
+                    defer(&c, onerror, f);
+                    pump(&mut c);
                 }
             }
         })?;

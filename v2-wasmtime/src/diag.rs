@@ -46,7 +46,9 @@ pub fn watch(secs: u64) {
     let mut prev = checkpoint();
     let mut stalls = 0u32;
     let mut dumped = false;
+    let mut ticks = 0u64;
     loop {
+        ticks += 1;
         std::thread::sleep(std::time::Duration::from_millis(1000));
         let now = EVENTS.load(Ordering::Relaxed);
         let ms = START.lock().unwrap().map(|s| s.elapsed().as_millis()).unwrap_or(0);
@@ -68,7 +70,8 @@ pub fn watch(secs: u64) {
                 }
             }
         }
-        if std::env::var_os("WC_HB").is_some() && ms % 5000 < 340 {
+        if std::env::var_os("WC_HB").is_some() && ticks % 5 == 0 {
+            eprintln!("[hb  ] dump at {ms} n={}", crate::fibre::TRACE_T.lock().unwrap().len());
             for (t, c, sp, w) in crate::fibre::TRACE_T.lock().unwrap().iter() {
                 let h = crate::trace::hist_of(t);
                 let tail: Vec<&str> = h.iter().rev().take(8).cloned().collect();

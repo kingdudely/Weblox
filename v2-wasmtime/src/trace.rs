@@ -36,6 +36,14 @@ pub fn hit(name: &'static str) {
     RING.with(|r| r.borrow_mut()[(s as usize) % N] = (name, s));
 }
 
+/// The most recent import on this thread.
+pub fn ring_last() -> &'static str {
+    RING.with(|r| {
+        let s = SEQ.with(|c| c.get()) as usize;
+        r.borrow()[(s + N - 1) % N].0
+    })
+}
+
 pub fn hist_of(thread: &str) -> Vec<&'static str> {
     HIST.lock()
         .unwrap()

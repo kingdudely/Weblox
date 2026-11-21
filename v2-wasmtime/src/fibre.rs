@@ -109,6 +109,8 @@ struct F {
     ctx: Cell<(u32, u32, u32)>,
     /// malloc'd guest stack to release when the fibre finishes, if any.
     guest: (u32, u32),
+    /// Whether a `resume` is on the stack right now.
+    running: Cell<bool>,
 }
 
 /// The module's own stack accessors, cached once the instance exists.
@@ -206,6 +208,11 @@ fn susp_here(step: Yield) -> u32 {
         let n = step.as_ref().map(|s| s.fibre).unwrap_or(0);
         eprintln!("[fbr ] park cur={cur:#x} -> {n:#x}");
     }
+    if std::env::var_os("WC_PARK").is_some() {
+        eprintln!("[park] {} cur={cur:#x} after={} step={:x?}",
+            std::thread::current().name().unwrap_or("?"), crate::trace::ring_last(),
+            step.as_ref().map(|s| s.fibre));
+    }
     let st = STORE.with(|c| c.get());
     assert!(!st.is_null() && cur != u32::MAX, "suspend outside a fibre");
     let p = unsafe { &*st }
@@ -247,12 +254,20 @@ fn resume(st: &mut Store<St>, step: Step) -> Result<Resume> {
     let prev = CUR.with(|c| c.get());
     CUR.with(|c| c.set(step.fibre));
     st.data_mut().cur = step.fibre;
+    {
+        let rt = st.data().rt.as_ref().expect("rt");
+        rt.fibres.get(&step.fibre).expect("fibre").running.set(true);
+    }
     let out = {
         let rt = st.data_mut().rt.as_mut().expect("rt");
         rt.fibres.get_mut(&step.fibre).expect("fibre").f.resume(step.val)
     };
+    if let Some(f) = st.data().rt.as_ref().and_then(|r| r.fibres.get(&step.fibre)) {
+        f.running.set(false);
+    }
     CUR.with(|c| c.set(prev));
     st.data_mut().cur = prev;
+    PROGRESS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     Ok(match out {
         Ok(()) => {
@@ -327,7 +342,7 @@ fn spawn(st: &mut Store<St>, id: u32, size: usize, tok: u32, entry: u32, arg: u3
         }
     })
     .map_err(|(e, _)| wasmtime::Error::msg(e.to_string()))?;
-    st.data_mut().rt.as_mut().expect("rt").fibres.insert(id, F { susp: slot, f: Box::new(fib), ctx: Cell::new((0, 0, 0)), guest: (0, 0) });
+    st.data_mut().rt.as_mut().expect("rt").fibres.insert(id, F { susp: slot, f: Box::new(fib), ctx: Cell::new((0, 0, 0)), guest: (0, 0), running: Cell::new(false) });
     Ok(())
 }
 
@@ -417,23 +432,61 @@ pub fn spawn_on_new_stack<T: wasmtime::AsContextMut<Data = St>>(
     .map_err(|(e, _)| wasmtime::Error::msg(e.to_string()))?;
     cx.as_context_mut().data_mut().rt.as_mut().expect("rt").fibres.insert(
         id,
-        F { susp: slot, f: Box::new(fib), ctx: Cell::new((sp, sp, base)), guest: (base, size as u32) },
+        F { susp: slot, f: Box::new(fib), ctx: Cell::new((sp, sp, base)), guest: (base, size as u32), running: Cell::new(false) },
     );
     schedule(st.get(), Step { fibre: id, val: id, ctx: Some((sp, sp, base)) });
     Ok(())
 }
 
 /// Run a task on its own fibre and pump until it finishes, timers included.
+static PROGRESS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub fn call_fibre<T: wasmtime::AsContextMut<Data = St>>(
     cx: &mut T, id: u32, size: u32, task: Task,
 ) -> Result<()> {
     spawn_on_new_stack(cx, id, size.max(TASK_STACK as u32), task)?;
     let st = cx.as_context().data().rt.as_ref().expect("rt").store.get();
     let mut iters: u64 = 0;
+    let mut last = PROGRESS.load(std::sync::atomic::Ordering::Relaxed);
+    let mut idle = 0u32;
     loop {
         iters += 1;
+        let now_progress = PROGRESS.load(std::sync::atomic::Ordering::Relaxed);
+        if now_progress != last {
+            last = now_progress;
+            idle = 0;
+        } else {
+            idle += 1;
+        }
+        // Nothing has run for a while.  A fibre parked under a token nobody
+        // hands back wedges the whole thread, so wake the parked ones up.
+        if idle == 200 {
+            idle = 0;
+            let parked: Vec<u32> = st
+                .data()
+                .rt
+                .as_ref()
+                .map(|r| {
+                    r.fibres
+                        .iter()
+                        .filter(|(k, f)| **k != id && !f.running.get() && waiting(st, **k))
+                        .map(|(k, _)| *k)
+                        .collect()
+                })
+                .unwrap_or_default();
+            for other in parked {
+                if is_live(st, other) {
+                    schedule(st, Step { fibre: other, val: other, ctx: None });
+                    if !is_live(st, id) {
+                        return Ok(());
+                    }
+                }
+            }
+        }
         if std::env::var_os("WC_HB").is_some() && iters % 3000 == 0 {
-            eprintln!("[hb  ] fibre {id:#x} alive, {iters} pump polls, cur={:#x}", st.data().cur);
+            let w = waiting(st, id);
+            let slots = st.data().rt.as_ref().map(|r| r.slots.len()).unwrap_or(0);
+            eprintln!("[hb  ] fibre {id:#x} alive, {iters} polls, waiting={w} slots={slots}");
         }
         if !is_live(st, id) {
             return Ok(());
@@ -443,7 +496,17 @@ pub fn call_fibre<T: wasmtime::AsContextMut<Data = St>>(
         if !is_live(st, id) {
             return Ok(());
         }
-        if st.data().cur != id && !waiting(st, id) {
+        // `cur` is only meaningful while a fibre is running; between resumes it
+        // holds the thread root, so do not use it as the guard.  A fibre handed
+        // here can be parked mid-transfer and needs to be retried.
+        let busy = st
+            .data()
+            .rt
+            .as_ref()
+            .and_then(|r| r.fibres.get(&id))
+            .map(|f| f.running.get())
+            .unwrap_or(false);
+        if !busy && !waiting(st, id) {
             schedule(st, Step { fibre: id, val: id, ctx: None });
         }
     }
@@ -618,7 +681,7 @@ fn spawn_local(
     .map_err(|(e, _)| wasmtime::Error::msg(e.to_string()))?;
     st.data_mut().rt.as_mut().expect("rt").fibres.insert(
         id,
-        F { susp: slot, f: Box::new(fib), ctx: Cell::new(ctx), guest: (base, size as u32) },
+        F { susp: slot, f: Box::new(fib), ctx: Cell::new(ctx), guest: (base, size as u32), running: Cell::new(false) },
     );
     schedule(st, Step { fibre: id, val: id, ctx: Some(ctx) });
     Ok(())
