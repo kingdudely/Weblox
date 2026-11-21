@@ -229,7 +229,14 @@ fn asm_eval(c: &mut wasmtime::Store<St>, key: u32, sigp: u32, buf: u32) -> f64 {
             u32::from_le_bytes(b) as f64
         }
         9111979 => {
-            eprintln!("[asm] fmod args={} {}", a(0) as i32, a(1) as i32);
+            if let Some((pthread, arg)) = crate::imports::thread::take_late() {
+                if let (Some(engine), Some(module)) = (c.data().engine.clone(), c.data().module.clone()) {
+                    let mem = c.data().mem.clone();
+                    let _ = crate::imports::thread::start_worker(engine, module, mem, pthread, 152308, arg);
+                }
+            }
+            let g = { let d = c.data().mem.data(); unsafe { *(d[8692188usize].get() as *const u32) } };
+            eprintln!("[asm] fmod args={} {} g={g}", a(0) as i32, a(1) as i32);
             0.0
         }
         // audio context probes: pretend they worked

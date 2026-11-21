@@ -1,6 +1,7 @@
 //! Worker threads: one Store + instance per thread over the shared memory,
 //! the way the browser's per-worker module instance works.
 use anyhow::{anyhow, Result};
+use std::sync::Mutex;
 use futures::executor::block_on;
 use wasmtime::{Caller, Extern, Linker, Store, Val};
 
@@ -43,7 +44,7 @@ fn take_nudge(pthread: u32) -> bool {
     NUDGE.lock().unwrap().get_or_insert_with(Default::default).remove(&pthread)
 }
 
-fn start_worker(
+pub fn start_worker(
     engine: wasmtime::Engine,
     module: wasmtime::Module,
     mem: wasmtime::SharedMemory,
@@ -224,6 +225,21 @@ fn was_unwind(e: &wasmtime::Error) -> bool {
     e.to_string().contains("unwind")
 }
 
+/// The game-join thread is created at boot but only has work once the audio
+/// device is up; the page creates it at that point.  Hold it and start it from
+/// there instead of letting it race ahead and park.
+static LATE: Mutex<Option<(u32, u32)>> = Mutex::new(None);
+static LATE_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn take_late() -> Option<(u32, u32)> {
+    if LATE_STARTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return None;
+    }
+    LATE.lock().unwrap().take()
+}
+
+pub use start_worker as start_worker_pub;
+
 pub fn register(l: &mut Linker<St>) -> Result<()> {
     l.func_wrap("env", "__pthread_create_js",
         |c: Caller<'_, St>, pthread: i32, _attr: i32, start: i32, arg: i32| -> i32 {
@@ -233,6 +249,10 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
             };
             if std::env::var_os("WC_PTHR").is_some() {
                 eprintln!("[pthc] {} start_slot={start} arg={arg:#x}", std::thread::current().name().unwrap_or("?"));
+            }
+            if start == 152308 && LATE.lock().unwrap().is_none() && !LATE_STARTED.load(std::sync::atomic::Ordering::Relaxed) {
+                LATE.lock().unwrap().replace((pthread as u32, arg as u32));
+                return 0;
             }
             match start_worker(engine, module, c.data().mem.clone(), pthread as u32,
                                start as u32, arg as u32) {
