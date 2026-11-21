@@ -68,6 +68,13 @@ pub fn watch(secs: u64) {
                 }
             }
         }
+        if std::env::var_os("WC_HB").is_some() && ms % 5000 < 340 {
+            for (t, c, sp, w) in crate::fibre::TRACE_T.lock().unwrap().iter() {
+                let h = crate::trace::hist_of(t);
+                let tail: Vec<&str> = h.iter().rev().take(8).cloned().collect();
+                eprintln!("[hb  ] {t} cur={c:#x} sp={sp:#x} waiting={w} last: {}", tail.join(" "));
+            }
+        }
         if now == prev {
             stalls += 1;
             if stalls as u64 >= secs {

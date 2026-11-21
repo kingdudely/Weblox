@@ -120,38 +120,74 @@ fn token_hex(v: &str) -> Option<String> {
     Some(out.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-fn patch_join(body: &[u8]) -> Option<Vec<u8>> {
+fn patch_join(body: &[u8]) -> Result<Vec<u8>, String> {
     if std::env::var_os("WC_JOINDUMP").is_some() {
         let _ = std::fs::write("/tmp/opencode/join-raw.json", body);
     }
-    let mut v: serde_json::Value = serde_json::from_slice(body).ok()?;
-    if v.get("status")?.as_i64()? != 2 {
-        return None;
+    let mut v: serde_json::Value =
+        serde_json::from_slice(body).map_err(|e| format!("body: {e}"))?;
+    match v.get("status").and_then(|s| s.as_i64()) {
+        Some(2) => {}
+        other => return Err(format!("status {other:?}")),
     }
-    let js = v.get_mut("joinScript")?;
+    let js = v.get_mut("joinScript").ok_or("no joinScript")?;
     let as_string = js.is_string();
     let mut obj: serde_json::Value = if as_string {
-        serde_json::from_str(js.as_str()?).ok()?
+        serde_json::from_str(js.as_str().unwrap_or_default()).map_err(|e| format!("script: {e}"))?
     } else {
         js.clone()
     };
     if obj.get("gameFqdn").map(|x| !x.is_null()).unwrap_or(false) {
-        return None;
+        return Err("already routed".into());
     }
-    let mut native = ipv4(obj.get("UdmuxEndpoints")?.get(0)?.get("Address")?.as_str()?)?;
+    // Direct server return: the launcher sends no multiplexer address and no
+    // token, the machine's own address is the route.  The engine only needs a
+    // name that resolves to it (we do not validate the certificate).
+    let udmux = obj
+        .get("UdmuxEndpoints")
+        .and_then(|u| u.get(0))
+        .and_then(|e| e.get("Address"))
+        .and_then(|a| a.as_str());
+    if udmux.is_none() {
+        let machine = obj
+            .get("MachineAddress")
+            .and_then(|m| m.as_str())
+            .ok_or("no MachineAddress")?
+            .to_string();
+        ipv4(&machine).ok_or("bad MachineAddress")?;
+        let port = obj.get("NetStackPort").and_then(|p| p.as_u64()).ok_or("no NetStackPort")?;
+        if !(1..=65535).contains(&port) {
+            return Err(format!("port {port}"));
+        }
+        // the transport eligibility check needs a multiplexer endpoint to read
+        // an address and a port from, so stand one in for the missing one
+        obj["UdmuxEndpoints"] = serde_json::json!([{ "Address": machine, "Port": port }]);
+        obj["UdmuxPort"] = serde_json::json!(port);
+        let host = format!("{}.sslip.io", machine.replace('.', "-"));
+        eprintln!("[join] route {host} (direct)");
+        obj["gameFqdn"] = serde_json::Value::String(host);
+        *js = if as_string {
+            serde_json::Value::String(obj.to_string())
+        } else {
+            obj
+        };
+        return Ok(v.to_string().into_bytes());
+    }
+    let mut native = ipv4(udmux.unwrap_or_default()).ok_or("bad udmux")?;
     if native[3] % 2 != 1 || native[3] == 255 {
-        return None;
+        return Err(format!("udmux {}", native[3]));
     }
     native[3] += 1;
-    let machine = ipv4(obj.get("MachineAddress")?.as_str()?)?;
-    let port = obj.get("NetStackPort")?.as_u64()?;
+    let machine = ipv4(obj.get("MachineAddress").and_then(|m| m.as_str()).ok_or("no MachineAddress")?).ok_or("bad MachineAddress")?;
+    let port = obj.get("NetStackPort").and_then(|p| p.as_u64()).ok_or("no NetStackPort")?;
     if !(1..=65535).contains(&port) {
-        return None;
+        return Err(format!("port {port}"));
     }
     let hex = |a: [u8; 4]| a.iter().map(|b| format!("{b:02x}")).collect::<String>();
     let host = format!(
         "{}-{}-{:04x}.{}.qdmux.roblox.com",
-        token_hex(obj.get("NetStackTokenValue")?.as_str()?)?,
+        token_hex(obj.get("NetStackTokenValue").and_then(|t| t.as_str()).ok_or("no token")?)
+            .ok_or("bad token")?,
         hex(machine),
         port,
         hex(native)
@@ -167,7 +203,7 @@ fn patch_join(body: &[u8]) -> Option<Vec<u8>> {
     if std::env::var_os("WC_JOINDUMP").is_some() {
         let _ = std::fs::write("/tmp/opencode/join-patched.json", &out);
     }
-    Some(out.into_bytes())
+    Ok(out.into_bytes())
 }
 
 fn wants_cookie(url: &str) -> bool {
@@ -175,6 +211,7 @@ fn wants_cookie(url: &str) -> bool {
     h == "roblox.com" || h.ends_with(".roblox.com") || h.starts_with("rbxcdn.com")
 }
 
+#[derive(Clone)]
 struct Req {
     url: String,
     method: String,
@@ -237,7 +274,71 @@ fn parse(c: &Caller<'_, St>, fetch: u32) -> Option<Req> {
     })
 }
 
+/// A fresh `gameJoinAttemptId`, so a retry is a new attempt to the launcher.
+fn fresh_attempt(body: &[u8]) -> Vec<u8> {
+    let mut b = match serde_json::from_slice::<serde_json::Value>(body) {
+        Ok(v) => v,
+        Err(_) => return body.to_vec(),
+    };
+    let mut raw = [0u8; 16];
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        use std::io::Read;
+        let _ = f.read_exact(&mut raw);
+    }
+    let h = |i: usize| format!("{:02x}", raw[i]);
+    let id = format!(
+        "{}{}{}{}-{}{}-{}{}-{}{}-{}{}{}{}{}{}",
+        h(0),h(1),h(2),h(3),h(4),h(5),h(6),h(7),h(8),h(9),h(10),h(11),h(12),h(13),h(14),h(15)
+    );
+    b["gameJoinAttemptId"] = serde_json::Value::String(id);
+    b.to_string().into_bytes()
+}
+
+/// The launcher sometimes allocates direct-server-return servers, which carry
+/// no multiplexer endpoint and no place to read a transport port from.  A new
+/// attempt usually lands on a normal one, so retry before giving up.
+fn is_dsr(body: &[u8]) -> bool {
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(body) else { return false };
+    if v.get("status").and_then(|s| s.as_i64()) != Some(2) {
+        return false;
+    }
+    let js = v.get("joinScript");
+    let js = match js {
+        Some(serde_json::Value::String(s)) => serde_json::from_str::<serde_json::Value>(s).ok(),
+        Some(v) => Some(v.clone()),
+        None => None,
+    };
+    let Some(js) = js else { return false };
+    if js.get("gameFqdn").map(|x| !x.is_null()).unwrap_or(false) {
+        return false;
+    }
+    js.get("UdmuxEndpoints")
+        .and_then(|u| u.get(0))
+        .and_then(|e| e.get("Address"))
+        .is_none()
+}
+
 fn run(req: &Req, cookie: Option<&str>) -> std::io::Result<(u16, String, String, Vec<u8>)> {
+    if is_join(&req.url) {
+        let mut body = req.body.clone();
+        for attempt in 0..3 {
+            let mut r = req.clone();
+            r.body = body;
+            let out = exec(&r, cookie)?;
+            if out.0 != 200 || !is_dsr(&out.3) || attempt == 2 {
+                if attempt > 0 {
+                    eprintln!("[join] attempt {} gave {}/{}", attempt + 1, out.0, if is_dsr(&out.3) { "direct" } else { "routed" });
+                }
+                return Ok(out);
+            }
+            eprintln!("[join] attempt {} was direct-server-return, retrying", attempt + 1);
+            body = fresh_attempt(&req.body);
+        }
+    }
+    exec(req, cookie)
+}
+
+fn exec(req: &Req, cookie: Option<&str>) -> std::io::Result<(u16, String, String, Vec<u8>)> {
     let dir = std::env::temp_dir();
     let tag = format!(
         "alc-fetch-{}-{}",
@@ -331,7 +432,8 @@ fn run(req: &Req, cookie: Option<&str>) -> std::io::Result<(u16, String, String,
         eprintln!("[join] {status} {}", String::from_utf8_lossy(&body[..body.len().min(400)]).replace('\n', " "));
     }
     if status == 200 && is_join(&req.url) && std::env::var_os("WC_NOPATCH").is_none() {
-        if let Some(fixed) = patch_join(&body) {
+        match patch_join(&body) {
+            Ok(fixed) => {
             body = fixed;
             let mut out = String::new();
             for line in block.lines().skip(1) {
@@ -347,8 +449,8 @@ fn run(req: &Req, cookie: Option<&str>) -> std::io::Result<(u16, String, String,
             if std::env::var_os("WC_JOINDUMP").is_some() {
                 let _ = std::fs::write("/tmp/opencode/join-hdrs.txt", &block);
             }
-        } else {
-            eprintln!("[join] response left unpatched");
+            }
+            Err(why) => eprintln!("[join] left unpatched: {why}"),
         }
     }
     Ok((status, reason, block, body))

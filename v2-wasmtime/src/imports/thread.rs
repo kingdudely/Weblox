@@ -14,6 +14,35 @@ pub fn is_consumer() -> bool {
     CONSUMER.with(|c| c.get())
 }
 
+/// The engine keeps a helper routine on a pooled thread and hands it work
+/// through that thread's queue.  Once the routine has returned there is
+/// nothing that re-enters it, so the queue sits there: remember the threads
+/// that took such a routine and re-run it when there may be work.
+static RUNNERS: std::sync::Mutex<Option<Vec<u32>>> = std::sync::Mutex::new(None);
+static NUDGE: std::sync::Mutex<Option<std::collections::HashSet<u32>>> = std::sync::Mutex::new(None);
+
+fn is_runner_start(start: u32) -> bool {
+    start == 152880
+}
+
+fn add_runner(pthread: u32) {
+    RUNNERS.lock().unwrap().get_or_insert_with(Vec::new).push(pthread);
+}
+
+pub fn nudge_runners() {
+    let runners = RUNNERS.lock().unwrap().as_ref().cloned();
+    if std::env::var_os("WC_PTHR").is_some() {
+        eprintln!("[pthr] nudge runners={:?}", runners);
+    }
+    let Some(r) = runners else { return };
+    let mut n = NUDGE.lock().unwrap();
+    n.get_or_insert_with(Default::default).extend(r);
+}
+
+fn take_nudge(pthread: u32) -> bool {
+    NUDGE.lock().unwrap().get_or_insert_with(Default::default).remove(&pthread)
+}
+
 fn start_worker(
     engine: wasmtime::Engine,
     module: wasmtime::Module,
@@ -121,8 +150,8 @@ fn start_worker(
                         }
                     }
                     let mut out = [Val::I32(0)];
-                    if start == 152880 && std::env::var_os("WC_FIND").is_some() {
-                        CONSUMER.with(|c| c.set(true));
+                    if is_runner_start(start) {
+                        add_runner(pthread);
                     }
                     if std::env::var_os("WC_PTHR").is_some() {
                         eprintln!("[pthr] entry {pthread:x} start={start} begin");
@@ -164,6 +193,13 @@ fn start_worker(
                                     }
                                 }
                             }
+                            if returned && take_nudge(pthread) {
+                                eprintln!("[pthr] rerun {pthread:x} start={start}");
+                                match f.call(&mut *st, &[Val::I32(arg as i32)], &mut out) {
+                                    Ok(()) => {}
+                                    Err(e) => eprintln!("[pthr] rerun {pthread:x} threw: {e:#}"),
+                                }
+                            }
                         }
                     }
                 });
@@ -197,16 +233,6 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
             };
             if std::env::var_os("WC_PTHR").is_some() {
                 eprintln!("[pthc] {} start_slot={start} arg={arg:#x}", std::thread::current().name().unwrap_or("?"));
-                unsafe {
-                    let mut fp: usize;
-                    std::arch::asm!("mov {}, rbp", out(reg) fp);
-                    for _ in 0..22 {
-                        if fp == 0 { break }
-                        let ret = *((fp + 8) as *const usize);
-                        eprintln!("[pthc]   pc {ret:x}");
-                        fp = *(fp as *const usize);
-                    }
-                }
             }
             match start_worker(engine, module, c.data().mem.clone(), pthread as u32,
                                start as u32, arg as u32) {

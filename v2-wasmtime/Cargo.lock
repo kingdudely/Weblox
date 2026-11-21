@@ -2361,8 +2361,6 @@ dependencies = [
 [[package]]
 name = "wasmtime-internal-fiber"
 version = "50.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ef75fc7dd6ac3e02239cb6e840d9ff400b8d33be948bd94553c51d978e2a77b"
 dependencies = [
  "cc",
  "libc",

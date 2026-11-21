@@ -105,6 +105,28 @@ fn set_owner(id: u32, owner: u32) {
 }
 
 /// Copy one payload into the next ring slot; returns the slot index and length.
+/// Find the connection object: the ring struct is stored in it, so look for a
+/// word holding our `head` pointer with `data`/`tail` next to it.
+pub fn find_conn(mem: &wasmtime::SharedMemory, head: u32, tail: u32, data: u32) -> Option<u32> {
+    let d = mem.data();
+    let needle = head.to_le_bytes();
+    let mut hits = Vec::new();
+    let mut at = 0usize;
+    while at + 4 <= d.len() {
+        if unsafe { *d[at].get() } == needle[0] {
+            let w = |o: isize| unsafe { *(d[(at as isize + o) as usize].get() as *const u32) };
+            let _ = tail;
+            let near = |v: u32| (0..=512isize).step_by(4).any(|o| w(o) == v || w(-o) == v);
+            if near(data) && (at as isize) > 512 {
+                hits.push(at as u32);
+            }
+        }
+        at += 4;
+    }
+    eprintln!("[probe ] head-hits {hits:?}");
+    hits.first().map(|h| *h)
+}
+
 pub fn probe(mem: &wasmtime::SharedMemory, tag: &str) {
     let d = mem.data();
     let b = |a: usize| unsafe { *(d[a].get() as *const u8) };
@@ -197,7 +219,18 @@ fn connect(id: u32, url: String, owner: u32, ring: Ring) {
                         Ok(Some(n)) => {
                             eprintln!("[rna ] recv sid={sid} n={n}");
                             if std::env::var_os("WC_PROBE").is_some() {
-                                if let Some(m) = MEM.get() { probe(m, "slot"); }
+                                if let Some(m) = MEM.get() {
+                                    probe(m, "slot");
+                                    let r = RINGS.lock().unwrap().as_ref().and_then(|x| x.get(&id)).cloned();
+                                    if let Some(r) = r {
+                                        let d = m.data();
+                                        let w = |a: u32| unsafe { *(d[a as usize].get() as *const u32) };
+                                        if let Some(c) = find_conn(m, r.head, r.tail, r.data) {
+                                            let words: Vec<u32> = (16..80).step_by(4).map(|o| w(c + o)).collect();
+                                            eprintln!("[probe ] conn {c:#x} +16..={words:x?}");
+                                        }
+                                    }
+                                }
                                 rt().spawn(async {
                                     tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
                                     if let Some(m) = MEM.get() { probe(m, "later"); }
@@ -330,6 +363,9 @@ pub fn pump<T: wasmtime::AsContextMut<Data = St>>(cx: &mut T) {
     }
     let Some(inst) = cx.as_context().data().inst else { return };
     cx.as_context_mut().data_mut().in_rna = true;
+    // the engine hands the slot to a pooled helper thread; nothing re-enters
+    // that helper on its own, so prod it
+    crate::imports::thread::nudge_runners();
     for ev in evs {
         let (name, mut args): (&str, Vec<i32>) = match ev {
             Ev::Connected(id, max) => ("rbx_wasm_rna_on_connect_success", vec![id as i32, max]),

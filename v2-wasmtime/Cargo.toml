@@ -23,3 +23,4 @@ wasmtime = { version = "50.0.2", features = ["winch"] }
 # 3-line leniency patch: the module has 4-aligned 64-bit atomics and only runs
 # because Chromium does not enforce natural alignment for atomics.
 wasmtime-internal-cranelift = { path = "../vendor/wasmtime-internal-cranelift" }
+wasmtime-internal-fiber = { path = "../vendor/wasmtime-internal-fiber" }
