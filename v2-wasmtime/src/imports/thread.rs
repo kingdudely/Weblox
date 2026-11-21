@@ -250,6 +250,11 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
             if std::env::var_os("WC_PTHR").is_some() {
                 eprintln!("[pthc] {} start_slot={start} arg={arg:#x}", std::thread::current().name().unwrap_or("?"));
             }
+            if start == 152308 {
+                let d = c.data().mem.data();
+                let w = |o: u32| unsafe { *(d[arg as usize + o as usize].get() as *const u32) };
+                eprintln!("[pthc] join struct start={} arg={} +4={} +8={} +12={}", w(0), arg, w(4), w(8), w(12));
+            }
             if start == 152308 && LATE.lock().unwrap().is_none() && !LATE_STARTED.load(std::sync::atomic::Ordering::Relaxed) {
                 LATE.lock().unwrap().replace((pthread as u32, arg as u32));
                 return 0;
