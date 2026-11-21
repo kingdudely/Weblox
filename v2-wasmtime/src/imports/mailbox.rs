@@ -65,20 +65,24 @@ fn disarm(target: u32) {
 /// worker).
 pub async fn pump_mailbox<T: AsContextMut<Data = St>>(cx: &mut T) -> bool {
     let d = cx.as_context().data();
-    let Some(ptr) = (if d.is_main { d.main_ptr } else { d.mbx_ptr }) else {
-        return false;
-    };
-    // The sender only calls the notify import when the target is parked in
-    // `Atomics.waitAsync`; a busy target just gets the ring appended.  So the
-    // ring cannot be counted from here - always run the drain.
-    let rang = take_ring(ptr);
-    if rang && std::env::var_os("WC_MBX").is_some() {
-        eprintln!("[mbx ] ring {} {ptr:#x}", std::thread::current().name().unwrap_or("?"));
+    // A thread can reach a safe point before it arms a mailbox; the deferred
+    // work is ours to run either way.
+    let ptr = if d.is_main { d.main_ptr } else { d.mbx_ptr };
+    if let Some(ptr) = ptr {
+        // The sender only calls the notify import when the target is parked in
+        // `Atomics.waitAsync`; a busy target just gets the ring appended.  So
+        // the ring cannot be counted from here - always run the drain.
+        let rang = take_ring(ptr);
+        if rang && std::env::var_os("WC_MBX").is_some() {
+            eprintln!("[mbx ] ring {} {ptr:#x}", std::thread::current().name().unwrap_or("?"));
+        }
+        set_ready(cx, ptr);
     }
-    set_ready(cx, ptr);
     crate::imports::http::pump(cx);
     crate::imports::rna::pump(cx);
-    check(cx).await;
+    if ptr.is_some() {
+        check(cx).await;
+    }
     true
 }
 

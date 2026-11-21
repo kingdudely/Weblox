@@ -348,6 +348,18 @@ fn run() -> Result<()> {
     linker.define(&mut *store, "env", "memory", Extern::SharedMemory(mem))?;
     let inst = fibre::block_on(linker.instantiate_async(&mut *store, &module))?;
     store.data_mut().inst = Some(inst);
+    if std::env::var_os("WC_STR").is_some() {
+        let needle = std::env::var("WC_STR").unwrap_or_default(); let needle = needle.as_bytes();
+        let d = store.data().mem.data();
+        let mut at = 0usize;
+        while at + needle.len() < d.len() {
+            let hit = (0..needle.len()).all(|i| unsafe { *d[at + i].get() } == needle[i]);
+            if hit {
+                eprintln!("[str ] {at:#x}");
+            }
+            at += 1;
+        }
+    }
     // `emscripten_futex_wait` blocks in `memory.atomic.wait32` unless this
     // counter says there is an async runtime; the main thread has to take the
     // host path or the turn loop freezes.
@@ -473,6 +485,15 @@ fn run() -> Result<()> {
     let secs: f64 = std::env::var("WC_LOOP_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(60_000.0);
     let deadline = Instant::now() + Duration::from_secs_f64(secs / 1000.0);
     std::thread::spawn(|| diag::watch(3));
+    let turn_ms: u64 = std::env::var("WC_TURN_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
+    let turn_us: u64 = std::env::var("WC_TURN_US").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    let turn_sleep = if turn_us > 0 {
+        Some(Duration::from_micros(turn_us))
+    } else if turn_ms > 0 {
+        Some(Duration::from_millis(turn_ms))
+    } else {
+        None
+    };
     let mut turns = 0u64;
     fibre::host_root(&mut *store);
     while Instant::now() < deadline {
@@ -503,7 +524,10 @@ fn run() -> Result<()> {
             return Err(e.into());
         }
         diag::checkpoint();
-        std::thread::sleep(Duration::from_millis(1));
+        match turn_sleep {
+            Some(d) => std::thread::sleep(d),
+            None => std::thread::yield_now(),
+        }
     }
     eprintln!("[wasm] {turns} turns; last event {}", diag::last());
     trace::dump();

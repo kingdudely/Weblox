@@ -203,6 +203,11 @@ impl<'a, Resume, Yield, Return> Fiber<'a, Resume, Yield, Return> {
         })
     }
 
+    /// Whether the fiber body has run to completion (or panicked).
+    pub fn finished(&self) -> bool {
+        self.done.get()
+    }
+
     /// Resumes execution of this fiber.
     ///
     /// This function will transfer execution to the fiber and resume from where

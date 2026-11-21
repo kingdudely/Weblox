@@ -229,6 +229,8 @@ pub struct Suspend {
 // nesting stays correct.
 std::thread_local! {
     static RESULT: core::cell::Cell<*mut u8> = core::cell::Cell::new(core::ptr::null_mut());
+    static LIVE: core::cell::Cell<usize> = core::cell::Cell::new(0);
+    pub static RESUME_NO: core::cell::Cell<u64> = core::cell::Cell::new(0);
 }
 
 extern "C" fn fiber_start<F, A, B, C>(arg0: *mut u8, top_of_stack: *mut u8) -> *mut u8
@@ -273,6 +275,9 @@ impl Fiber {
     pub(crate) fn resume<A, B, C>(&self, stack: &FiberStack, result: &Cell<RunResult<A, B, C>>) {
         unsafe {
             let prev = RESULT.with(|r| r.replace(result as *const _ as *mut u8));
+            LIVE.with(|l| l.set(result as *const _ as usize));
+            RESUME_NO.with(|c| c.set(c.get() + 1));
+            let _ = &prev;
             // Store where our result is going at the very tip-top of the
             // stack, otherwise known as our reserved slot for this information.
             //
@@ -282,9 +287,9 @@ impl Fiber {
 
             asan::fiber_switch(stack.top().unwrap(), &mut asan::PreviousStack::new(stack));
 
-            // null this out to help catch use-after-free
             addr.write(0);
             RESULT.with(|r| r.set(prev));
+            LIVE.with(|l| l.set(prev as usize));
         }
     }
 
@@ -313,7 +318,24 @@ impl Suspend {
         unsafe {
             match (*self.result_location::<A, B, C>()).replace(RunResult::Executing) {
                 RunResult::Resuming(val) => val,
-                _ => panic!("not in resuming state"),
+                other => {
+                    let tag = match other {
+                        RunResult::Executing => "executing",
+                        RunResult::Returned(_) => "returned",
+                        RunResult::Panicked(_) => "panicked",
+                        _ => "resuming",
+                    };
+                    std::eprintln!(
+                        "[fib ] {} n={} live={:#x} tip={:#x} res={:#x} cell={:?}",
+                        tag,
+                        RESUME_NO.with(|c| c.get()),
+                        LIVE.with(|l| l.get()),
+                        self.top_of_stack as usize,
+                        self.top_of_stack.cast::<*const u8>().offset(-1).read() as usize,
+                        self.result_location::<A, B, C>() as usize,
+                    );
+                    panic!("not in resuming state")
+                }
             }
         }
     }

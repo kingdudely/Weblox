@@ -63,6 +63,20 @@ fn put_u16(c: &mut Caller<'_, St>, p: u32, v: u16) {
 static PENDING: std::sync::Mutex<Option<std::collections::HashMap<u32, Vec<(u32, u32)>>>> =
     std::sync::Mutex::new(None);
 
+type Done = std::io::Result<(u16, String, String, Vec<u8>)>;
+struct Reply {
+    me: u32,
+    fetch: u32,
+    onload: u32,
+    onerror: u32,
+    onstate: u32,
+    res: Done,
+    retry: bool,
+}
+/// Responses whose curl has finished; the owning thread writes them into guest
+/// memory at its next safe point, like the page's async fetch.
+static DONE: std::sync::Mutex<Vec<Reply>> = std::sync::Mutex::new(Vec::new());
+
 /// Where this thread's deferred callbacks wait: its own mailbox, so they run at
 /// its next host safe point and keep the calling thread's instance.
 fn defer<T: wasmtime::AsContext<Data = St>>(cx: &T, idx: u32, fetch: u32) {
@@ -70,8 +84,7 @@ fn defer<T: wasmtime::AsContext<Data = St>>(cx: &T, idx: u32, fetch: u32) {
         return;
     }
     let d = cx.as_context().data();
-    let me = if d.is_main { d.main_ptr } else { d.mbx_ptr };
-    let Some(me) = me else { return };
+    let me = if d.is_main { d.main_ptr } else { d.mbx_ptr }.unwrap_or(0);
     PENDING
         .lock()
         .unwrap()
@@ -81,10 +94,130 @@ fn defer<T: wasmtime::AsContext<Data = St>>(cx: &T, idx: u32, fetch: u32) {
         .push((idx, fetch));
 }
 
+fn deliver<T: wasmtime::AsContextMut<Data = St>>(cx: &mut T, r: Reply) {
+    let f = r.fetch;
+    if r.retry {
+        // The engine's XHR wrapper occasionally misses the first resolution;
+        // a second onload after a beat gets the continuation moving.
+        if cx.as_context().data().fetch_hdrs.contains_key(&f) {
+            defer(cx, r.onload, f);
+        }
+        return;
+    }
+    match r.res {
+        Ok((status, reason, block, body)) => {
+            if std::env::var_os("WC_HTTP").is_some() {
+                eprintln!("[http] <- {f:#x} {status} {} bytes", body.len());
+            }
+            let n = body.len();
+            let data = if n == 0 {
+                0
+            } else {
+                let Some(inst) = cx.as_context().data().inst else { return };
+                let Ok(malloc) = inst.get_typed_func::<(i32,), i32>(&mut *cx, "malloc") else { return };
+                match malloc.call(&mut *cx, (n as i32,)) {
+                    Ok(p) => p as u32,
+                    Err(_) => return,
+                }
+            };
+            let mem = cx.as_context().data().mem.clone();
+            let d = mem.data();
+            if n > 0 {
+                for (i, b) in body.iter().enumerate() {
+                    unsafe { *(d[data as usize + i].get() as *mut u8) = *b };
+                }
+            }
+            let put = |o: u32, v: u64| unsafe {
+                for i in 0..8 {
+                    *(d[(f + o) as usize + i].get() as *mut u8) = (v >> (8 * i)) as u8;
+                }
+            };
+            let put16 = |o: u32, v: u16| unsafe {
+                *(d[(f + o) as usize].get() as *mut u16) = v;
+            };
+            let put32 = |o: u32, v: u32| unsafe {
+                *(d[(f + o) as usize].get() as *mut u32) = v;
+            };
+            put32(0, f);
+            put32(F_DATA, data);
+            put(16, n as u64);
+            put(24, 0);
+            put(32, n as u64);
+            put16(40, 4);
+            put16(F_STATUS, status);
+            let text = reason.as_bytes();
+            for (i, b) in text.iter().enumerate() {
+                unsafe { *(d[(f + F_TEXT) as usize + i].get() as *mut u8) = *b };
+            }
+            cx.as_context_mut().data_mut().fetch_hdrs.insert(f, block.into_bytes());
+            defer(cx, r.onstate, f);
+            if status >= 200 && status < 300 {
+                defer(cx, r.onload, f);
+                let url = {
+                    let d = cx.as_context().data();
+                    let p = unsafe { *(d.mem.data()[f as usize + F_URL as usize].get() as *const u32) };
+                    if p == 0 { String::new() } else {
+                        let dd = d.mem.data();
+                        let mut v = Vec::new();
+                        let mut i = p as usize;
+                        loop {
+                            let b = unsafe { *dd[i].get() };
+                            if b == 0 || v.len() > 300 { break }
+                            v.push(b);
+                            i += 1;
+                        }
+                        String::from_utf8_lossy(&v).into_owned()
+                    }
+                };
+                if std::env::var_os("WC_NORETRY").is_none()
+                    && (url.contains("join-game") || std::env::var_os("WC_RETRYALL").is_some())
+                {
+                    let retry = Reply {
+                        me: r.me,
+                        fetch: f,
+                        onload: r.onload,
+                        onerror: r.onerror,
+                        onstate: 0,
+                        res: Ok((status, String::new(), String::new(), Vec::new())),
+                        retry: true,
+                    };
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(300));
+                        DONE.lock().unwrap().push(retry);
+                    });
+                }
+            } else {
+                defer(cx, r.onerror, f);
+            }
+        }
+        Err(e) => {
+            eprintln!("[http] fetch {f:#x} failed: {e}");
+            let mem = cx.as_context().data().mem.clone();
+            let d = mem.data();
+            unsafe {
+                *(d[(f + 40) as usize].get() as *mut u16) = 4;
+                *(d[(f + F_STATUS) as usize].get() as *mut u16) = 0;
+            }
+            defer(cx, r.onstate, f);
+            defer(cx, r.onerror, f);
+        }
+    }
+}
+
 pub fn pump<T: wasmtime::AsContextMut<Data = St>>(cx: &mut T) {
     let d = cx.as_context().data();
-    let me = if d.is_main { d.main_ptr } else { d.mbx_ptr };
-    let Some(me) = me else { return };
+    let me = if d.is_main { d.main_ptr } else { d.mbx_ptr }.unwrap_or(0);
+    loop {
+        let hit = {
+            let mut q = DONE.lock().unwrap();
+            match q.iter().position(|r| mine(r.me, me)) {
+                Some(i) => Some(q.remove(i)),
+                None => None,
+            }
+        };
+        let Some(r) = hit else { break };
+        deliver(cx, r);
+    }
     let pending = PENDING.lock().unwrap().get_or_insert_with(Default::default).remove(&me);
     let Some(pending) = pending else { return };
     let Some(inst) = cx.as_context().data().inst else { return };
@@ -112,6 +245,17 @@ fn callback(c: &mut Caller<'_, St>, idx: u32, fetch: u32) -> Result<()> {
     let mut out = [];
     f.call(&mut *c, &[Val::I32(fetch as i32)], &mut out)?;
     Ok(())
+}
+
+fn self_id(c: &Caller<'_, St>) -> u32 {
+    let d = c.data();
+    if d.is_main { d.main_ptr } else { d.mbx_ptr }.unwrap_or(0)
+}
+
+/// A reply for a thread that has not armed a mailbox yet (0) can be delivered
+/// by any thread that reaches a safe point; the caller is only spun waiting.
+fn mine(id: u32, me: u32) -> bool {
+    id == me || id == 0
 }
 
 fn host_of(url: &str) -> &str {
@@ -383,7 +527,51 @@ fn run(req: &Req, cookie: Option<&str>) -> std::io::Result<(u16, String, String,
     exec(req, cookie)
 }
 
+/// Content responses are immutable enough for a dev loop, and the CDN is the
+/// slowest part of boot.  Keyed on the URL, only for GETs, never for joins.
+fn cache_key(req: &Req) -> Option<std::path::PathBuf> {
+    if std::env::var_os("WC_NOCACHE").is_some() || req.method != "GET" || is_join(&req.url) {
+        return None;
+    }
+    if !(req.url.contains("rbxcdn.com") || req.url.contains("assetdelivery")) {
+        return None;
+    }
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in req.url.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    Some(std::path::PathBuf::from(format!("/tmp/opencode/httpcache/{h:016x}")))
+}
+
+fn cache_get(path: &std::path::Path) -> Option<(u16, String, String, Vec<u8>)> {
+    let raw = std::fs::read(path).ok()?;
+    let a = u32::from_le_bytes(raw.get(0..4)?.try_into().ok()?) as usize;
+    let b = u32::from_le_bytes(raw.get(4..8)?.try_into().ok()?) as usize;
+    let status = u16::from_le_bytes(raw.get(8..10)?.try_into().ok()?);
+    let head = raw.get(10..10 + a)?.to_vec();
+    let body = raw.get(10 + a..10 + a + b)?.to_vec();
+    Some((status, "OK".into(), String::from_utf8_lossy(&head).into_owned(), body))
+}
+
+fn cache_put(path: &std::path::Path, status: u16, head: &[u8], body: &[u8]) {
+    let _ = std::fs::create_dir_all(path.parent().unwrap());
+    let mut v = Vec::with_capacity(10 + head.len() + body.len());
+    v.extend_from_slice(&(head.len() as u32).to_le_bytes());
+    v.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    v.extend_from_slice(&status.to_le_bytes());
+    v.extend_from_slice(head);
+    v.extend_from_slice(body);
+    let _ = std::fs::write(path, v);
+}
+
 fn exec(req: &Req, cookie: Option<&str>) -> std::io::Result<(u16, String, String, Vec<u8>)> {
+    let ck = cache_key(req);
+    if let Some(ck) = &ck {
+        if let Some(hit) = cache_get(ck) {
+            return Ok(hit);
+        }
+    }
     let dir = std::env::temp_dir();
     let tag = format!(
         "alc-fetch-{}-{}",
@@ -498,6 +686,11 @@ fn exec(req: &Req, cookie: Option<&str>) -> std::io::Result<(u16, String, String
             Err(why) => eprintln!("[join] left unpatched: {why}"),
         }
     }
+    if status == 200 {
+        if let Some(ck) = &ck {
+            cache_put(ck, status, block.as_bytes(), &body);
+        }
+    }
     Ok((status, reason, block, body))
 }
 
@@ -526,6 +719,7 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
                 let up = word(&c, f + F_URL);
                 eprintln!("[http] start f={f:#x} url={:?} state={}", if up == 0 { String::new() } else { rstr(&c, up) }, word(&c, f + F_STATE));
             }
+            eprintln!("[http] cbs onload={onload} onerror={onerror} onstate={onstate} url={}", crate::state::rstr(&c, word(&c, f + F_URL)));
             let Some(req) = parse(&c, f) else {
                 put_u16(&mut c, f + F_STATE, 4);
                 put_u16(&mut c, f + F_STATUS, 0);
@@ -534,67 +728,37 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
                 return;
             };
             crate::diag::event(format!("http {} {}", req.method, req.url));
-            eprintln!("[http] {} {} on {}", req.method, req.url, std::thread::current().name().unwrap_or("?"));
             if std::env::var_os("WC_HTTP").is_some() {
+                eprintln!("[http] {} {} on {}", req.method, req.url, std::thread::current().name().unwrap_or("?"));
                 for (k, v) in &req.headers {
                     eprintln!("[http]   {k}: {v}");
                 }
                 if !req.body.is_empty() {
                     eprintln!("[http]   body {} bytes", req.body.len());
                 }
-                let a = f + F_ATTR;
-                let d = c.data().mem.data();
-                let _ = &d;
-
-
             }
-            let res = run(&req, COOKIE.get().map(String::as_str));
-            match res {
-                Ok((status, reason, block, body)) => {
-                    if std::env::var_os("WC_HTTP").is_some() {
-                        eprintln!("[http] <- {status} {} bytes", body.len());
+            let me = self_id(&c);
+            // The page's fetch is a task: the engine keeps running while curl
+            // works.  Blocking the caller (usually a busy worker) made the join
+            // flow decide it had lost the connection.
+            if std::env::var_os("WC_ASYNCHTTP").is_some() {
+                let join = is_join(&req.url);
+                std::thread::spawn(move || {
+                    let res = run(&req, COOKIE.get().map(String::as_str));
+                    if join && std::env::var_os("WC_NOHOLD").is_none() {
+                        std::thread::sleep(std::time::Duration::from_millis(
+                            std::env::var("WC_HOLD").ok().and_then(|v| v.parse().ok()).unwrap_or(400),
+                        ));
                     }
-                    let n = body.len();
-                    let data = if n == 0 {
-                        0
-                    } else {
-                        let Some(inst) = c.data().inst else { return };
-                        let malloc = match inst.get_typed_func::<(i32,), i32>(&mut c, "malloc") {
-                            Ok(m) => m,
-                            Err(_) => return,
-                        };
-                        match malloc.call(&mut c, (n as i32,)) {
-                            Ok(p) => p as u32,
-                            Err(_) => return,
-                        }
-                    };
-                    if n > 0 {
-                        wbytes(&mut c, data, &body);
-                    }
-                    put_u32(&mut c, f + F_DATA, data);
-                    put_u64(&mut c, f + F_NUM, n as u64);
-                    put_u64(&mut c, f + F_OFF, 0);
-                    put_u64(&mut c, f + F_TOTAL, n as u64);
-                    put_u16(&mut c, f + F_STATE, 4);
-                    put_u16(&mut c, f + F_STATUS, status);
-                    wbytes(&mut c, f + F_TEXT, reason.as_bytes());
-                    c.data_mut().fetch_hdrs.insert(f, block.into_bytes());
-                    defer(&c, onstate, f);
-                    if status >= 200 && status < 300 {
-                        defer(&c, onload, f);
-                    } else {
-                        defer(&c, onerror, f);
-                    }
-                    pump(&mut c);
-                }
-                Err(e) => {
-                    eprintln!("[http] {} {} failed: {e}", req.method, req.url);
-                    put_u16(&mut c, f + F_STATE, 4);
-                    put_u16(&mut c, f + F_STATUS, 0);
-                    defer(&c, onstate, f);
-                    defer(&c, onerror, f);
-                    pump(&mut c);
-                }
+                    DONE.lock().unwrap().push(Reply { me, fetch: f, onload, onerror, onstate, res, retry: false });
+                });
+            } else {
+                // The engine's fetch wrapper expects the request to occupy the
+                // worker until the answer is in; blocking here is what it does
+                // with the page's XHR too.
+                let res = run(&req, COOKIE.get().map(String::as_str));
+                deliver(&mut c, Reply { me, fetch: f, onload, onerror, onstate, res, retry: false });
+                pump(&mut c);
             }
         })?;
 

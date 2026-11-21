@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use anyhow::Result;
-use wasmtime::{Caller, Linker};
+use wasmtime::{Caller, Linker, Store};
 
 use crate::state::St;
 
@@ -137,6 +137,51 @@ pub fn probe(mem: &wasmtime::SharedMemory, tag: &str) {
 
 static AUTOTAIL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// The ring is embedded in the connection object: data at +336, write cursor at
+/// +328, read cursor at +332.
+const RING_DATA: u32 = 336;
+/// Table slot of the engine's per-slot consumer closure (`fn 120561`).
+const CONSUMER: u32 = 135389;
+
+fn conn_of(r: &Ring) -> u32 {
+    r.data.wrapping_sub(RING_DATA)
+}
+
+/// Run the engine's ring consumer for one delivered slot, exactly as the
+/// callback thread would.  Without it nothing ever advances the read cursor.
+/// Task layout: `{conn, kind, sid, pad, slot, len}`.
+fn consume<T: wasmtime::AsContextMut<Data = St>>(
+    cx: &mut T, conn: u32, kind: u8, sid: i32, slot: u32, len: u32,
+) -> Result<()> {
+    let Some(inst) = cx.as_context().data().inst else { return Ok(()) };
+    let Some(table) = inst.get_table(&mut *cx, "__indirect_function_table") else { return Ok(()) };
+    let Some(wasmtime::Ref::Func(Some(f))) = table.get(&mut *cx, CONSUMER as u64) else {
+        return Ok(());
+    };
+    let malloc = inst.get_typed_func::<u32, u32>(&mut *cx, "malloc")?;
+    let free = inst.get_typed_func::<u32, ()>(&mut *cx, "free")?;
+    let task = malloc.call(&mut *cx, 24)?;
+    if task == 0 {
+        return Ok(());
+    }
+    let mem = cx.as_context().data().mem.clone();
+    let d = mem.data();
+    let put = |o: u32, v: u32| unsafe { *(d[(task + o) as usize].get() as *mut u32) = v };
+    put(0, conn);
+    put(4, kind as u32);
+    put(8, sid as u32);
+    put(12, 0);
+    put(16, slot);
+    put(20, len);
+    eprintln!("[rna ] host-consume slot={slot} len={len}");
+    let r = f.call(&mut *cx, &[wasmtime::Val::I32(task as i32)], &mut []);
+    let _ = free.call(&mut *cx, task);
+    if let Err(e) = &r {
+        eprintln!("[rna ] consume slot={slot} len={len}: {e:#}");
+    }
+    r.map_err(|e| anyhow::anyhow!("{e:#}"))
+}
+
 fn ring_write(id: u32, data: &[u8]) -> Option<(u32, usize)> {
     let r = RINGS.lock().unwrap().as_ref()?.get(&id)?.clone();
     if r.count == 0 || r.slot == 0 {
@@ -168,6 +213,17 @@ fn connect(id: u32, url: String, owner: u32, ring: Ring) {
     let (ring_head, ring_tail) = (ring.head, ring.tail);
     AUTOTAIL.store(std::env::var_os("WC_AUTOTAIL").is_some(), std::sync::atomic::Ordering::Relaxed);
     set_owner(id, owner);
+    if ring.head != ring.data.wrapping_sub(8) || ring.tail != ring.data.wrapping_sub(4) {
+        eprintln!("[rna ] ring layout? data={:#x} head={:#x} tail={:#x} slot={} n={}",
+            ring.data, ring.head, ring.tail, ring.slot, ring.count);
+    }
+    let c = conn_of(&ring);
+    if let Some(m) = MEM.get() {
+        let d = m.data();
+        let w = |a: u32| unsafe { *(d[a as usize].get() as *const u32) };
+        eprintln!("[rna ] conn={c:#x} id@8={} kind102={} head@328={} tail@332={}",
+            w(c + 8), unsafe { *d[(c + 102) as usize].get() }, w(c + 328), w(c + 332));
+    }
     RINGS.lock().unwrap().get_or_insert_with(HashMap::new).insert(id, ring);
     rt().spawn(async move {
         let cfg = wtransport::ClientConfig::builder()
@@ -218,6 +274,11 @@ fn connect(id: u32, url: String, owner: u32, ring: Ring) {
                     match r.read(&mut buf).await {
                         Ok(Some(n)) => {
                             eprintln!("[rna ] recv sid={sid} n={n}");
+                            if std::env::var_os("WC_DUMP").is_some() {
+                                let k = n.min(96);
+                                let hex: String = buf[..k].iter().map(|b| format!("{b:02x}")).collect();
+                                eprintln!("[dumpr] {hex}");
+                            }
                             if std::env::var_os("WC_PROBE").is_some() {
                                 if let Some(m) = MEM.get() {
                                     probe(m, "slot");
@@ -279,6 +340,12 @@ fn connect(id: u32, url: String, owner: u32, ring: Ring) {
         rt().spawn(async move {
             while let Ok(d) = dg.receive_datagram().await {
                 eprintln!("[rna ] dgram-in {}", d.payload().len());
+                if std::env::var_os("WC_DUMP").is_some() {
+                    let p = d.payload();
+                    let k = p.len().min(96);
+                    let hex: String = p[..k].iter().map(|b| format!("{b:02x}")).collect();
+                    eprintln!("[dumpd] {hex}");
+                }
                 if let Some((slot, n)) = ring_write(id, &d.payload()) {
                     push(own, Ev::Slot(id, 1, 0, (slot << 24) as i32 | n as i32));
                 }
@@ -349,7 +416,63 @@ fn stream(id: u32, sid: u32) -> Option<std::sync::Arc<tokio::sync::Mutex<wtransp
     TX.lock().unwrap().as_ref()?.get(&(id, sid)).cloned()
 }
 
-/// Deliver this thread's completions, oldest first.
+/// Slots whose handler has run but which nobody has consumed yet.  The page
+/// runs each callback as its own task, so the engine gets a turn in between to
+/// arm the stream's read state before the data is handed over.
+static TO_CONSUME: Mutex<Vec<(u32, u8, i32, u32, u32)>> = Mutex::new(Vec::new());
+
+fn deliver(cx: &mut Store<St>, ev: Ev) {
+    // Slots are handed straight to the connection's consumer.  The engine's
+    // own handler only queues the same call for its callback thread; doing it
+    // here keeps the cursor move and the dispatch in one place.
+    if let Ev::Slot(id, kind, sid, packed) = ev {
+        let (slot, len) = ((packed >> 24) as u32, (packed & 0xff_ffff) as u32);
+        let ring = RINGS.lock().unwrap().as_ref().and_then(|m| m.get(&id)).cloned();
+        if let Some(ring) = ring {
+            let _ = consume(cx, conn_of(&ring), kind, sid, slot, len);
+        }
+        return;
+    }
+    let (name, args): (&str, Vec<i32>) = match ev {
+        Ev::Connected(id, max) => ("rbx_wasm_rna_on_connect_success", vec![id as i32, max]),
+        Ev::ConnectError(id) => ("rbx_wasm_rna_on_connect_error", vec![id as i32]),
+        Ev::Accepted(id, sid) => ("rbx_wasm_rna_on_stream_accepted", vec![id as i32, sid]),
+        Ev::Slot(..) => unreachable!(),
+        Ev::Fin(id, sid) => ("rbx_wasm_rna_on_stream_fin", vec![id as i32, sid]),
+        Ev::StreamError(id, sid, code) =>
+            ("rbx_wasm_rna_on_stream_error", vec![id as i32, sid, code]),
+        Ev::WriteOk(id, sid, n) =>
+            ("rbx_wasm_rna_on_stream_write_success", vec![id as i32, sid, n]),
+        Ev::WriteErr(id, sid) => ("rbx_wasm_rna_on_stream_write_error", vec![id as i32, sid]),
+        Ev::Closed(id, code, cls, has) => (
+            "rbx_wasm_rna_on_connection_closed",
+            vec![id as i32, code as i32, cls as i32, has],
+        ),
+        Ev::CloseComplete(id) => ("rbx_wasm_rna_on_close_complete", vec![id as i32]),
+    };
+    // embind calls the invoker as (fn id, ...args)
+    let Some(binding) = crate::imports::embind::binds().lock().unwrap().get(name).cloned() else {
+        eprintln!("[rna ] no binding {name}");
+        return;
+    };
+    let Some(inst) = cx.data().inst else { return };
+    let Some(table) = inst.get_table(&mut *cx, "__indirect_function_table") else { return };
+    let Some(wasmtime::Ref::Func(Some(f))) = table.get(&mut *cx, binding.0 as u64) else {
+        return;
+    };
+    let mut vals = vec![wasmtime::Val::I32(binding.1 as i32)];
+    for &a in args.iter() {
+        vals.push(wasmtime::Val::I32(a));
+    }
+    eprintln!("[rna ] -> {name} fn={} {args:?}", binding.1);
+    if let Err(e) = f.call(&mut *cx, &vals, &mut []) {
+        eprintln!("[rna ] {name} threw: {e:#}");
+        return;
+    }
+}
+
+/// Deliver one completion per turn, oldest first: the page awaits every
+/// deferred callback, so a delivery must not run back-to-back with the next.
 pub fn pump<T: wasmtime::AsContextMut<Data = St>>(cx: &mut T) {
     let d = cx.as_context().data();
     let Some(me) = (if d.is_main { d.main_ptr } else { d.mbx_ptr }) else { return };
@@ -357,54 +480,45 @@ pub fn pump<T: wasmtime::AsContextMut<Data = St>>(cx: &mut T) {
     if cx.as_context().data().in_rna {
         return;
     }
-    let evs = Q.lock().unwrap().get_or_insert_with(HashMap::new).remove(&MAIN_Q).unwrap_or_default();
-    if evs.is_empty() {
+    let ev = {
+        let mut q = Q.lock().unwrap();
+        match q.get_or_insert_with(HashMap::new).get_mut(&MAIN_Q) {
+            Some(v) if !v.is_empty() => Some(v.remove(0)),
+            _ => None,
+        }
+    };
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    if std::env::var_os("WC_PQ").is_some() && N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 2000 == 0 {
+        let q = Q.lock().unwrap();
+        let n = q.as_ref().and_then(|m| m.get(&MAIN_Q)).map(|v| v.len()).unwrap_or(0);
+        eprintln!("[pq  ] pump#{N:?} q={n}");
+    }
+    let ready: Vec<_> = TO_CONSUME.lock().unwrap().drain(..).collect();
+    if ev.is_none() && ready.is_empty() {
         return;
     }
-    let Some(inst) = cx.as_context().data().inst else { return };
+    if cx.as_context().data().inst.is_none() {
+        return;
+    }
     cx.as_context_mut().data_mut().in_rna = true;
-    // the engine hands the slot to a pooled helper thread; nothing re-enters
-    // that helper on its own, so prod it
+    // A slot delivered last turn can be handed over now that the engine has had
+    // its turn; skip it if the engine got there first.
+    for (id, kind, sid, slot, len) in ready {
+        let ring = RINGS.lock().unwrap().as_ref().and_then(|m| m.get(&id)).cloned();
+        if let Some(ring) = ring {
+            let mem = cx.as_context().data().mem.clone();
+            let d = mem.data();
+            let tail = unsafe { *(d[ring.tail as usize].get() as *const u32) };
+            if tail == slot {
+                let sp = crate::fibre::store_ptr();
+                let _ = consume(unsafe { &mut *sp }, conn_of(&ring), kind, sid, slot, len);
+            }
+        }
+    }
     crate::imports::thread::nudge_runners();
-    for ev in evs {
-        let (name, mut args): (&str, Vec<i32>) = match ev {
-            Ev::Connected(id, max) => ("rbx_wasm_rna_on_connect_success", vec![id as i32, max]),
-            Ev::ConnectError(id) => ("rbx_wasm_rna_on_connect_error", vec![id as i32]),
-            Ev::Accepted(id, sid) => ("rbx_wasm_rna_on_stream_accepted", vec![id as i32, sid]),
-            Ev::Slot(id, kind, sid, packed) => (
-                "rbx_wasm_rna_on_receive_ring_slot",
-                vec![id as i32, kind as i32, sid, packed >> 24, packed & 0xff_ffff],
-            ),
-            Ev::Fin(id, sid) => ("rbx_wasm_rna_on_stream_fin", vec![id as i32, sid]),
-            Ev::StreamError(id, sid, code) =>
-                ("rbx_wasm_rna_on_stream_error", vec![id as i32, sid, code]),
-            Ev::WriteOk(id, sid, n) =>
-                ("rbx_wasm_rna_on_stream_write_success", vec![id as i32, sid, n]),
-            Ev::WriteErr(id, sid) => ("rbx_wasm_rna_on_stream_write_error", vec![id as i32, sid]),
-            Ev::Closed(id, code, cls, has) => (
-                "rbx_wasm_rna_on_connection_closed",
-                vec![id as i32, code as i32, cls as i32, has],
-            ),
-            Ev::CloseComplete(id) => ("rbx_wasm_rna_on_close_complete", vec![id as i32]),
-        };
-        // embind calls the invoker as (fn id, ...args)
-        let Some(binding) = crate::imports::embind::binds().lock().unwrap().get(name).cloned() else {
-            eprintln!("[rna ] no binding {name}");
-            continue;
-        };
-        let Some(table) = inst.get_table(&mut *cx, "__indirect_function_table") else { continue };
-        let Some(wasmtime::Ref::Func(Some(f))) = table.get(&mut *cx, binding.0 as u64) else {
-            continue;
-        };
-        eprintln!("[rna ] -> {name} fn={} {args:?}", binding.1);
-        let mut vals = vec![wasmtime::Val::I32(binding.1 as i32)];
-        for a in args.drain(..) {
-            vals.push(wasmtime::Val::I32(a));
-        }
-        match f.call(&mut *cx, &vals, &mut []) {
-            Ok(()) => {}
-            Err(e) => eprintln!("[rna ] {name} threw: {e:#}"),
-        }
+    if let Some(ev) = ev {
+        let sp = crate::fibre::store_ptr();
+        deliver(unsafe { &mut *sp }, ev);
     }
     cx.as_context_mut().data_mut().in_rna = false;
 }
@@ -444,6 +558,11 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
         |c: Caller<'_, St>, id: i32, sid: i32, ptr: i32, len: i32| {
             let bytes = crate::state::rbytes(&c, ptr as u32, len as u32);
             eprintln!("[rna ] write id={id} sid={sid} len={len}");
+            if std::env::var_os("WC_DUMP").is_some() {
+                let n = bytes.len().min(64);
+                let hex: String = bytes[..n].iter().map(|b| format!("{b:02x}")).collect();
+                eprintln!("[dumpw] {hex}");
+            }
             let owner = self_ptr(&c);
             let (id, sid) = (id as u32, sid as u32);
             let n = bytes.len() as i32;
@@ -507,6 +626,7 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
         })?;
     l.func_wrap("env", "rbx_wasm_rna_pause_stream_read_js",
         |_c: Caller<'_, St>, id: i32, sid: i32| {
+            eprintln!("[rna ] pause id={id} sid={sid}");
             PAUSED.lock().unwrap().get_or_insert_with(Default::default).insert((id as u32, sid));
         })?;
     l.func_wrap("env", "rbx_wasm_rna_resume_stream_read_js",

@@ -228,6 +228,46 @@ fn susp_here(step: Yield) -> u32 {
 
 /// Run `step` to its next suspension.
 fn resume(st: &mut Store<St>, step: Step) -> Result<Resume> {
+    let already = st
+        .data()
+        .rt
+        .as_ref()
+        .and_then(|r| r.fibres.get(&step.fibre))
+        .map(|f| f.running.get())
+        .unwrap_or(false);
+    if std::env::var_os("WC_FIB").is_some() {
+        eprintln!("[fbr ] enter {:#x} already={already} live={}",
+            step.fibre, st.data().rt.as_ref().map(|r| r.fibres.contains_key(&step.fibre)).unwrap_or(false));
+    }
+    // A finished fiber cannot be switched to again: the resumer's stack frame
+    // is gone.  A stale wakeup must fall through as "done" instead of trying.
+    let finished = st
+        .data()
+        .rt
+        .as_ref()
+        .and_then(|r| r.fibres.get(&step.fibre))
+        .map(|f| f.f.finished() && !f.running.get())
+        .unwrap_or(false);
+    if finished {
+        eprintln!("[fbr ] skip finished fiber {:#x}", step.fibre);
+        if let Some(f) = st.data_mut().rt.as_mut().expect("rt").fibres.remove(&step.fibre) {
+            if let (true, Some(inst)) = (f.guest.0 != 0, st.data().inst) {
+                if let Ok(free) = inst.get_typed_func::<(u32,), ()>(&mut *st, "free") {
+                    let _ = free.call(&mut *st, (f.guest.0,));
+                }
+            }
+        }
+        return Ok(Resume::Done);
+    }
+    if already {
+        eprintln!(
+            "[fbr ] running fibre {:#x} resumed again on {} cur={:#x} tramp={}",
+            step.fibre,
+            std::thread::current().name().unwrap_or("?"),
+            CUR.with(|c| c.get()),
+            TRAMP.with(|t| t.get())
+        );
+    }
     let p = match st.data().rt.as_ref().and_then(|r| r.fibres.get(&step.fibre)) {
         Some(f) => f.susp.get(),
         None => return Ok(Resume::Done),
@@ -400,14 +440,10 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
         // Resuming with 0 makes the dead context fall out of `fiber_entry`'s
         // transfer, which the guest turns into `unreachable`; the trap stays
         // inside the fibre closure and ends it.
+        // Let the trampoline that is already driving this thread run it, so a
+        // destroy never nests resumes of its own.
         let raw = c.data().rt.as_ref().expect("rt").store;
-        let mut step = Some(Step { fibre: fid, val: 0, ctx: None });
-        while let Some(s) = step {
-            step = match resume(raw.get(), s)? {
-                Resume::Done => None,
-                Resume::Parked(n) => n,
-            };
-        }
+        schedule(raw.get(), Step { fibre: fid, val: 0, ctx: None });
         Ok(())
     })?;
     Ok(())
