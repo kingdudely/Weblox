@@ -259,16 +259,19 @@ pub fn asm_invoke(c: &mut wasmtime::Store<St>, key: u32, vals: &[f64]) -> f64 {
         // audio context probes: pretend they worked
         9112441 => 0.0,                          // prefer the synchronous ScriptProcessor path
         9117655 | 9118217 | 9115514 => 48000.0,    // AudioContext sample rate probes
-        9114286 => { AUDIO.store(true, std::sync::atomic::Ordering::Relaxed); 1.0 },
-        9118423 => { AUDIO.store(true, std::sync::atomic::Ordering::Relaxed); 1.0 },
-        9117856 => { AUDIO.store(true, std::sync::atomic::Ordering::Relaxed); 0.0 },
+        9114286 => crate::audio::init(),
+        9118423 => { crate::audio::connect(); 0.0 },
+        9117856 => { crate::audio::create_processor(a(0) as usize); 0.0 },
         9112554 => 0.0,
         9114701 | 9117856 | 9118423 | 9112730 | 9113734 | 9113952 => 0.0,
         9114224 => 0.0,                            // worklet node
-        9115094 | 9115715 | 9116344 | 9117920 => 0.0,
+        9117920 => { crate::audio::copy(&*c, a(0), a(1), a(2), a(3)); 0.0 }
+        9115094 | 9115715 | 9116344 => 0.0,
         9116868 | 9115514 => 48000.0,              // sample rate
-        9115926 | 9117251 | 9117293 | 9117579 | 9117632 | 9118195
-        | 9114286 | 9118718 => 0.0,
+        9117251 | 9117632 => { crate::audio::suspend(); 0.0 }
+        9118195 => { crate::audio::resume(); 0.0 }
+        9117293 => { crate::audio::stop(); 0.0 }
+        9115926 | 9117579 | 9118718 => 0.0,
         _ => {
             let d = c.data().mem.data();
             for probe in [9099118u32, 9111979u32] {

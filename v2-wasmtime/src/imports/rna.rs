@@ -543,6 +543,7 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
          tail: i32, slot: i32, count: i32, _err: i32, _fix: i32, _dg: i32, _a: i32, _b: i32| {
             MEM.get_or_init(|| c.data().mem.clone());
             let u = crate::state::rstr(&c, url as u32);
+            eprintln!("[rna ] connect_js id={id} url={u}");
             let owner = self_ptr(&c);
             connect(
                 id as u32,

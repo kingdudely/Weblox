@@ -55,8 +55,11 @@ pub fn start_worker(
     std::thread::Builder::new()
         .name(format!("rbx-{pthread:x}"))
         .spawn(move || -> Result<()> {
+            eprintln!("[pthr] {pthread:x} thread enter");
             let r = crate::fibre::block_on(async move {
+                eprintln!("[pthr] {pthread:x} future enter");
                 let mut store = Box::new(Store::new(&engine, St::new(mem.clone())));
+                eprintln!("[pthr] {pthread:x} store made");
                 let p = crate::fibre::PStore(&mut *store as *mut Store<St>);
                 store.data_mut().rt = Some(crate::fibre::Rt::new(p));
                 store.data_mut().engine = Some(engine.clone());
@@ -65,7 +68,9 @@ pub fn start_worker(
                 crate::imports::register_all(&mut l)?;
                 l.define(&mut *store, "env", "memory", Extern::SharedMemory(mem))?;
                 eprintln!("[pthr] {pthread:x} instantiating");
+                eprintln!("[pthr] {pthread:x} instantiating now");
                 let inst = l.instantiate_async(&mut *store, &module).await?;
+                eprintln!("[pthr] {pthread:x} instantiated");
                 store.data_mut().inst = Some(inst);
                 if std::env::var_os("WC_ST").is_some() { eprintln!("[st  ] {pthread:x} instantiated"); }
                 if let Ok(v) = std::env::var("WC_SLOT0") {

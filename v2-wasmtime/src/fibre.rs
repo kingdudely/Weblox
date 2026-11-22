@@ -416,7 +416,9 @@ pub fn spawn_on_new_stack<T: wasmtime::AsContextMut<Data = St>>(
     cx: &mut T, id: u32, size: u32, task: Task,
 ) -> Result<()> {
     let size = size.max(64 * 1024) as usize;
+    if std::env::var_os("WC_TRC").is_some() { eprintln!("[fibx] spawn {id:x} stack"); }
     let (sp, base) = guest_stack(cx, size)?;
+    if std::env::var_os("WC_TRC").is_some() { eprintln!("[fibx] spawn {id:x} stack {base:x} sp {sp:x}"); }
     let raw = cx.as_context().data().rt.as_ref().expect("rt").store;
     let wrapped: Task = Box::pin(async move {
         if let Ok(st) = un(Some(raw)) {

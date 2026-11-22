@@ -70,6 +70,23 @@ fn put(o: Obj) -> u32 {
     id
 }
 
+fn put_at(id: u32, o: Obj) {
+    with(|g| g.objs.insert(id, o));
+}
+
+/// Allocate the C++ wrapper half of a handle by calling its export.
+fn wrapped(st: &mut wasmtime::Store<St>, name: &str, o: Obj) -> i32 {
+    let w = wrapper(st, name);
+    if w != 0 { put_at(w, o) }
+    w as i32
+}
+
+fn wrapper(st: &mut wasmtime::Store<St>, name: &str) -> u32 {
+    let Some(inst) = st.data().inst else { return 0 };
+    let Ok(f) = inst.get_typed_func::<(i32,), i32>(&mut *st, name) else { return 0 };
+    crate::fibre::run_sync(f.call_async(&mut *st, (0,))).unwrap_or(0) as u32
+}
+
 fn take(id: u32) -> Option<Obj> {
     with(|g| g.objs.remove(&id))
 }
@@ -210,13 +227,14 @@ fn ensure() -> bool {
     eprintln!("[wgpu] {} {:?}", info.name, info.backend);
     let (device, queue) = match crate::gfx::block(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("alcohol"),
-        required_features: wgpu::Features::empty(),
-        required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
+        required_features: adapter.features() & !wgpu::Features::EXPERIMENTAL_COOPERATIVE_MATRIX,
+        required_limits: adapter.limits(),
         ..Default::default()
     })) {
         Ok(v) => v,
         Err(e) => { eprintln!("[wgpu] device: {e}"); return false }
     };
+    device.on_uncaptured_error(std::sync::Arc::new(|e| eprintln!("[wgpu] error: {e}")));
     let dev = put(Obj::Device(device.clone()));
     let q = put(Obj::Queue(queue.clone()));
     with(|g| {
@@ -235,7 +253,12 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
     l.func_wrap("env", "emscripten_webgpu_get_device", || -> i32 {
         crate::trace::hit("webgpu_device");
         if !ensure() { return 0 }
-        with(|g| g.objs.iter().find(|(_, o)| matches!(o, Obj::Device(_))).map(|(k, _)| *k as i32).unwrap_or(0))
+        let raw = with(|g| g.objs.iter().find(|(_, o)| matches!(o, Obj::Device(_))).map(|(k, _)| *k).unwrap_or(0));
+        if raw == 0 { return 0 }
+        let st = crate::fibre::store_ptr();
+        let w = unsafe { wrapper(&mut *st, "emwgpuCreateDevice") };
+        if w != 0 { if let Some(o) = take(raw) { put_at(w, o) } }
+        w as i32
     })?;
     l.func_wrap("env", "emwgpuGetPreferredFormat", || -> i32 { 22 })?; // rgba8unorm
 
@@ -263,7 +286,7 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
             .collect();
         with(|g| {
             let _ = dev;
-            let device = g.device.clone().unwrap();
+            let Some(device) = g.device.clone() else { return };
             let Some(Obj::Surface(s)) = g.objs.get(&(s as u32)) else { return };
             let caps = s.get_capabilities(&g.adapter.as_ref().unwrap());
             let format = wgt::tex_format(fmt).filter(|f| caps.formats.contains(f))
@@ -282,7 +305,7 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
                 desired_maximum_frame_latency: 2,
             };
             let _ = device;
-            s.configure(&g.device.clone().unwrap(), &conf);
+            s.configure(&device, &conf);
         });
     });
 
@@ -309,8 +332,8 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
             label: label.as_deref(), size, usage,
             mapped_at_creation: mapped,
         });
-        let id = put(Obj::Buffer(b));
-        unsafe { *(st.data().mem.data()[out as usize].get() as *mut u32) = id };
+        put_at(out as u32, Obj::Buffer(b));
+        unsafe { *(st.data().mem.data()[out as usize].get() as *mut u32) = out as u32 };
         1
     });
 
@@ -328,8 +351,8 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
             label: label.as_deref(),
             source: wgpu::ShaderSource::Wgsl(code.into()),
         });
-        let id = put(Obj::Shader(sh));
-        unsafe { *(st.data().mem.data()[out as usize].get() as *mut u32) = id };
+        put_at(out as u32, Obj::Shader(sh));
+        unsafe { *(st.data().mem.data()[out as usize].get() as *mut u32) = out as u32 };
     });
 
     f!("emwgpuShaderModuleGetCompilationInfo", (sh: i32, fut: i64, out: i32), (), |st: &mut wasmtime::Store<St>, m: M<'_>| {
@@ -356,7 +379,7 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
             mip_level_count: mips, sample_count: samples, dimension: dim, format, usage,
             view_formats: &[],
         });
-                put(Obj::Texture(t)) as i32
+                wrapped(st, "emwgpuCreateTexture", Obj::Texture(t))
     });
 
     f!("wgpuTextureCreateView", (t: i32, desc: i32), i32, |st: &mut wasmtime::Store<St>, m: M<'_>| {
@@ -393,7 +416,7 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
             compare: wgt::compare(m.u32(desc + 44)),
             ..Default::default()
         });
-        put(Obj::Sampler(s)) as i32
+        wrapped(st, "emwgpuCreateSampler", Obj::Sampler(s))
     });
 
     f!("wgpuDeviceCreateCommandEncoder", (d: i32, desc: i32), i32, |st: &mut wasmtime::Store<St>, m: M<'_>| {
@@ -496,7 +519,7 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
         }
         with(|g| { g.objs.insert(e as u32, Obj::Enc(Some(enc))); });
         let _ = &keep;
-        put(Obj::RPass(Some((rp, keep)))) as i32
+        wrapped(st, "emwgpuCreateRenderPassEncoder", Obj::RPass(Some((rp, keep))))
     });
 
     macro_rules! rpass {
@@ -586,7 +609,7 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
     });
 
 
-    f!("wgpuDeviceCreateBindGroupLayout", (d: i32, desc: i32), i32, |_st: &mut wasmtime::Store<St>, m: M<'_>| {
+    f!("wgpuDeviceCreateBindGroupLayout", (d: i32, desc: i32), i32, |st: &mut wasmtime::Store<St>, m: M<'_>| {
         let _ = d;
         let Some(dev) = g_device() else { return 0 };
         let n = m.u32(desc + 12);
@@ -621,7 +644,7 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
                                 multisampled: m.u32(e + 68) != 0,
                             }
                         } else {
-                            let access = match m.u32(e + 76) { 1 => wgpu::StorageTextureAccess::WriteOnly, 2 => wgpu::StorageTextureAccess::ReadOnly, _ => wgpu::StorageTextureAccess::ReadWrite };
+                            let access = match m.u32(e + 76) { 1 => wgpu::StorageTextureAccess::WriteOnly, _ => wgpu::StorageTextureAccess::ReadOnly };
                             wgpu::BindingType::StorageTexture {
                                 access,
                                 format: wgt::tex_format(m.u32(e + 80)).unwrap_or(wgpu::TextureFormat::Rgba8Unorm),
@@ -631,13 +654,19 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
                     }
                 },
             };
+            eprintln!("[wg] entry b={binding} vis={vis:?} ty={ty:?}");
             entries.push(wgpu::BindGroupLayoutEntry { binding, visibility: vis, ty, count: None });
         }
         let label = m.opt_str(desc + 4);
-        put(Obj::Bgl(dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: label.as_deref(), entries: &entries }))) as i32
+        eprintln!("[wg] bgl create n={n}");
+        let o = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: label.as_deref(), entries: &entries });
+        eprintln!("[wg] bgl created, wrap");
+        let r = wrapped(st, "emwgpuCreateBindGroupLayout", Obj::Bgl(o));
+        eprintln!("[wg] bgl wrapped");
+        r
     });
 
-    f!("wgpuDeviceCreatePipelineLayout", (d: i32, desc: i32), i32, |_st: &mut wasmtime::Store<St>, m: M<'_>| {
+    f!("wgpuDeviceCreatePipelineLayout", (d: i32, desc: i32), i32, |st: &mut wasmtime::Store<St>, m: M<'_>| {
         let _ = d;
         let Some(dev) = g_device() else { return 0 };
         let n = m.u32(desc + 12);
@@ -652,10 +681,10 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
             bind_group_layouts: &bgls.iter().map(Some).collect::<Vec<_>>(),
             immediate_size: 0,
         });
-        put(Obj::Pl(p)) as i32
+        wrapped(st, "emwgpuCreatePipelineLayout", Obj::Pl(p))
     });
 
-    f!("wgpuDeviceCreateBindGroup", (d: i32, desc: i32), i32, |_st: &mut wasmtime::Store<St>, m: M<'_>| {
+    f!("wgpuDeviceCreateBindGroup", (d: i32, desc: i32), i32, |st: &mut wasmtime::Store<St>, m: M<'_>| {
         let _ = d;
         let Some(dev) = g_device() else { return 0 };
         let layout = m.u32(desc + 12);
@@ -825,7 +854,7 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
             multiview_mask: None,
             cache: None,
         });
-        put(Obj::Rp(rp)) as i32
+        wrapped(st, "emwgpuCreateRenderPipeline", Obj::Rp(rp))
     });
 
     f!("wgpuDeviceCreateComputePipeline", (d: i32, desc: i32), i32, |st: &mut wasmtime::Store<St>, m: M<'_>| {
@@ -841,7 +870,7 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
             module: &modu, entry_point: Some(&entry),
             compilation_options: Default::default(), cache: None,
         });
-        put(Obj::Cp(p)) as i32
+        wrapped(st, "emwgpuCreateComputePipeline", Obj::Cp(p))
     });
 
     f!("wgpuCommandEncoderBeginComputePass", (e: i32, _d: i32), i32, |st: &mut wasmtime::Store<St>, m: M<'_>| {

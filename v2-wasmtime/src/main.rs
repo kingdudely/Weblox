@@ -11,6 +11,7 @@ use anyhow::{anyhow, Result};
 use futures::executor::block_on;
 use wasmtime::*;
 
+mod audio;
 mod binds;
 mod diag;
 mod fibre;
@@ -520,7 +521,12 @@ fn run() -> Result<()> {
         }
     }
     fibre::host_root(&mut *store);
+    let mut t_prev = Instant::now();
     while Instant::now() < deadline {
+        if turns % 100 == 0 {
+            eprintln!("[fps ] turns={turns} dt={}ms", t_prev.elapsed().as_millis());
+            t_prev = Instant::now();
+        }
         if turns % 100 == 0 {
             eprintln!("[iter] turn {turns} at {}ms", deadline.saturating_duration_since(Instant::now()).as_millis());
         }
@@ -529,9 +535,16 @@ fn run() -> Result<()> {
         imports::boot::advance_frame();
 
         let no_audio = std::env::var_os("WC_NOAUDIO").is_some();
-        if !no_audio && imports::boot::AUDIO.load(std::sync::atomic::Ordering::Relaxed)
-            && last_audio.elapsed() >= Duration::from_millis(10)
-        {
+        if !no_audio && crate::audio::want().is_some() {
+            let chunk = crate::audio::want().unwrap_or(1024);
+            last_audio = Instant::now();
+            if let Ok(mix) = inst.get_typed_func::<(i32,), ()>(&mut *store, "FMOD_JS_MixFunction") {
+                let t0 = Instant::now();
+                let _ = fibre::block_on(mix.call_async(&mut *store, (chunk as i32,)));
+                if t0.elapsed().as_millis() > 5 { eprintln!("[mix ] {}ms chunk={chunk}", t0.elapsed().as_millis()); }
+            }
+        }
+        if false {
             static ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
             if !ON.swap(true, std::sync::atomic::Ordering::Relaxed) { eprintln!("[mix ] on"); }
             last_audio = Instant::now();
@@ -561,7 +574,10 @@ fn run() -> Result<()> {
         if store.data().gl_ctx {
             gfx::poll();
         }
-        if let Err(e) = fibre::call_fibre(&mut *store, fid, 2 * 1024 * 1024, task) {
+        let t_turn = Instant::now();
+        let rc = fibre::call_fibre(&mut *store, fid, 2 * 1024 * 1024, task);
+        if t_turn.elapsed().as_millis() > 30 { eprintln!("[turn] {}ms", t_turn.elapsed().as_millis()); }
+        if let Err(e) = rc {
             eprintln!("[iter] turn {turns} failed: {e:#}");
             fibre::shutdown(&mut *store);
             return Err(e.into());
