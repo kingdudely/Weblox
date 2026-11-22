@@ -104,8 +104,12 @@ export function install(kind) {
   globalThis.self = globalThis;
   // the glue gates its JSPI (fiber) machinery on this interface existing
   if (!globalThis.WorkerGlobalScope) globalThis.WorkerGlobalScope = class WorkerGlobalScope {};
-  globalThis.addEventListener = add;
-  globalThis.removeEventListener = remove;
+  // Deno registers its own message pump through the *global* addEventListener;
+  // shadowing it without forwarding silently kills every worker message.
+  const priorAdd = globalThis.addEventListener?.bind(globalThis);
+  const priorRemove = globalThis.removeEventListener?.bind(globalThis);
+  globalThis.addEventListener = (t, f, o) => { priorAdd?.(t, f, o); add(t, f); };
+  globalThis.removeEventListener = (t, f, o) => { priorRemove?.(t, f, o); remove(t, f); };
   globalThis.dispatchEvent = (e) => { fire(e.type, e); return true; };
   globalThis.HTMLElement = El;
   globalThis.HTMLCanvasElement = Canvas;
