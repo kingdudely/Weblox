@@ -9,6 +9,8 @@ pub mod opfs;
 pub mod rna;
 pub mod stubs;
 pub mod thread;
+pub mod webgpu;
+pub mod wgt;
 
 /// Every host side module, in one place: the main store, each worker and the
 /// completions thread all need the same set.
@@ -24,6 +26,7 @@ pub fn register_all(l: &mut wasmtime::Linker<crate::state::St>) -> anyhow::Resul
     opfs::register(l)?;
     rna::register(l)?;
     stubs::register(l)?;
+    webgpu::register(l)?;
     thread::register(l)?;
     Ok(())
 }

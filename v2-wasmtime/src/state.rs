@@ -43,6 +43,8 @@ pub struct St {
     pub fetch_hdrs: HashMap<u32, Vec<u8>>,
     /// .ROBLOSECURITY for roblox.com requests
     pub cookie: Option<String>,
+    /// the guest created a GL context
+    pub gl_ctx: bool,
 }
 
 impl St {
@@ -75,6 +77,7 @@ impl St {
             types: Default::default(),
             fetch_hdrs: Default::default(),
             cookie: None,
+            gl_ctx: false,
         }
     }
 }

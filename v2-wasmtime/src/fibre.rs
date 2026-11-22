@@ -256,6 +256,18 @@ fn drive(done: Option<u32>) {
             }
         }
         if !ran {
+            if std::env::var_os("WC_STALL").is_some() {
+                static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+                let n = TICKS.load(Ordering::Relaxed);
+                let l = LAST.swap(n, Ordering::Relaxed);
+                if n == l {
+                    let p = STORE.with(|c| c.get());
+                    let slots: Vec<String> = if p.is_null() { vec![] } else {
+                        unsafe { &*p }.data().rt.as_ref().map(|r| r.slots.keys().map(|k| format!("{k:x}")).collect()).unwrap_or_default()
+                    };
+                    eprintln!("[drv ] {} stall done={done:?} tasks={} slots={slots:?}", std::thread::current().name().unwrap_or("?"), TASKS.with(|m| m.borrow().len()));
+                }
+            }
             let p = STORE.with(|c| c.get());
             if p.is_null() {
                 return;

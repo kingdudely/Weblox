@@ -14,6 +14,7 @@ use wasmtime::*;
 mod binds;
 mod diag;
 mod fibre;
+mod gfx;
 mod trace;
 mod imports;
 mod state;
@@ -308,6 +309,9 @@ fn main() {
 
 fn run() -> Result<()> {
     let place = place_arg()?;
+    if std::env::var_os("WC_GFXPROBE").is_some() {
+        if let Err(e) = gfx::ensure() { eprintln!("[gfx ] {e}"); }
+    }
     let cookie = cookie()?;
     let engine = Engine::new(&config()?)?;
     let module = module(&engine)?;
@@ -554,10 +558,16 @@ fn run() -> Result<()> {
                 }
             }
         });
+        if store.data().gl_ctx {
+            gfx::poll();
+        }
         if let Err(e) = fibre::call_fibre(&mut *store, fid, 2 * 1024 * 1024, task) {
             eprintln!("[iter] turn {turns} failed: {e:#}");
             fibre::shutdown(&mut *store);
             return Err(e.into());
+        }
+        if store.data().gl_ctx {
+            gfx::present();
         }
         if let Ok(k) = std::env::var("WC_KICK") {
             static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);

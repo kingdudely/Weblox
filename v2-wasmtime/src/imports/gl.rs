@@ -1,269 +1,245 @@
-//! A WebGL2-shaped stub surface.
+//! WebGL2-shaped imports backed by real GLES3.
 //!
-//! The engine only needs a context that reports plausible limits and shaders
-//! that say they compiled; nothing is really rasterised.  Keeping the shape
-//! (string pointers, non-zero object ids, success statuses) lets the surface,
-//! the render job and with them the data model step keep running.
+//! Guest linear memory is a host mapping, so ordinary pointers are valid host
+//! pointers and are passed straight through.  Only mapped buffers and sync
+//! objects need a handle translation; `glGetString` copies into guest memory.
+use std::collections::HashMap;
 use std::sync::Mutex;
 
-use wasmtime::{Caller, Linker};
+use wasmtime::{AsContextMut, Caller, FuncType, Linker, Val, ValType};
 
-use crate::state::{wbytes, St};
+use crate::state::St;
 
-struct Gl {
-    ids: i32,
-    string: u32,
-    mapped: u32,
+const I: ValType = ValType::I32;
+const L: ValType = ValType::I64;
+const V: ValType = ValType::F32;
+
+// name, params, result
+macro_rules! table {
+    ($($name:literal, $p:expr, $r:expr;)*) => {
+        pub const TABLE: &[(&str, &[ValType], Option<ValType>)] = &[
+            $(($name, $p, $r),)*
+        ];
+    };
 }
 
-static GL: Mutex<Gl> = Mutex::new(Gl { ids: 1, string: 0, mapped: 0 });
-
-fn id() -> i32 {
-    let mut g = GL.lock().unwrap();
-    g.ids += 1;
-    g.ids
+table! {
+    "glScissor", &[I, I, I, I], None;
+    "glInvalidateFramebuffer", &[I, I, I], None;
+    "glBindFramebuffer", &[I, I], None;
+    "glActiveTexture", &[I], None;
+    "glBindTexture", &[I, I], None;
+    "glCopyTexSubImage2D", &[I, I, I, I, I, I, I, I], None;
+    "glBindBufferRange", &[I, I, I, I, I], None;
+    "glBlitFramebuffer", &[I, I, I, I, I, I, I, I, I, I], None;
+    "glDisable", &[I], None;
+    "glEnable", &[I], None;
+    "glCullFace", &[I], None;
+    "glPolygonOffset", &[V, V], None;
+    "glColorMask", &[I, I, I, I], None;
+    "glBlendFunc", &[I, I], None;
+    "glBlendFuncSeparate", &[I, I, I, I], None;
+    "glDepthFunc", &[I], None;
+    "glDepthMask", &[I], None;
+    "glStencilFunc", &[I, I, I], None;
+    "glStencilOp", &[I, I, I], None;
+    "glUseProgram", &[I], None;
+    "glStencilMask", &[I], None;
+    "glClearBufferfv", &[I, I, I], None;
+    "glClearBufferfi", &[I, I, V, I], None;
+    "glClearBufferiv", &[I, I, I], None;
+    "glClearColor", &[V, V, V, V], None;
+    "glClearDepthf", &[V], None;
+    "glClearStencil", &[I], None;
+    "glClear", &[I], None;
+    "glBindBufferBase", &[I, I, I], None;
+    "glViewport", &[I, I, I, I], None;
+    "glDrawBuffers", &[I, I], None;
+    "glGenerateMipmap", &[I], None;
+    "glGenFramebuffers", &[I, I], None;
+    "glFramebufferTextureLayer", &[I, I, I, I, I], None;
+    "glCheckFramebufferStatus", &[I], Some(I);
+    "glDeleteFramebuffers", &[I, I], None;
+    "glDeleteBuffers", &[I, I], None;
+    "glDeleteShader", &[I], None;
+    "glDeleteProgram", &[I], None;
+    "glDeleteTextures", &[I, I], None;
+    "glDeleteRenderbuffers", &[I, I], None;
+    "glGetProgramiv", &[I, I, I], None;
+    "glBindBuffer", &[I, I], None;
+    "glMapBufferRange", &[I, I, I, I], Some(I);
+    "glGetError", &[], Some(I);
+    "glGetString", &[I], Some(I);
+    "glGetIntegerv", &[I, I], None;
+    "glGenVertexArrays", &[I, I], None;
+    "glBindVertexArray", &[I], None;
+    "glDeleteVertexArrays", &[I, I], None;
+    "glUnmapBuffer", &[I], Some(I);
+    "glBufferSubData", &[I, I, I, I], None;
+    "glGenBuffers", &[I, I], None;
+    "glBufferData", &[I, I, I, I], None;
+    "glClientWaitSync", &[I, I, L], Some(I);
+    "glDeleteSync", &[I], None;
+    "glFenceSync", &[I, I], Some(I);
+    "glFramebufferTexture2D", &[I, I, I, I, I], None;
+    "glFramebufferRenderbuffer", &[I, I, I, I], None;
+    "glEnableVertexAttribArray", &[I], None;
+    "glVertexAttribPointer", &[I, I, I, I, I, I], None;
+    "glDisableVertexAttribArray", &[I], None;
+    "glDrawElements", &[I, I, I, I], None;
+    "glDrawArrays", &[I, I, I], None;
+    "glDrawElementsInstanced", &[I, I, I, I, I], None;
+    "glDrawArraysInstanced", &[I, I, I, I], None;
+    "glGetUniformLocation", &[I, I], Some(I);
+    "glCreateProgram", &[], Some(I);
+    "glAttachShader", &[I, I], None;
+    "glBindAttribLocation", &[I, I, I], None;
+    "glLinkProgram", &[I], None;
+    "glGetProgramInfoLog", &[I, I, I, I], None;
+    "glUniform1i", &[I, I], None;
+    "glGetUniformBlockIndex", &[I, I], Some(I);
+    "glUniformBlockBinding", &[I, I, I], None;
+    "glGetActiveUniformBlockiv", &[I, I, I, I], None;
+    "glGetActiveUniform", &[I, I, I, I, I, I, I], None;
+    "glCreateShader", &[I], Some(I);
+    "glShaderSource", &[I, I, I, I], None;
+    "glCompileShader", &[I], None;
+    "glGetShaderiv", &[I, I, I], None;
+    "glGetShaderInfoLog", &[I, I, I, I], None;
+    "glGenTextures", &[I, I], None;
+    "glTexStorage3D", &[I, I, I, I, I, I], None;
+    "glTexStorage2D", &[I, I, I, I, I], None;
+    "glCompressedTexImage3D", &[I, I, I, I, I, I, I, I, I], None;
+    "glCompressedTexImage2D", &[I, I, I, I, I, I, I, I], None;
+    "glTexImage3D", &[I, I, I, I, I, I, I, I, I, I], None;
+    "glTexImage2D", &[I, I, I, I, I, I, I, I, I], None;
+    "glTexParameteri", &[I, I, I], None;
+    "glPixelStorei", &[I, I], None;
+    "glReadPixels", &[I, I, I, I, I, I, I], None;
+    "glGenRenderbuffers", &[I, I], None;
+    "glBindRenderbuffer", &[I, I], None;
+    "glRenderbufferStorageMultisample", &[I, I, I, I, I], None;
+    "glRenderbufferStorage", &[I, I, I, I], None;
+    "glCompressedTexSubImage3D", &[I, I, I, I, I, I, I, I, I, I, I], None;
+    "glCompressedTexSubImage2D", &[I, I, I, I, I, I, I, I, I], None;
+    "glTexSubImage3D", &[I, I, I, I, I, I, I, I, I, I, I], None;
+    "glTexSubImage2D", &[I, I, I, I, I, I, I, I, I], None;
+    "glTexParameterfv", &[I, I, I], None;
+    "glTexParameterf", &[I, I, V], None;
+    "glClipControlEXT", &[I, I], None;
 }
 
-/// Guest buffer holding the string last returned by `glGetString`.
-fn string(c: &mut Caller<'_, St>, s: &str) -> i32 {
-    let mut g = GL.lock().unwrap();
-    if g.string == 0 {
-        g.string = 0x10_0000; // below the module's static image end
-    }
-    let p = g.string;
-    drop(g);
-    wbytes(c, p, s.as_bytes());
-    wbytes(c, p + s.len() as u32, &[0]);
-    p as i32
+static SYNCS: Mutex<Option<HashMap<u32, u64>>> = Mutex::new(None);
+
+fn syncs() -> std::sync::MutexGuard<'static, Option<HashMap<u32, u64>>> {
+    SYNCS.lock().unwrap()
 }
 
-fn put(c: &mut Caller<'_, St>, p: i32, v: i32) {
-    wbytes(c, p as u32, &v.to_le_bytes());
+fn get_string(c: &mut Caller<'_, St>, name: u32) -> i32 {
+    let mut sctx = c.as_context_mut();
+    let st = &mut sctx;
+    let host = crate::gfx::call("glGetString", &[name as u64], &mut sctx);
+    let text = if name == 0x1f03 {
+        // GLES3 core only exposes the list through glGetStringi
+        let mut out = Vec::new();
+        let mut count = 0i32;
+        let _ = crate::gfx::call("glGetIntegerv", &[0x821d, &mut count as *mut i32 as u64], &mut sctx);
+        for i in 0..count.max(0) as u32 {
+            let p = crate::gfx::call("glGetStringi", &[0x1f03, i as u64], &mut sctx);
+            if p != 0 {
+                let s = unsafe { std::ffi::CStr::from_ptr(p as *const _) }.to_string_lossy();
+                out.extend_from_slice(s.as_bytes());
+                out.push(b' ');
+            }
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    } else if host == 0 {
+        String::new()
+    } else {
+        unsafe { std::ffi::CStr::from_ptr(host as *const _) }.to_string_lossy().into_owned()
+    };
+    crate::gfx::str_to_guest(&mut sctx, &text) as i32
 }
-
-const GL_VERSION: i32 = 0x1F02;
-const GL_VENDOR: i32 = 0x1F00;
-const GL_RENDERER: i32 = 0x1F01;
-const GL_SHADING_LANGUAGE_VERSION: i32 = 0x8B8C;
-const GL_EXTENSIONS: i32 = 0x1F03;
 
 pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
-    macro_rules! v {
-        ($name:literal, $($a:ident : $t:ty),*) => {
-            l.func_wrap("env", $name, |_c: Caller<'_, St>, $($a: $t),*| { crate::trace::hit($name); })?;
-        };
-    }
-    macro_rules! r {
-        ($name:literal, $($a:ident : $t:ty),* => $v:expr) => {
-            l.func_wrap("env", $name, |_c: Caller<'_, St>, $($a: $t),*| -> i32 { crate::trace::hit($name); $v })?;
-        };
-    }
+    let engine = l.engine().clone();
 
-    // context
-    r!("emscripten_webgl_create_context", _a: i32, _b: i32 => 1);
-    r!("emscripten_webgl_make_context_current", _a: i32 => 0);
-    r!("emscripten_webgl_destroy_context", _a: i32 => 0);
-    r!("emscripten_webgl_get_context_attributes", _a: i32, _b: i32 => 0);
-    r!("applyPendingCanvasResize", _a: i32, _b: i32 => 0);
-
-    // strings and limits
-    l.func_wrap("env", "glGetString", |mut c: Caller<'_, St>, name: i32| -> i32 {
-        crate::trace::hit("glGetString");
-        let s = match name {
-            GL_VENDOR => "Roblox",
-            GL_RENDERER => "alcohol",
-            GL_VERSION => "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
-            GL_SHADING_LANGUAGE_VERSION => "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)",
-            GL_EXTENSIONS => {
-                "GL_EXT_texture_compression_s3tc GL_EXT_texture_filter_anisotropic \
-                 GL_EXT_color_buffer_float GL_OES_texture_float_linear"
-            }
-            _ => "",
-        };
-        string(&mut c, s)
+    l.func_wrap("env", "emscripten_webgl_create_context", |mut c: Caller<'_, St>, _t: i32, _a: i32| -> i32 {
+        if let Err(e) = crate::gfx::ensure() {
+            eprintln!("[gfx ] open failed: {e}");
+            return 0;
+        }
+        c.data_mut().gl_ctx = true;
+        1
     })?;
-    l.func_wrap("env", "glGetIntegerv", |mut c: Caller<'_, St>, pname: i32, out: i32| {
-        crate::trace::hit("glGetIntegerv");
-        let v = match pname {
-            0x0D33 => 8192,   // MAX_TEXTURE_SIZE
-            0x851C => 8192,   // MAX_CUBE_MAP_TEXTURE_SIZE
-            0x8073 => 2048,   // MAX_3D_TEXTURE_SIZE
-            0x88FF => 2048,   // MAX_ARRAY_TEXTURE_LAYERS
-            0x84E8 => 8192,   // MAX_RENDERBUFFER_SIZE
-            0x8869 => 16,     // MAX_VERTEX_ATTRIBS
-            0x8B4D => 16,     // MAX_COMBINED_TEXTURE_IMAGE_UNITS
-            0x8872 => 16,     // MAX_TEXTURE_IMAGE_UNITS
-            0x8B4C => 16,     // MAX_VERTEX_TEXTURE_IMAGE_UNITS
-            0x8A2F => 24,     // MAX_UNIFORM_BUFFER_BINDINGS
-            0x8A30 => 65536,  // MAX_UNIFORM_BLOCK_SIZE
-            0x8A34 => 256,    // UNIFORM_BUFFER_OFFSET_ALIGNMENT
-            0x8CDF => 8,      // MAX_COLOR_ATTACHMENTS
-            0x8824 => 8,      // MAX_DRAW_BUFFERS
-            0x8D57 => 4,      // MAX_SAMPLES
-            0x8B4B => 16,     // MAX_VERTEX_UNIFORM_VECTORS
-            0x8B49 => 1024,   // MAX_FRAGMENT_UNIFORM_VECTORS
-            0x821D => 4,      // NUM_EXTENSIONS
-            0x0D3A => {       // MAX_VIEWPORT_DIMS
-                put(&mut c, out, 8192);
-                put(&mut c, out + 4, 8192);
-                return;
+    l.func_wrap("env", "emscripten_webgl_make_context_current", |_c: Caller<'_, St>, _h: i32| -> i32 {
+        crate::gfx::make_current();
+        0
+    })?;
+    l.func_wrap("env", "emscripten_webgl_destroy_context", |_c: Caller<'_, St>, _h: i32| -> i32 { 0 })?;
+    l.func_wrap("env", "emscripten_webgl_get_context_attributes",
+        |mut c: Caller<'_, St>, _h: i32, out: i32| -> i32 {
+            if out != 0 {
+                let d = c.data().mem.data();
+                unsafe { std::ptr::write_bytes(d[out as usize].get(), 0, 32) };
             }
-            0x0BA2 => {       // VIEWPORT
-                for i in 0..4 {
-                    put(&mut c, out + i * 4, 0);
+            0
+        })?;
+    l.func_wrap("env", "applyPendingCanvasResize", |mut c: Caller<'_, St>, w: i32, h: i32| -> i32 {
+        let (gw, gh) = crate::gfx::size();
+        let d = c.data().mem.data();
+        if w != 0 { unsafe { *(d[w as usize].get() as *mut u32) = gw as u32 } }
+        if h != 0 { unsafe { *(d[h as usize].get() as *mut u32) = gh as u32 } }
+        1
+    })?;
+
+    for &(name, params, ref result) in TABLE {
+        let ret = if result.is_some() { Some(I) } else { None };
+        let ty = FuncType::new(&engine, params.iter().cloned(), ret.into_iter());
+        let name_s = name.to_string();
+        l.func_new("env", name, ty, move |mut c: Caller<'_, St>, args: &[Val], out: &mut [Val]| {
+            crate::trace::hit(name);
+            let mut bits = [0u64; 12];
+            for (i, a) in args.iter().enumerate().take(12) {
+                bits[i] = match a {
+                    Val::I32(v) => *v as u32 as u64,
+                    Val::I64(v) => *v as u64,
+                    Val::F32(v) => *v as u64,
+                    _ => 0,
+                };
+            }
+            let mut sctx = c.as_context_mut();
+            let st = &mut sctx;
+            let r = match name_s.as_str() {
+                "glGetString" => get_string(&mut c, args[0].unwrap_i32() as u32) as u64,
+                "glFenceSync" => {
+                    let h = crate::gfx::call(&name_s, &bits[..2], st);
+                    let mut map = syncs();
+                    let map = map.get_or_insert_with(Default::default);
+                    let id = map.len() as u32 + 1;
+                    map.insert(id, h);
+                    id as u64
                 }
-                return;
+                "glClientWaitSync" => {
+                    let id = args[0].unwrap_i32() as u32;
+                    let h = syncs().as_ref().and_then(|m| m.get(&id).copied()).unwrap_or(0);
+                    bits[0] = h;
+                    crate::gfx::call(&name_s, &bits[..3], st)
+                }
+                "glDeleteSync" => {
+                    let id = args[0].unwrap_i32() as u32;
+                    let h = syncs().as_mut().and_then(|m| m.remove(&id)).unwrap_or(0);
+                    crate::gfx::call(&name_s, &[h], st)
+                }
+                _ => crate::gfx::call(&name_s, &bits[..args.len()], st),
+            };
+            if let Some(o) = out.first_mut() {
+                *o = Val::I32(r as u32 as i32);
             }
-            _ => 0,
-        };
-        put(&mut c, out, v);
-    })?;
-    r!("glGetError", => 0);
-    r!("glCheckFramebufferStatus", _a: i32 => 0x8CD5);
+            Ok(())
+        })?;
+    }
 
-    // objects
-    r!("glCreateShader", _a: i32 => id());
-    r!("glCreateProgram", => id());
-    r!("glGetUniformLocation", _p: i32, _n: i32 => id());
-    r!("glGetAttribLocation", _p: i32, _n: i32 => (id() % 16));
-    r!("glGetUniformBlockIndex", _p: i32, _n: i32 => (id() % 8));
-    r!("glFenceSync", _a: i32, _b: i32 => id());
-    r!("glClientWaitSync", _a: i32, _b: i32, _t: i64 => 0x911A);
-    r!("glMapBufferRange", _t: i32, _o: i32, len: i32, _f: i32 => { let _ = len; 0 });
-    r!("glUnmapBuffer", _t: i32 => 1);
-
-    l.func_wrap("env", "glGetShaderiv", |mut c: Caller<'_, St>, _s: i32, pname: i32, out: i32| {
-        crate::trace::hit("glGetShaderiv");
-        put(&mut c, out, if pname == 0x8B81 { 1 } else { 0 });
-    })?;
-    l.func_wrap("env", "glGetProgramiv", |mut c: Caller<'_, St>, _s: i32, pname: i32, out: i32| {
-        crate::trace::hit("glGetProgramiv");
-        put(&mut c, out, if pname == 0x8B82 { 1 } else { 0 });
-    })?;
-    l.func_wrap("env", "glGetShaderInfoLog", |mut c: Caller<'_, St>, _s: i32,
-     _n: i32, len: i32, out: i32| {
-        crate::trace::hit("glGetShaderInfoLog");
-        if len != 0 { put(&mut c, len, 0) }
-        let _ = out;
-    })?;
-    l.func_wrap("env", "glGetProgramInfoLog", |mut c: Caller<'_, St>, _s: i32,
-     _n: i32, len: i32, _o: i32| {
-        crate::trace::hit("glGetProgramInfoLog");
-        if len != 0 { put(&mut c, len, 0) }
-    })?;
-    l.func_wrap("env", "glGetActiveUniform", |mut c: Caller<'_, St>, _p: i32, _i: i32,
-     _b: i32, len: i32, size: i32, ty: i32, _n: i32| {
-        crate::trace::hit("glGetActiveUniform");
-        put(&mut c, len, 0);
-        put(&mut c, size, 0);
-        put(&mut c, ty, 0);
-    })?;
-    l.func_wrap("env", "glGetActiveUniformBlockiv", |mut c: Caller<'_, St>,
-     _p: i32, _i: i32, _n: i32, out: i32| {
-        crate::trace::hit("glGetActiveUniformBlockiv");
-        put(&mut c, out, 0);
-    })?;
-    l.func_wrap("env", "glGenBuffers", |mut c: Caller<'_, St>, n: i32, out: i32| {
-        crate::trace::hit("glGenBuffers");
-        for i in 0..n.max(0) { put(&mut c, out + i * 4, id()); }
-    })?;
-    l.func_wrap("env", "glGenTextures", |mut c: Caller<'_, St>, n: i32, out: i32| {
-        crate::trace::hit("glGenTextures");
-        for i in 0..n.max(0) { put(&mut c, out + i * 4, id()); }
-    })?;
-    l.func_wrap("env", "glGenVertexArrays", |mut c: Caller<'_, St>, n: i32, out: i32| {
-        crate::trace::hit("glGenVertexArrays");
-        for i in 0..n.max(0) { put(&mut c, out + i * 4, id()); }
-    })?;
-    l.func_wrap("env", "glGenFramebuffers", |mut c: Caller<'_, St>, n: i32, out: i32| {
-        crate::trace::hit("glGenFramebuffers");
-        for i in 0..n.max(0) { put(&mut c, out + i * 4, id()); }
-    })?;
-    l.func_wrap("env", "glGenRenderbuffers", |mut c: Caller<'_, St>, n: i32, out: i32| {
-        crate::trace::hit("glGenRenderbuffers");
-        for i in 0..n.max(0) { put(&mut c, out + i * 4, id()); }
-    })?;
-
-    // everything else: note it and ignore
-    v!("glActiveTexture", _a: i32);
-    v!("glAttachShader", _a: i32, _b: i32);
-    v!("glBindAttribLocation", _a: i32, _b: i32, _c: i32);
-    v!("glBindBuffer", _a: i32, _b: i32);
-    v!("glBindBufferBase", _a: i32, _b: i32, _c: i32);
-    v!("glBindBufferRange", _a: i32, _b: i32, _c: i32, _d: i32, _e: i32);
-    v!("glBindFramebuffer", _a: i32, _b: i32);
-    v!("glBindRenderbuffer", _a: i32, _b: i32);
-    v!("glBindTexture", _a: i32, _b: i32);
-    v!("glBindVertexArray", _a: i32);
-    v!("glBlendFunc", _a: i32, _b: i32);
-    v!("glBlendFuncSeparate", _a: i32, _b: i32, _c: i32, _d: i32);
-    v!("glBlitFramebuffer", _a: i32, _b: i32, _c: i32, _d: i32, _e: i32, _f: i32, _g: i32, _h: i32, _i: i32, _j: i32);
-    v!("glBufferData", _a: i32, _b: i32, _c: i32, _d: i32);
-    v!("glBufferSubData", _a: i32, _b: i32, _c: i32, _d: i32);
-    v!("glClear", _a: i32);
-    v!("glClearBufferfi", _a: i32, _b: i32, _c: f32, _d: i32);
-    v!("glClearBufferfv", _a: i32, _b: i32, _c: i32);
-    v!("glClearBufferiv", _a: i32, _b: i32, _c: i32);
-    v!("glClearColor", _a: f32, _b: f32, _c: f32, _d: f32);
-    v!("glClearDepthf", _a: f32);
-    v!("glClearStencil", _a: i32);
-    v!("glClipControlEXT", _a: i32, _b: i32);
-    v!("glColorMask", _a: i32, _b: i32, _c: i32, _d: i32);
-    v!("glCompileShader", _a: i32);
-    v!("glCompressedTexImage2D", _a: i32, _b: i32, _c: i32, _d: i32, _e: i32, _f: i32, _g: i32, _h: i32);
-    v!("glCompressedTexImage3D", _a: i32, _b: i32, _c: i32, _d: i32, _e: i32, _f: i32, _g: i32, _h: i32, _i: i32);
-    v!("glCompressedTexSubImage2D", _a: i32, _b: i32, _c: i32, _d: i32, _e: i32, _f: i32, _g: i32, _h: i32, _i: i32);
-    v!("glCompressedTexSubImage3D", _a: i32, _b: i32, _c: i32, _d: i32, _e: i32, _f: i32, _g: i32, _h: i32, _i: i32, _j: i32, _k: i32);
-    v!("glCopyTexSubImage2D", _a: i32, _b: i32, _c: i32, _d: i32, _e: i32, _f: i32, _g: i32, _h: i32);
-    v!("glCullFace", _a: i32);
-    v!("glDeleteBuffers", _a: i32, _b: i32);
-    v!("glDeleteFramebuffers", _a: i32, _b: i32);
-    v!("glDeleteProgram", _a: i32);
-    v!("glDeleteRenderbuffers", _a: i32, _b: i32);
-    v!("glDeleteShader", _a: i32);
-    v!("glDeleteSync", _a: i32);
-    v!("glDeleteTextures", _a: i32, _b: i32);
-    v!("glDeleteVertexArrays", _a: i32, _b: i32);
-    v!("glDepthFunc", _a: i32);
-    v!("glDepthMask", _a: i32);
-    v!("glDisable", _a: i32);
-    v!("glDisableVertexAttribArray", _a: i32);
-    v!("glDrawArrays", _a: i32, _b: i32, _c: i32);
-    v!("glDrawArraysInstanced", _a: i32, _b: i32, _c: i32, _d: i32);
-    v!("glDrawBuffers", _a: i32, _b: i32);
-    v!("glDrawElements", _a: i32, _b: i32, _c: i32, _d: i32);
-    v!("glDrawElementsInstanced", _a: i32, _b: i32, _c: i32, _d: i32, _e: i32);
-    v!("glEnable", _a: i32);
-    v!("glEnableVertexAttribArray", _a: i32);
-    v!("glFramebufferRenderbuffer", _a: i32, _b: i32, _c: i32, _d: i32);
-    v!("glFramebufferTexture2D", _a: i32, _b: i32, _c: i32, _d: i32, _e: i32);
-    v!("glFramebufferTextureLayer", _a: i32, _b: i32, _c: i32, _d: i32, _e: i32);
-    v!("glGenerateMipmap", _a: i32);
-    v!("glInvalidateFramebuffer", _a: i32, _b: i32, _c: i32);
-    v!("glLinkProgram", _a: i32);
-    v!("glPixelStorei", _a: i32, _b: i32);
-    v!("glPolygonOffset", _a: f32, _b: f32);
-    v!("glReadPixels", _a: i32, _b: i32, _c: i32, _d: i32, _e: i32, _f: i32, _g: i32);
-    v!("glRenderbufferStorage", _a: i32, _b: i32, _c: i32, _d: i32);
-    v!("glRenderbufferStorageMultisample", _a: i32, _b: i32, _c: i32, _d: i32, _e: i32);
-    v!("glScissor", _a: i32, _b: i32, _c: i32, _d: i32);
-    v!("glShaderSource", _a: i32, _b: i32, _c: i32, _d: i32);
-    v!("glStencilFunc", _a: i32, _b: i32, _c: i32);
-    v!("glStencilMask", _a: i32);
-    v!("glStencilOp", _a: i32, _b: i32, _c: i32);
-    v!("glTexImage2D", _a: i32, _b: i32, _c: i32, _d: i32, _e: i32, _f: i32, _g: i32, _h: i32, _i: i32);
-    v!("glTexImage3D", _a: i32, _b: i32, _c: i32, _d: i32, _e: i32, _f: i32, _g: i32, _h: i32, _i: i32, _j: i32);
-    v!("glTexParameterf", _a: i32, _b: i32, _c: f32);
-    v!("glTexParameterfv", _a: i32, _b: i32, _c: i32);
-    v!("glTexParameteri", _a: i32, _b: i32, _c: i32);
-    v!("glTexStorage2D", _a: i32, _b: i32, _c: i32, _d: i32, _e: i32);
-    v!("glTexStorage3D", _a: i32, _b: i32, _c: i32, _d: i32, _e: i32, _f: i32);
-    v!("glTexSubImage2D", _a: i32, _b: i32, _c: i32, _d: i32, _e: i32, _f: i32, _g: i32, _h: i32, _i: i32);
-    v!("glTexSubImage3D", _a: i32, _b: i32, _c: i32, _d: i32, _e: i32, _f: i32, _g: i32, _h: i32, _i: i32, _j: i32, _k: i32);
-    v!("glUniform1i", _a: i32, _b: i32);
-    v!("glUniformBlockBinding", _a: i32, _b: i32, _c: i32);
-    v!("glUseProgram", _a: i32);
-    v!("glVertexAttribPointer", _a: i32, _b: i32, _c: i32, _d: i32, _e: i32, _f: i32);
-    v!("glViewport", _a: i32, _b: i32, _c: i32, _d: i32);
+    // WebGPU stays absent: the surface asks for webgl2 through `getContext`.
     Ok(())
 }
