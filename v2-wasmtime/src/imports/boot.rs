@@ -396,6 +396,12 @@ pub fn register(l: &mut Linker<St>) -> anyhow::Result<()> {
     })?;
     l.func_wrap("env", "emscripten_errn", |c: Caller<'_, St>, p: i32, n: i32| {
         let b = rbytes(&c, p as u32, n as u32);
+        if b.windows(9).any(|w| w == b"RSL PANIC") {
+            let bt = wasmtime::WasmBacktrace::force_capture(&c);
+            let mut t = String::new();
+            for f in bt.frames() { t.push_str(&format!(" {}@{:x}", f.func_index(), f.func_offset().unwrap_or(0))); }
+            eprintln!("[pbt ]{t}");
+        }
         let _ = std::io::stderr().write_all(&b);
     })?;
     l.func_wrap("env", "_emscripten_log_formatted", |c: Caller<'_, St>,

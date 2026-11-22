@@ -44,6 +44,12 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
     l.func_wrap("env", "js_external_content_sharing_deliver", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("js_external_content_sharing_deliver");  })?;
     l.func_wrap("env", "report_crash", |c: Caller<'_, St>, a0: i32, a1: i32, _a2: i32, _a3: i32, _a4: i32| {
         crate::trace::hit("report_crash");
+        {
+            let bt = wasmtime::WasmBacktrace::force_capture(&c);
+            let mut t = String::new();
+            for f in bt.frames() { t.push_str(&format!(" {}@{:x}", f.func_index(), f.func_offset().unwrap_or(0))); }
+            eprintln!("[bt  ]{t}");
+        }
         eprintln!("[crash] {} {}", crate::state::rstr(&c, a0 as u32), crate::state::rstr(&c, a1 as u32));
     })?;
     l.func_wrap("env", "set_crash_attribute", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("set_crash_attribute");  })?;
@@ -94,7 +100,21 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
     l.func_wrap("env", "__syscall_getgid32", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("__syscall_getgid32"); 0 })?;
     l.func_wrap("env", "__syscall_getuid32", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("__syscall_getuid32"); 0 })?;
     l.func_wrap("env", "_msync_js", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i64, | -> i32 { crate::trace::hit("_msync_js"); 0 })?;
-    l.func_wrap("wasi_snapshot_preview1", "fd_pread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i64, a4: i32, | -> i32 { crate::trace::hit("fd_pread"); 0 })?;
+    l.func_wrap("wasi_snapshot_preview1", "fd_pread", |c: Caller<'_, St>, fd: i32, iovs: i32, n: i32, off: i64, nread: i32| -> i32 {
+        crate::trace::hit("fd_pread");
+        if std::env::var_os("WC_PREAD").is_some() {
+            let d = c.data().mem.data();
+            let mut v = Vec::new();
+            for k in 0..n.min(4) {
+                let p = unsafe { *(d[(iovs + 8 * k) as usize].get() as *const u32) };
+                let l = unsafe { *(d[(iovs + 8 * k + 4) as usize].get() as *const u32) };
+                v.push((p, l));
+            }
+            eprintln!("[pre ] fd={fd} iovs={v:?} off={off} nread={nread}");
+        }
+        unsafe { *(c.data().mem.data()[nread as usize].get() as *mut u32) = 0 }
+        0
+    })?;
     // The main thread runs the calls a worker queued for it.  Arguments are
     // 16-byte pairs (an 8-byte tag, then either an int64 or a float64), and a
     // nonzero `func` names an ASM_CONSTS entry while `index` selects the glue's

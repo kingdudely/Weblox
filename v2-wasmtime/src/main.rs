@@ -249,6 +249,7 @@ fn config() -> Result<Config> {
     // whatever opt level it was built at.
     let bt = std::env::var_os("WC_BT").is_some();
     c.wasm_backtrace(true);
+    c.wasm_backtrace_max_frames(std::num::NonZeroUsize::new(64));
     c.wasm_backtrace_details(if bt {
         WasmBacktraceDetails::Enable
     } else {
