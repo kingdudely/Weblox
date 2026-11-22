@@ -4,6 +4,7 @@ pub mod fetch;
 pub mod futex;
 pub mod gl;
 pub mod http;
+pub mod input;
 pub mod mailbox;
 pub mod opfs;
 pub mod rna;
@@ -11,6 +12,7 @@ pub mod stubs;
 pub mod thread;
 pub mod webgpu;
 pub mod wgt;
+pub mod ws;
 
 /// Every host side module, in one place: the main store, each worker and the
 /// completions thread all need the same set.
@@ -19,6 +21,7 @@ pub fn register_all(l: &mut wasmtime::Linker<crate::state::St>) -> anyhow::Resul
     boot::register(l)?;
     fetch::register(l)?;
     http::register(l)?;
+    input::register(l)?;
     crate::fibre::register(l)?;
     futex::register(l)?;
     mailbox::register(l)?;
@@ -27,6 +30,7 @@ pub fn register_all(l: &mut wasmtime::Linker<crate::state::St>) -> anyhow::Resul
     rna::register(l)?;
     stubs::register(l)?;
     webgpu::register(l)?;
+    ws::register(l)?;
     thread::register(l)?;
     Ok(())
 }

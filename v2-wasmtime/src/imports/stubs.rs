@@ -11,28 +11,21 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
         }
         c.data_mut().main_loop = true;
     })?;
-    l.func_wrap("env", "emscripten_request_pointerlock", |_c: Caller<'_, St>, a0: i32, a1: i32, | -> i32 { crate::trace::hit("emscripten_request_pointerlock"); 0 })?;
-    l.func_wrap("env", "emscripten_exit_pointerlock", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("emscripten_exit_pointerlock"); 0 })?;
     l.func_wrap("env", "is_mouse_sourced_event", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("is_mouse_sourced_event"); 0 })?;
     l.func_wrap("env", "preallocate_emscripten_key_event_buffer", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("preallocate_emscripten_key_event_buffer");  })?;
-    l.func_wrap("env", "emscripten_get_element_css_size", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, | -> i32 { crate::trace::hit("emscripten_get_element_css_size"); 0 })?;
+    l.func_wrap("env", "emscripten_get_element_css_size", |mut c: Caller<'_, St>, _a0: i32, w: i32, h: i32| -> i32 {
+        let (sw, sh) = crate::gfx::size();
+        let d = c.data().mem.data();
+        unsafe { *(d[w as usize].get() as *mut f32) = sw as f32 };
+        unsafe { *(d[h as usize].get() as *mut f32) = sh as f32 };
+        0
+    })?;
     l.func_wrap("env", "install_pointer_source_tracking", |_c: Caller<'_, St>, | { crate::trace::hit("install_pointer_source_tracking");  })?;
-    l.func_wrap("env", "emscripten_set_mousedown_callback_on_thread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, | -> i32 { crate::trace::hit("emscripten_set_mousedown_callback_on_thread"); 0 })?;
-    l.func_wrap("env", "emscripten_set_mouseup_callback_on_thread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, | -> i32 { crate::trace::hit("emscripten_set_mouseup_callback_on_thread"); 0 })?;
-    l.func_wrap("env", "emscripten_set_mousemove_callback_on_thread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, | -> i32 { crate::trace::hit("emscripten_set_mousemove_callback_on_thread"); 0 })?;
-    l.func_wrap("env", "emscripten_set_keydown_callback_on_thread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, | -> i32 { crate::trace::hit("emscripten_set_keydown_callback_on_thread"); 0 })?;
-    l.func_wrap("env", "emscripten_set_keyup_callback_on_thread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, | -> i32 { crate::trace::hit("emscripten_set_keyup_callback_on_thread"); 0 })?;
-    l.func_wrap("env", "emscripten_set_touchstart_callback_on_thread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, | -> i32 { crate::trace::hit("emscripten_set_touchstart_callback_on_thread"); 0 })?;
-    l.func_wrap("env", "emscripten_set_touchend_callback_on_thread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, | -> i32 { crate::trace::hit("emscripten_set_touchend_callback_on_thread"); 0 })?;
-    l.func_wrap("env", "emscripten_set_touchmove_callback_on_thread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, | -> i32 { crate::trace::hit("emscripten_set_touchmove_callback_on_thread"); 0 })?;
-    l.func_wrap("env", "emscripten_set_touchcancel_callback_on_thread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, | -> i32 { crate::trace::hit("emscripten_set_touchcancel_callback_on_thread"); 0 })?;
-    l.func_wrap("env", "emscripten_set_wheel_callback_on_thread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, | -> i32 { crate::trace::hit("emscripten_set_wheel_callback_on_thread"); 0 })?;
-    l.func_wrap("env", "emscripten_set_mouseleave_callback_on_thread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, | -> i32 { crate::trace::hit("emscripten_set_mouseleave_callback_on_thread"); 0 })?;
-    l.func_wrap("env", "emscripten_set_mouseenter_callback_on_thread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, | -> i32 { crate::trace::hit("emscripten_set_mouseenter_callback_on_thread"); 0 })?;
-    l.func_wrap("env", "emscripten_set_pointerlockerror_callback_on_thread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, | -> i32 { crate::trace::hit("emscripten_set_pointerlockerror_callback_on_thread"); 0 })?;
-    l.func_wrap("env", "emscripten_set_blur_callback_on_thread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, | -> i32 { crate::trace::hit("emscripten_set_blur_callback_on_thread"); 0 })?;
-    l.func_wrap("env", "emscripten_set_focus_callback_on_thread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, | -> i32 { crate::trace::hit("emscripten_set_focus_callback_on_thread"); 0 })?;
-    l.func_wrap("env", "js_linking_open_url", |_c: Caller<'_, St>, a0: i32, a1: i32, | -> i32 { crate::trace::hit("js_linking_open_url"); 0 })?;
+    l.func_wrap("env", "js_linking_open_url", |c: Caller<'_, St>, p: i32, _n: i32| -> i32 {
+        let url = crate::state::rstr(&c, p as u32);
+        let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
+        1
+    })?;
     l.func_wrap("env", "js_web_client_ms_since_navigation", |_c: Caller<'_, St>, | -> f64 { crate::trace::hit("js_web_client_ms_since_navigation"); crate::imports::boot::perf_ms() })?;
     l.func_wrap("env", "js_web_client_wasm_cache_state", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("js_web_client_wasm_cache_state"); 2 })?;
     l.func_wrap("env", "sync_text_and_pos", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, | { crate::trace::hit("sync_text_and_pos");  })?;
@@ -48,18 +41,18 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
     l.func_wrap("env", "set_text_box_overlay", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("set_text_box_overlay");  })?;
     l.func_wrap("env", "focus_text_input", |_c: Caller<'_, St>, | { crate::trace::hit("focus_text_input");  })?;
     l.func_wrap("env", "shift_canvas", |_c: Caller<'_, St>, a0: f32, | { crate::trace::hit("shift_canvas");  })?;
-    l.func_wrap("env", "emscripten_sample_gamepad_data", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("emscripten_sample_gamepad_data"); 0 })?;
-    l.func_wrap("env", "emscripten_get_gamepad_status", |_c: Caller<'_, St>, a0: i32, a1: i32, | -> i32 { crate::trace::hit("emscripten_get_gamepad_status"); 0 })?;
-    l.func_wrap("env", "emscripten_set_gamepadconnected_callback_on_thread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, | -> i32 { crate::trace::hit("emscripten_set_gamepadconnected_callback_on_thread"); 0 })?;
-    l.func_wrap("env", "emscripten_set_gamepaddisconnected_callback_on_thread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, | -> i32 { crate::trace::hit("emscripten_set_gamepaddisconnected_callback_on_thread"); 0 })?;
-    l.func_wrap("env", "emscripten_get_num_gamepads", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("emscripten_get_num_gamepads"); 0 })?;
     l.func_wrap("env", "js_external_content_sharing_deliver", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("js_external_content_sharing_deliver");  })?;
-    l.func_wrap("env", "report_crash", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, | { crate::trace::hit("report_crash");  })?;
+    l.func_wrap("env", "report_crash", |c: Caller<'_, St>, a0: i32, a1: i32, _a2: i32, _a3: i32, _a4: i32| {
+        crate::trace::hit("report_crash");
+        eprintln!("[crash] {} {}", crate::state::rstr(&c, a0 as u32), crate::state::rstr(&c, a1 as u32));
+    })?;
     l.func_wrap("env", "set_crash_attribute", |_c: Caller<'_, St>, a0: i32, a1: i32, | { crate::trace::hit("set_crash_attribute");  })?;
-    l.func_wrap("env", "js_request_keyboard_layout", |_c: Caller<'_, St>, | { crate::trace::hit("js_request_keyboard_layout");  })?;
-    l.func_wrap("env", "js_keyboard_layout_status", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("js_keyboard_layout_status"); 0 })?;
-    l.func_wrap("env", "js_copy_keyboard_layout_key", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, | { crate::trace::hit("js_copy_keyboard_layout_key");  })?;
-    l.func_wrap("env", "exit", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("exit");  })?;
+    l.func_wrap("env", "exit", |mut c: Caller<'_, St>, code: i32| {
+        crate::trace::hit("exit");
+        c.data_mut().exited = true;
+        eprintln!("[exit] {code}");
+        let _ = code;
+    })?;
     l.func_wrap("env", "emscripten_async_call", |mut c: Caller<'_, St>, f: i32, arg: i32, delay: i32| {
         crate::trace::hit("emscripten_async_call");
         let Some(inst) = c.data().inst else { return };
@@ -92,15 +85,6 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
     })?;
     l.func_wrap("env", "getWebGpuTimestampInterval", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("getWebGpuTimestampInterval"); 0 })?;
     l.func_wrap("env", "emscripten_runtime_keepalive_push", |_c: Caller<'_, St>, | { crate::trace::hit("emscripten_runtime_keepalive_push");  })?;
-    l.func_wrap("env", "emscripten_websocket_close", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, | -> i32 { crate::trace::hit("emscripten_websocket_close"); 0 })?;
-    l.func_wrap("env", "emscripten_websocket_delete", |_c: Caller<'_, St>, a0: i32, | -> i32 { crate::trace::hit("emscripten_websocket_delete"); 0 })?;
-    l.func_wrap("env", "emscripten_websocket_send_binary", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, | -> i32 { crate::trace::hit("emscripten_websocket_send_binary"); 0 })?;
-    l.func_wrap("env", "emscripten_websocket_send_utf8_text", |_c: Caller<'_, St>, a0: i32, a1: i32, | -> i32 { crate::trace::hit("emscripten_websocket_send_utf8_text"); 0 })?;
-    l.func_wrap("env", "emscripten_websocket_new", |_c: Caller<'_, St>, a0: i32, | -> i32 { crate::trace::hit("emscripten_websocket_new"); 0 })?;
-    l.func_wrap("env", "emscripten_websocket_set_onopen_callback_on_thread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, | -> i32 { crate::trace::hit("emscripten_websocket_set_onopen_callback_on_thread"); 0 })?;
-    l.func_wrap("env", "emscripten_websocket_set_onmessage_callback_on_thread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, | -> i32 { crate::trace::hit("emscripten_websocket_set_onmessage_callback_on_thread"); 0 })?;
-    l.func_wrap("env", "emscripten_websocket_set_onerror_callback_on_thread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, | -> i32 { crate::trace::hit("emscripten_websocket_set_onerror_callback_on_thread"); 0 })?;
-    l.func_wrap("env", "emscripten_websocket_set_onclose_callback_on_thread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, | -> i32 { crate::trace::hit("emscripten_websocket_set_onclose_callback_on_thread"); 0 })?;
     l.func_wrap("env", "emscripten_stack_snapshot", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("emscripten_stack_snapshot"); 0 })?;
     l.func_wrap("env", "emscripten_stack_unwind_buffer", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, | -> i32 { crate::trace::hit("emscripten_stack_unwind_buffer"); 0 })?;
     l.func_wrap("env", "emscripten_pc_get_function", |_c: Caller<'_, St>, a0: i32, | -> i32 { crate::trace::hit("emscripten_pc_get_function"); 0 })?;

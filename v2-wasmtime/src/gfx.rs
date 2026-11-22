@@ -36,6 +36,8 @@ struct Gfx {
     maps: HashMap<u32, Map>,
     w: i32,
     h: i32,
+    px: i32,
+    py: i32,
     wm_delete: xlib::Atom,
 }
 
@@ -138,7 +140,9 @@ unsafe fn open() -> Result<(), String> {
             | xlib::ButtonReleaseMask
             | xlib::PointerMotionMask
             | xlib::StructureNotifyMask
-            | xlib::FocusChangeMask,
+            | xlib::FocusChangeMask
+            | xlib::EnterWindowMask
+            | xlib::LeaveWindowMask,
     );
     let mut wm_delete = (xlib.XInternAtom)(dpy, c"WM_DELETE_WINDOW".as_ptr(), 0);
     (xlib.XSetWMProtocols)(dpy, win, &mut wm_delete as *mut u64, 1);
@@ -202,7 +206,7 @@ unsafe fn open() -> Result<(), String> {
 
     let mut gfx = Gfx {
         xlib, dpy, win, egl, edpy, surface, ctx, cfg,
-        procs: HashMap::new(), maps: HashMap::new(), w: W, h: H, wm_delete,
+        procs: HashMap::new(), maps: HashMap::new(), w: W, h: H, px: 0, py: 0, wm_delete,
     };
     if std::env::var_os("WC_GFXPROBE").is_some() {
         wgpu_probe(&gfx, screen);
@@ -369,6 +373,45 @@ pub fn poll() {
                     let _ = g.egl.make_current(g.edpy, Some(g.surface), Some(g.surface), Some(g.ctx));
                 }
             }
+            xlib::KeyPress | xlib::KeyRelease => {
+                let mut k = unsafe { ev.key };
+                let down = unsafe { ev.get_type() } == xlib::KeyPress;
+                let ks = unsafe { (g.xlib.XLookupKeysym)(&mut k, 0) };
+                let (key, code, kc, ch) = keysym_name(ks);
+                crate::imports::input::push(crate::imports::input::Ev::Key {
+                    down, key, code, keycode: kc,
+                    ch: if (32..127).contains(&ch) { ch } else { 0 },
+                    modifiers: k.state as u32, repeat: false,
+                });
+            }
+            xlib::ButtonPress | xlib::ButtonRelease => {
+                let b = unsafe { ev.button };
+                let down = unsafe { ev.get_type() } == xlib::ButtonPress;
+                if b.button == 4 || b.button == 5 {
+                    crate::imports::input::push(crate::imports::input::Ev::Wheel {
+                        x: b.x as f64, y: b.y as f64, dx: 0.0,
+                        dy: if b.button == 4 { 1.0 } else { -1.0 },
+                        mode: 0, modifiers: b.state as u32,
+                    });
+                } else {
+                    crate::imports::input::push(crate::imports::input::Ev::Mouse {
+                        down: if down { Some((b.button.saturating_sub(1)) as u16) } else { None },
+                        x: b.x as f64, y: b.y as f64, mx: 0.0, my: 0.0,
+                        button: (b.button.saturating_sub(1)) as u16, modifiers: b.state as u32,
+                    });
+                }
+            }
+            xlib::MotionNotify => {
+                let m = unsafe { ev.motion };
+                crate::imports::input::push(crate::imports::input::Ev::Mouse {
+                    down: None, x: m.x as f64, y: m.y as f64,
+                    mx: (m.x - g.px) as f64, my: (m.y - g.py) as f64,
+                    button: 0, modifiers: m.state as u32,
+                });
+                g.px = m.x; g.py = m.y;
+            }
+            xlib::FocusIn => crate::imports::input::push(crate::imports::input::Ev::Focus { on: true }),
+            xlib::FocusOut => crate::imports::input::push(crate::imports::input::Ev::Focus { on: false }),
             xlib::ClientMessage => {
                 let c = unsafe { ev.client_message };
                 if c.data.get_long(0) as xlib::Atom == g.wm_delete {
@@ -398,6 +441,54 @@ pub fn shot(path: &str) {
     unsafe { (g.xlib.XDestroyImage)(img) };
     let _ = std::fs::write(path, out);
     eprintln!("[shot] wrote {path}");
+}
+
+pub fn pointer_lock(on: bool) {
+    let g = GFX.lock().unwrap();
+    let Some(g) = &*g else { return };
+    if on {
+        unsafe { (g.xlib.XGrabPointer)(g.dpy, g.win, 1, 0, xlib::GrabModeAsync, xlib::GrabModeAsync, g.win, 0, xlib::CurrentTime) };
+    } else {
+        unsafe { (g.xlib.XUngrabPointer)(g.dpy, xlib::CurrentTime) };
+    }
+    unsafe { (g.xlib.XFlush)(g.dpy) };
+}
+
+fn keysym_name(ks: xlib::KeySym) -> (String, String, u32, u32) {
+    let v = ks as u64;
+    let key = match ks {
+        0xff0d => ("Enter".into(), "Enter".into(), 13, 13),
+        0xff08 => ("Backspace".into(), "Backspace".into(), 8, 8),
+        0xff09 => ("Tab".into(), "Tab".into(), 9, 9),
+        0xff1b => ("Escape".into(), "Escape".into(), 27, 27),
+        0x20 => (" ".into(), "Space".into(), 32, 32),
+        0xffe1 | 0xffe2 => ("Shift".into(), "ShiftLeft".into(), 16, 0),
+        0xffe3 | 0xffe4 => ("Control".into(), "ControlLeft".into(), 17, 0),
+        0xffe9 | 0xffea => ("Alt".into(), "AltLeft".into(), 18, 0),
+        0xffeb | 0xffec => ("Meta".into(), "MetaLeft".into(), 91, 0),
+        0xff51 => ("ArrowLeft".into(), "ArrowLeft".into(), 37, 0),
+        0xff53 => ("ArrowRight".into(), "ArrowRight".into(), 39, 0),
+        0xff52 => ("ArrowUp".into(), "ArrowUp".into(), 38, 0),
+        0xff54 => ("ArrowDown".into(), "ArrowDown".into(), 40, 0),
+        0xffff => ("Delete".into(), "Delete".into(), 46, 0),
+        0xff50 => ("Home".into(), "Home".into(), 36, 0),
+        0xff57 => ("End".into(), "End".into(), 35, 0),
+        0xff55 => ("PageUp".into(), "PageUp".into(), 33, 0),
+        0xff56 => ("PageDown".into(), "PageDown".into(), 34, 0),
+        0xffbe..=0xffc9 => {
+            let n = (v - 0xffbe + 1) as u32;
+            (format!("F{n}"), format!("F{n}"), 111 + n, 0)
+        }
+        _ => {
+            if (0x20..0x7f).contains(&v) {
+                let ch = char::from_u32(v as u32).unwrap_or('?');
+                (ch.to_string(), format!("Key{}", ch.to_ascii_uppercase()), v as u32, v as u32)
+            } else {
+                (String::new(), String::new(), 0, 0)
+            }
+        }
+    };
+    key
 }
 
 pub fn size() -> (i32, i32) {

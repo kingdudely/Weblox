@@ -25,6 +25,7 @@ x11-dl = "2.21.0"
 libloading = "0.8"
 wgpu = { version = "30.0.2", default-features = false, features = ["gles", "vulkan", "wgsl"] }
 raw-window-handle = "0.6.2"
+tungstenite = "0.30.0"
 
 [patch.crates-io]
 # 3-line leniency patch: the module has 4-aligned 64-bit atomics and only runs

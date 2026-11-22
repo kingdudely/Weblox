@@ -585,6 +585,12 @@ fn run() -> Result<()> {
         if store.data().gl_ctx {
             gfx::present();
         }
+        if imports::input::pending() {
+            imports::input::pump(&mut store);
+        }
+        if imports::ws::pending() {
+            imports::ws::pump(&mut store);
+        }
         if let Ok(k) = std::env::var("WC_KICK") {
             static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
             if N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 50 == 0 {
