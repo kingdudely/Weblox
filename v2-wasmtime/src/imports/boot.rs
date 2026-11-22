@@ -260,7 +260,7 @@ pub fn asm_invoke(c: &mut wasmtime::Store<St>, key: u32, vals: &[f64]) -> f64 {
             eprintln!("[asm] cors: non-allowlisted header {:?}", rstr_ctx(&*c, a(0)));
             0.0
         }
-        9118661 => 1.0,                            // a WebGPU device exists (webgpu.rs)
+        9118661 => if std::env::var_os("WC_GLES").is_some() { 0.0 } else { 1.0 }, // device exists
         9118945 => 0.0,                            // device lost
         9119603 => 0.0,                            // wasmOffsetConverter
         9119660 => 0.0,                            // install getRandomValue

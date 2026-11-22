@@ -252,6 +252,7 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
     let eng = l.engine().clone();
     l.func_wrap("env", "emscripten_webgpu_get_device", || -> i32 {
         crate::trace::hit("webgpu_device");
+        if std::env::var_os("WC_GLES").is_some() { return 0 }
         if !ensure() { return 0 }
         let raw = with(|g| g.objs.iter().find(|(_, o)| matches!(o, Obj::Device(_))).map(|(k, _)| *k).unwrap_or(0));
         if raw == 0 { return 0 }

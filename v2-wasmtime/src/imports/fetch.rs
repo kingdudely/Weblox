@@ -45,8 +45,15 @@ fn remote(url: &str, base: &str) -> String {
 }
 
 pub fn register(l: &mut Linker<St>) -> Result<()> {
-    l.func_wrap("env", "js_fetch_file",
-        |mut c: Caller<'_, St>, urlp: i32, dst: i32, want: i32| -> i32 {
+    l.func_wrap_async("env", "js_fetch_file",
+        |c: Caller<'_, St>, (urlp, dst, want): (i32, i32, i32)| {
+        let mut c = c;
+        let fut: Box<dyn std::future::Future<Output = i32> + Send> = Box::new(async move {
+            // the page's fetch is a suspending import; yield once so the
+            // engine's caller resumes on its fibre instead of running the
+            // whole read inside the import frame
+            let sp = crate::fibre::store_ptr();
+            crate::fibre::sleep(unsafe { &mut *sp }, std::time::Duration::from_micros(200)).await;
             crate::pump_frame();
             let url = rstr(&c, urlp as u32);
             let want = want as u32;
@@ -95,6 +102,8 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
             }
             serve(&mut c, &body);
             0
+        });
+        fut
         })?;
     Ok(())
 }
