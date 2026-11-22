@@ -58,6 +58,7 @@ const append = (host: any) => (c: any) => {
 (document.head as any).appendChild = append(document.head);
 
 // ---- the real Worker: a Deno DedicatedWorkerGlobalScope --------------
+(globalThis as any).__WC_TRC = 1;
 (globalThis as any).Worker = class {
   _w: any;
   _ready = false;
@@ -88,8 +89,10 @@ const append = (host: any) => (c: any) => {
 
 // ---- fetch: local files, static version, launcher patch --------------
 const realFetch = globalThis.fetch;
+const ENGINE_PATHS = ["/content/", "/ExtraContent/", "/shaders/", "/fonts/", "/models/", "/audio-processor"];
 globalThis.fetch = async (input: any, init: any = {}) => {
-  const u = typeof input === "string" ? input : input.url;
+  let u = typeof input === "string" ? input : input.url;
+  if (u.startsWith("/")) u = (ENGINE_PATHS.some((p) => u.startsWith(p)) ? ENGINE : ORIGIN) + u;
   if (/^https?:\/\/(setup\.rbxcdn\.com|play\.roblox\.com)\//.test(u)) {
     try { return new Response(await Deno.readFile(localName(u))) } catch {}
   }
