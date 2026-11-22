@@ -118,7 +118,7 @@ pub fn nested_frame() {
     let Some(f) = FRAME_FN.lock().unwrap().clone() else { return };
     NEST.with(|d| d.set(d.get() + 1));
     st.set_epoch_deadline(50);
-    if let Err(e) = f.call(&mut *st, ()) {
+    if let Err(e) = fibre::run_sync(f.call_async(&mut *st, ())) {
         if std::env::var_os("WC_PUMP").is_some() {
             eprintln!("[nest] threw: {e:#}");
         }
@@ -170,7 +170,7 @@ pub fn pump_frame() {
         }
         // the outer call consumed the deadline; give the nested one its own
         st.set_epoch_deadline(50);
-        if let Err(e) = f.call(&mut *st, ()) {
+        if let Err(e) = fibre::run_sync(f.call_async(&mut *st, ())) {
             if std::env::var_os("WC_PUMP").is_some() {
                 eprintln!("[pump] {n} err: {e:#}");
             }
@@ -182,7 +182,12 @@ pub fn pump_frame() {
 fn wasm_path() -> String { std::env::var("WC_WASM").unwrap_or_else(|_| "/home/john/rr/WebClient.wasm".into()) }
 const CACHE: &str = "data/cache/webclient.cwasm";
 const CACHE_STAMP: &str = "data/cache/webclient.stamp";
-const PAGES: u32 = 32768; // 2 GiB, as the page does (FIntWasmMemoryPages)
+/// Guest memory pages.  The page asks for 32768 (2 GiB); the engine only
+/// touches a fraction of it, so a smaller ceiling costs nothing and keeps the
+/// commit charge honest.
+fn pages() -> u32 {
+    std::env::var("WC_PAGES").ok().and_then(|v| v.parse().ok()).unwrap_or(16384)
+}
 const WEB_BASE: &str = "https://www.roblox.com/";
 const ASSET_BASE: &str =
     "https://setup.rbxcdn.com/webclient/version-1ef59424f70d4932-RobloxWebClient/";
@@ -225,8 +230,8 @@ fn config() -> Result<Config> {
     // limit per store, so the prologue check must be loose enough that a stale
     // limit from the stack we came from never trips it.  Overflow is caught by
     // the fibre guard page instead.
-    c.max_wasm_stack(1 << 30);
-    c.async_stack_size(1 << 30);
+    c.max_wasm_stack(8 << 20);
+    c.async_stack_size(32 << 20);
     c.wasm_tail_call(true);
     c.wasm_simd(true);
     c.wasm_relaxed_simd(true);
@@ -241,7 +246,7 @@ fn config() -> Result<Config> {
     // Both settings follow the same env so a cached artifact stays valid
     // whatever opt level it was built at.
     let bt = std::env::var_os("WC_BT").is_some();
-    c.wasm_backtrace(bt);
+    c.wasm_backtrace(true);
     c.wasm_backtrace_details(if bt {
         WasmBacktraceDetails::Enable
     } else {
@@ -255,7 +260,7 @@ fn config() -> Result<Config> {
         c.cranelift_flag_set("enable_table_access_spectre_mitigation", "false");
     }
     c.cranelift_nan_canonicalization(false);
-    c.memory_reservation(PAGES as u64 * 65536);
+    c.memory_reservation(pages() as u64 * 65536);
     c.memory_guard_size(2 << 30);
     c.guard_before_linear_memory(true);
     if std::env::var_os("WC_NATIVE").is_some() {
@@ -267,7 +272,7 @@ fn config() -> Result<Config> {
 
 fn stamp() -> String {
     let md = std::fs::metadata(wasm_path()).map(|m| (m.len(), m.modified().ok())).ok();
-    format!("{:?}", md)
+    format!("{:?} bt1", md)
 }
 
 fn module(engine: &Engine) -> Result<Module> {
@@ -322,7 +327,8 @@ fn run() -> Result<()> {
             let _ = std::fs::write(path, out);
         }
     }
-    let mem = SharedMemory::new(&engine, MemoryType::shared(PAGES, PAGES))?;
+    let pg = pages();
+    let mem = SharedMemory::new(&engine, MemoryType::shared(pg, pg))?;
 
     let mut linker = Linker::new(&engine);
     imports::register_all(&mut linker)?;
@@ -385,7 +391,7 @@ fn run() -> Result<()> {
     // main's mailbox is never armed by the engine on this path; without it a
     // dispatch back to the main thread is dropped on the floor
     if let Ok(pself) = inst.get_typed_func::<(), (i32,)>(&mut *store, "pthread_self") {
-        if let Ok((me,)) = pself.call(&mut *store, ()) {
+        if let Ok((me,)) = fibre::block_on(pself.call_async(&mut *store, ())) {
             if me != 0 {
                 store.data_mut().main_ptr = Some(me as u32);
             }
@@ -402,7 +408,7 @@ fn run() -> Result<()> {
                 eprintln!("[hook] slot {i} called arg={a:#x}");
                 crate::imports::boot::dump_pcs_pub();
                 let mut out = [wasmtime::Val::I32(0)];
-                let _ = real.call(&mut c, &[wasmtime::Val::I32(a)], &mut out);
+                let _ = fibre::run_sync(real.call_async(&mut c, &[wasmtime::Val::I32(a)], &mut out));
             });
             t.set(&mut *store, i, wasmtime::Ref::Func(Some(w)))?;
             eprintln!("[hook] wrapped slot {i}");
@@ -429,7 +435,7 @@ fn run() -> Result<()> {
     let s: &mut Store<St> = &mut store;
     let ctors = inst.get_typed_func::<(), ()>(&mut *s, "__wasm_call_ctors")?;
     if std::env::var_os("WC_NOCtors").is_none() {
-    if let Err(e) = ctors.call(&mut *s, ()) {
+    if let Err(e) = fibre::block_on(ctors.call_async(&mut *s, ())) {
         eprintln!("[fatal] ctors threw; registered {} bindings so far", imports::embind::binds().lock().unwrap().len());
         dump_exception(&mut *store);
         trace::dump();
@@ -448,7 +454,7 @@ fn run() -> Result<()> {
     let mf = main_fn;
     let argv = argv;
     let task: fibre::Task = Box::pin(async move {
-        if let Err(e) = mf.call(p.get(), (1, argv as i32)) {
+        if let Err(e) = mf.call_async(&mut *p.get(), (1, argv as i32)).await {
             static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
             if N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 5 {
                 eprintln!("[main] threw: {e:#}");
@@ -518,7 +524,8 @@ fn run() -> Result<()> {
         // the engine's frame clock must move even if the clock thread is late
         imports::boot::advance_frame();
 
-        if imports::boot::AUDIO.load(std::sync::atomic::Ordering::Relaxed)
+        let no_audio = std::env::var_os("WC_NOAUDIO").is_some();
+        if !no_audio && imports::boot::AUDIO.load(std::sync::atomic::Ordering::Relaxed)
             && last_audio.elapsed() >= Duration::from_millis(10)
         {
             static ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -526,7 +533,7 @@ fn run() -> Result<()> {
             last_audio = Instant::now();
             static MIXN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
             if let Ok(mix) = inst.get_typed_func::<(i32,), ()>(&mut *store, "FMOD_JS_MixFunction") {
-                if let Err(e) = mix.call(&mut *store, (4096,)) {
+                if let Err(e) = fibre::block_on(mix.call_async(&mut *store, (4096,))) {
                     if MIXN.fetch_add(1, std::sync::atomic::Ordering::Relaxed) < 3 {
                         eprintln!("[mix ] {e:#}");
                     }
@@ -539,11 +546,11 @@ fn run() -> Result<()> {
         let task: fibre::Task = Box::pin(async move {
             let st = p.get();
             imports::mailbox::drop_in(&mut *st).await;
-            if let Err(e) = it.call(&mut *st, ()) {
+            if let Err(e) = it.call_async(&mut *st, ()).await {
                 static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
                 let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 if n < 5 {
-                    eprintln!("[iter] threw: {e:#}");
+                    eprintln!("[iter] threw: {e:?}");
                 }
             }
         });
@@ -642,8 +649,8 @@ fn dump_exception(store: &mut Store<St>) {
 
 async fn guest_argv(store: &mut Store<St>, inst: &Instance) -> Result<u32> {
     let malloc = inst.get_typed_func::<(i32,), i32>(&mut *store, "malloc")?;
-    let p = malloc.call(&mut *store, (16,))? as u32;
-    let arr = malloc.call(&mut *store, (8,))? as u32;
+    let p = malloc.call_async(&mut *store, (16,)).await? as u32;
+    let arr = malloc.call_async(&mut *store, (8,)).await? as u32;
     let d = store.data().mem.data();
     for (i, b) in b"/content/.keep\0".iter().enumerate() {
         unsafe { *d[p as usize + i].get() = *b };
@@ -689,7 +696,7 @@ async fn prepare(store: &mut Store<St>, inst: &Instance) -> Result<()> {
             continue;
         }
         let p = import_bytes(store, inst, path.as_bytes()).await?;
-        reg.call(&mut *store, (p as i32, size as i32))?;
+        reg.call_async(&mut *store, (p as i32, size as i32)).await?;
         n += 1;
     }
     eprintln!("[fs  ] registered {n} asset paths under {fs_base}");
@@ -703,20 +710,20 @@ async fn prepare(store: &mut Store<St>, inst: &Instance) -> Result<()> {
             .unwrap_or_else(|| std::path::PathBuf::from(format!("{fs_base}{rel}")).to_string_lossy().into_owned());
         let Ok(body) = std::fs::read(&disk) else { continue };
         let p = import_bytes(store, inst, rel.as_bytes()).await?;
-        reg.call(&mut *store, (p as i32, body.len() as i32))?;
+        reg.call_async(&mut *store, (p as i32, body.len() as i32)).await?;
         let d = import_bytes(store, inst, &body).await?;
-        let rc = pre.call(&mut *store, (p as i32, d as i32, body.len() as i32))?;
+        let rc = pre.call_async(&mut *store, (p as i32, d as i32, body.len() as i32)).await?;
         eprintln!("[fs  ] preload {rel} ({} bytes) -> {rc}", body.len());
     }
 
     let app = import_bytes(store, inst, br#"{"WebLogin":"2","RobloxLocaleId":"en-us","GameLocaleId":"en-us"}"#).await?;
     let add = inst.get_typed_func::<(i32, i32, i32), i32>(&mut *store, "rbx_fs_add_file")?;
     let path = import_bytes(store, inst, b"/appData/LocalStorage/appStorage.json").await?;
-    add.call(&mut *store, (path as i32, app as i32, 61))?;
+    add.call_async(&mut *store, (path as i32, app as i32, 61)).await?;
 
     let sb = inst.get_typed_func::<(i32,), ()>(&mut *store, "rbx_fs_set_base_url")?;
     let bp = import_bytes(store, inst, ASSET_BASE.as_bytes()).await?;
-    sb.call(&mut *store, (bp as i32,))?;
+    sb.call_async(&mut *store, (bp as i32,)).await?;
     eprintln!("[prep] base now {:?}", store.data().base);
 
     eprintln!("[prep] place={place} canvas={CANVAS_W}x{CANVAS_H} assets={} preload={} files={}", store.data().assets.len(), store.data().preload.len(), store.data().files.len());
@@ -814,7 +821,7 @@ async fn str_arg(store: &mut Store<St>, inst: &Instance, s: &str) -> Result<impo
 /// Allocate guest memory and copy `b` plus a NUL (engine strings).
 async fn import_bytes(store: &mut Store<St>, inst: &Instance, b: &[u8]) -> Result<u32> {
     let malloc = inst.get_typed_func::<(i32,), i32>(&mut *store, "malloc")?;
-    let p = malloc.call(&mut *store, (b.len() as i32 + 1,))? as u32;
+    let p = malloc.call_async(&mut *store, (b.len() as i32 + 1,)).await? as u32;
     if p == 0 {
         return Err(anyhow!("guest malloc failed"));
     }

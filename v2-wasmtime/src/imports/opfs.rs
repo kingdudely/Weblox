@@ -35,6 +35,11 @@ fn write(name: &str, body: &[u8]) -> bool {
     std::fs::write(p, body).is_ok()
 }
 
+fn wbytes_st(mem: &wasmtime::SharedMemory, p: u32, src: &[u8]) {
+    let d = mem.data();
+    unsafe { std::ptr::copy_nonoverlapping(src.as_ptr(), d[p as usize].get(), src.len()) };
+}
+
 pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
     l.func_wrap("env", "__asyncjs__rbx_opfs_clear", || -> i32 {
         crate::trace::hit("opfs_clear");
@@ -50,22 +55,25 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
         crate::trace::hit("opfs_file_size");
         read(&rstr(&c, p as u32)).map(|b| b.len() as i32).unwrap_or(0)
     })?;
-    l.func_wrap("env", "__asyncjs__rbx_opfs_get", |mut c: Caller<'_, St>, p: i32, len: i32| -> i32 {
+    l.func_wrap_async("env", "__asyncjs__rbx_opfs_get", |c: Caller<'_, St>, (p, len): (i32, i32)| {
         crate::trace::hit("opfs_get");
-        wbytes(&mut c, len as u32, &0u32.to_le_bytes());
-        let Some(body) = read(&rstr(&c, p as u32)) else { return 0 };
-        if body.is_empty() {
-            return 0;
-        }
-        let Some(inst) = c.data().inst else { return 0 };
-        let Ok(m) = inst.get_typed_func::<(i32,), i32>(&mut c, "malloc") else { return 0 };
-        let d = m.call(&mut c, (body.len() as i32,)).unwrap_or(0) as u32;
-        if d == 0 {
-            return 0;
-        }
-        wbytes(&mut c, d, &body);
-        wbytes(&mut c, len as u32, &(body.len() as u32).to_le_bytes());
-        d as i32
+        let body = read(&rstr(&c, p as u32));
+        let sp = c.data().rt.as_ref().expect("rt").store;
+        let fut: Box<dyn std::future::Future<Output = i32> + Send> = Box::new(async move {
+            let st = sp.get();
+            let mem = st.data().mem.clone();
+            wbytes_st(&mem, len as u32, &0u32.to_le_bytes());
+            let Some(body) = body else { return 0 };
+            if body.is_empty() { return 0 }
+            let Some(inst) = st.data().inst else { return 0 };
+            let Ok(m) = inst.get_typed_func::<(i32,), i32>(&mut *st, "malloc") else { return 0 };
+            let d = m.call_async(&mut *st, (body.len() as i32,)).await.unwrap_or(0) as u32;
+            if d == 0 { return 0 }
+            wbytes_st(&mem, d, &body);
+            wbytes_st(&mem, len as u32, &(body.len() as u32).to_le_bytes());
+            d as i32
+        });
+        fut
     })?;
     l.func_wrap("env", "__asyncjs__rbx_opfs_get_buffer",
         |mut c: Caller<'_, St>, p: i32, dst: i32, n: i32| -> i32 {
@@ -88,26 +96,29 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
             wbytes(&mut c, dst as u32, &body[off..end]);
             (end - off) as i32
         })?;
-    l.func_wrap("env", "__asyncjs__rbx_opfs_get_offset",
-        |mut c: Caller<'_, St>, p: i32, len: i32, off: i32, n: i32| -> i32 {
+    l.func_wrap_async("env", "__asyncjs__rbx_opfs_get_offset",
+        |c: Caller<'_, St>, (p, len, off, n): (i32, i32, i32, i32)| {
             crate::trace::hit("opfs_get_offset");
-            wbytes(&mut c, len as u32, &0u32.to_le_bytes());
-            let Some(body) = read(&rstr(&c, p as u32)) else { return 0 };
-            let off = off.max(0) as usize;
-            if off >= body.len() {
-                return 0;
-            }
-            let end = (off + n.max(0) as usize).min(body.len());
-            let slice = &body[off..end];
-            let Some(inst) = c.data().inst else { return 0 };
-            let Ok(m) = inst.get_typed_func::<(i32,), i32>(&mut c, "malloc") else { return 0 };
-            let d = m.call(&mut c, (slice.len() as i32,)).unwrap_or(0) as u32;
-            if d == 0 {
-                return 0;
-            }
-            wbytes(&mut c, d, slice);
-            wbytes(&mut c, len as u32, &(slice.len() as u32).to_le_bytes());
-            d as i32
+            let body = read(&rstr(&c, p as u32));
+            let sp = c.data().rt.as_ref().expect("rt").store;
+            let fut: Box<dyn std::future::Future<Output = i32> + Send> = Box::new(async move {
+                let st = sp.get();
+                let mem = st.data().mem.clone();
+                wbytes_st(&mem, len as u32, &0u32.to_le_bytes());
+                let Some(body) = body else { return 0 };
+                let off = off.max(0) as usize;
+                if off >= body.len() { return 0 }
+                let end = (off + n.max(0) as usize).min(body.len());
+                let slice = body[off..end].to_vec();
+                let Some(inst) = st.data().inst else { return 0 };
+                let Ok(m) = inst.get_typed_func::<(i32,), i32>(&mut *st, "malloc") else { return 0 };
+                let d = m.call_async(&mut *st, (slice.len() as i32,)).await.unwrap_or(0) as u32;
+                if d == 0 { return 0 }
+                wbytes_st(&mem, d, &slice);
+                wbytes_st(&mem, len as u32, &(slice.len() as u32).to_le_bytes());
+                d as i32
+            });
+            fut
         })?;
     l.func_wrap("env", "__asyncjs__rbx_opfs_list", |mut c: Caller<'_, St>, total: i32, count: i32| -> i32 {
         crate::trace::hit("opfs_list");
@@ -131,7 +142,7 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
         let joined = format!("{}\0", names.join("\n"));
         let Some(inst) = c.data().inst else { return 0 };
         let Ok(m) = inst.get_typed_func::<(i32,), i32>(&mut c, "malloc") else { return 0 };
-        let d = m.call(&mut c, (joined.len() as i32,)).unwrap_or(0) as u32;
+        let d = crate::fibre::run_sync(m.call_async(&mut c, (joined.len() as i32,))).unwrap_or(0) as u32;
         if d == 0 {
             return 0;
         }
@@ -196,12 +207,16 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
         }
         n
     })?;
-    l.func_wrap("env", "rbx_opfs_free", |mut c: Caller<'_, St>, p: i32| {
+    l.func_wrap("env", "rbx_opfs_free", |c: Caller<'_, St>, p: i32| {
         crate::trace::hit("opfs_free");
-        let Some(inst) = c.data().inst else { return };
-        if let Ok(f) = inst.get_typed_func::<(i32,), ()>(&mut c, "free") {
-            let _ = f.call(&mut c, (p,));
-        }
+        let sp = c.data().rt.as_ref().expect("rt").store;
+        crate::fibre::spawn_simple(async move {
+            let st = sp.get();
+            let Some(inst) = st.data().inst else { return };
+            if let Ok(f) = inst.get_typed_func::<(i32,), ()>(&mut *st, "free") {
+                let _ = f.call_async(&mut *st, (p,)).await;
+            }
+        });
     })?;
     l.func_wrap("env", "rbx_opfs_install_helpers", |c: Caller<'_, St>, _a: i32, _b: i32| {
         crate::trace::hit("opfs_install");

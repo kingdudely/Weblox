@@ -45,7 +45,7 @@ pub async fn call(store: &mut Store<St>, inst: &Instance, name: &str, args: &[Ar
         _ => return Err(anyhow!("binding {name}: invoker {invoker} is not a func")),
     };
 
-    f.call(&mut *store, &vals, &mut [])?;
+    f.call_async(&mut *store, &vals, &mut []).await?;
     let _ = sig;
     Ok(None)
 }
@@ -54,7 +54,7 @@ pub async fn call(store: &mut Store<St>, inst: &Instance, name: &str, args: &[Ar
 pub async fn guest_string_bytes(store: &mut Store<St>, inst: &Instance, b: &[u8]) -> Result<u32> {
     let malloc = inst.get_typed_func::<(i32,), i32>(&mut *store, "malloc")?;
     let n = b.len() as i32 + 5;
-    let p = malloc.call(&mut *store, (n,))? as u32;
+    let p = malloc.call_async(&mut *store, (n,)).await? as u32;
     if p == 0 {
         return Err(anyhow!("guest malloc failed"));
     }
@@ -72,7 +72,7 @@ pub async fn guest_string_bytes(store: &mut Store<St>, inst: &Instance, b: &[u8]
 pub async fn guest_string(store: &mut Store<St>, inst: &Instance, s: &str) -> Result<u32> {
     let malloc = inst.get_typed_func::<(i32,), i32>(&mut *store, "malloc")?;
     let n = s.len() as i32 + 4;
-    let p = malloc.call(&mut *store, (n,))? as u32;
+    let p = malloc.call_async(&mut *store, (n,)).await? as u32;
     if p == 0 {
         return Err(anyhow!("guest malloc failed"));
     }

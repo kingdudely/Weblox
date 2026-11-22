@@ -2,7 +2,6 @@
 //! the way the browser's per-worker module instance works.
 use anyhow::{anyhow, Result};
 use std::sync::Mutex;
-use futures::executor::block_on;
 use wasmtime::{Caller, Extern, Linker, Store, Val};
 
 use crate::state::St;
@@ -56,7 +55,7 @@ pub fn start_worker(
     std::thread::Builder::new()
         .name(format!("rbx-{pthread:x}"))
         .spawn(move || -> Result<()> {
-            let r = block_on(async move {
+            let r = crate::fibre::block_on(async move {
                 let mut store = Box::new(Store::new(&engine, St::new(mem.clone())));
                 let p = crate::fibre::PStore(&mut *store as *mut Store<St>);
                 store.data_mut().rt = Some(crate::fibre::Rt::new(p));
@@ -86,9 +85,9 @@ pub fn start_worker(
                 let top = at(48);
                 let size = at(52);
                 let lim = inst.get_typed_func::<(i32, i32), ()>(&mut *store, "set_stack_limits")?;
-                lim.call(&mut *store, (top as i32, (top - size) as i32))?;
+                lim.call_async(&mut *store, (top as i32, (top - size) as i32)).await?;
                 let sp = inst.get_typed_func::<(i32,), ()>(&mut *store, "set_stack_ptr")?;
-                sp.call(&mut *store, (top as i32,))?;
+                sp.call_async(&mut *store, (top as i32,)).await?;
 
                 // the page's worker order: thread init, TLS, mailbox arm,
                 // then the instance's static initialisers on the worker's own
@@ -100,13 +99,13 @@ pub fn start_worker(
                 // the JS wait, which this host can poll; workers otherwise
                 // block an OS thread inside wasm and stop servicing anything.
                 let runtime_thread = if std::env::var_os("WC_RTMAIN").is_some() { 1 } else { 0 };
-                ti.call(&mut *store, (pthread as i32, async_thread, runtime_thread, 1, 0, 0))?;
+                ti.call_async(&mut *store, (pthread as i32, async_thread, runtime_thread, 1, 0, 0)).await?;
                 let tls = inst.get_typed_func::<(), (i32,)>(&mut *store, "_emscripten_tls_init")?;
-                tls.call(&mut *store, ())?;
+                tls.call_async(&mut *store, ()).await?;
                 if std::env::var_os("WC_ST").is_some() { eprintln!("[st  ] {pthread:x} init+tls done"); }
                 if std::env::var_os("WC_PTHR").is_some() {
                     if let Ok(ps) = inst.get_typed_func::<(), (i32,)>(&mut *store, "pthread_self") {
-                        if let Ok((tls,)) = ps.call(&mut *store, ()) {
+                        if let Ok((tls,)) = ps.call_async(&mut *store, ()).await {
                             let tls = tls as u32;
                             let d = store.data().mem.data();
                             let w = |o: u32| unsafe { *(d[tls as usize + o as usize].get() as *const u32) };
@@ -117,7 +116,7 @@ pub fn start_worker(
                 static EMBIND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
                 if !EMBIND.swap(true, std::sync::atomic::Ordering::Relaxed) {
                     if let Ok(b) = inst.get_typed_func::<(), ()>(&mut *store, "_embind_initialize_bindings") {
-                        let _ = b.call(&mut *store, ());
+                        let _ = b.call_async(&mut *store, ()).await;
                     }
                 }
                 // the glue arms each worker's mailbox (`Er`) right after TLS:
@@ -128,7 +127,7 @@ pub fn start_worker(
                 };
                 if std::env::var_os("WC_WASYNC").is_some() {
                     let sts = inst.get_typed_func::<(i32, i32, i32, i32), ()>(&mut *store, "__set_thread_state")?;
-                    sts.call(&mut *store, (pthread as i32, 1, 0, 0))?;
+                    sts.call_async(&mut *store, (pthread as i32, 1, 0, 0)).await?;
                     let a = unsafe { *(store.data().mem.data()[9515280].get() as *const u32) };
                     eprintln!("[st  ] {pthread:x} async=1 depth={a}");
                 }
@@ -160,7 +159,7 @@ pub fn start_worker(
                     // workers do not run ctors on the page (`pn` is
                     // `!isPthread && ctors`); statics are main-thread work.
                     if std::env::var_os("WC_WCTORS").is_some() {
-                        if let Err(e) = ctors.call(&mut *st, ()) {
+                        if let Err(e) = ctors.call_async(&mut *st, ()).await {
                             eprintln!("[pthr] ctors {pthread:x} threw: {e:#}");
                         }
                     }
@@ -173,7 +172,7 @@ pub fn start_worker(
                     }
                     let mut unwound = false;
                     let mut returned = false;
-                    match f.call(&mut *st, &[Val::I32(arg as i32)], &mut out) {
+                    match f.call_async(&mut *st, &[Val::I32(arg as i32)], &mut out).await {
                         Err(e) if was_unwind(&e) => unwound = true,
                         Err(e) => eprintln!("[pthr] entry {pthread:x} threw: {e:#}"),
                         Ok(()) => {
@@ -186,7 +185,7 @@ pub fn start_worker(
                             let rc = match out[0] { Val::I32(v) => v, _ => 0 };
                             if std::env::var_os("WC_PEXIT").is_some() {
                                 if let Some(ex) = &ex {
-                                    let _ = ex.call(&mut *st, (rc,));
+                                    let _ = ex.call_async(&mut *st, (rc,)).await;
                                 }
                             } else {
                                 unwound = true;
@@ -202,15 +201,15 @@ pub fn start_worker(
                             crate::fibre::sleep(&mut *st, std::time::Duration::from_millis(1)).await;
                             let _ = crate::imports::mailbox::pump_mailbox(&mut *st).await;
                             if let (Some(iter), false) = (&iter, returned) {
-                                if let Err(e) = iter.call(&mut *st, ()) {
+                                if let Err(e) = iter.call_async(&mut *st, ()).await {
                                     if !was_unwind(&e) {
-                                        eprintln!("[pthr] loop {pthread:x} threw: {e:#}");
+                                        eprintln!("[pthr] loop {pthread:x} threw: {e:?}");
                                     }
                                 }
                             }
                             if returned && take_nudge(pthread) {
                                 eprintln!("[pthr] rerun {pthread:x} start={start}");
-                                match f.call(&mut *st, &[Val::I32(arg as i32)], &mut out) {
+                                match f.call_async(&mut *st, &[Val::I32(arg as i32)], &mut out).await {
                                     Ok(()) => {}
                                     Err(e) => eprintln!("[pthr] rerun {pthread:x} threw: {e:#}"),
                                 }

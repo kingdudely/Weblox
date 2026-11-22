@@ -151,7 +151,7 @@ fn conn_of(r: &Ring) -> u32 {
 /// Run the engine's ring consumer for one delivered slot, exactly as the
 /// callback thread would.  Without it nothing ever advances the read cursor.
 /// Task layout: `{conn, kind, sid, pad, slot, len}`.
-fn consume<T: wasmtime::AsContextMut<Data = St>>(
+async fn consume<T: wasmtime::AsContextMut<Data = St>>(
     cx: &mut T, conn: u32, kind: u8, sid: i32, slot: u32, len: u32,
 ) -> Result<()> {
     let Some(inst) = cx.as_context().data().inst else { return Ok(()) };
@@ -161,7 +161,7 @@ fn consume<T: wasmtime::AsContextMut<Data = St>>(
     };
     let malloc = inst.get_typed_func::<u32, u32>(&mut *cx, "malloc")?;
     let free = inst.get_typed_func::<u32, ()>(&mut *cx, "free")?;
-    let task = malloc.call(&mut *cx, 24)?;
+    let task = malloc.call_async(&mut *cx, 24).await?;
     if task == 0 {
         return Ok(());
     }
@@ -175,8 +175,8 @@ fn consume<T: wasmtime::AsContextMut<Data = St>>(
     put(16, slot);
     put(20, len);
     eprintln!("[rna ] host-consume slot={slot} len={len}");
-    let r = f.call(&mut *cx, &[wasmtime::Val::I32(task as i32)], &mut []);
-    let _ = free.call(&mut *cx, task);
+    let r = f.call_async(&mut *cx, &[wasmtime::Val::I32(task as i32)], &mut []).await;
+    let _ = free.call_async(&mut *cx, task).await;
     if let Err(e) = &r {
         eprintln!("[rna ] consume slot={slot} len={len}: {e:#}");
     }
@@ -422,7 +422,7 @@ fn stream(id: u32, sid: u32) -> Option<std::sync::Arc<tokio::sync::Mutex<wtransp
 /// arm the stream's read state before the data is handed over.
 static TO_CONSUME: Mutex<Vec<(u32, u8, i32, u32, u32)>> = Mutex::new(Vec::new());
 
-fn deliver(cx: &mut Store<St>, ev: Ev) {
+async fn deliver(cx: &mut Store<St>, ev: Ev) {
     // Slots are handed straight to the connection's consumer.  The engine's
     // own handler only queues the same call for its callback thread; doing it
     // here keeps the cursor move and the dispatch in one place.
@@ -430,7 +430,7 @@ fn deliver(cx: &mut Store<St>, ev: Ev) {
         let (slot, len) = ((packed >> 24) as u32, (packed & 0xff_ffff) as u32);
         let ring = RINGS.lock().unwrap().as_ref().and_then(|m| m.get(&id)).cloned();
         if let Some(ring) = ring {
-            let _ = consume(cx, conn_of(&ring), kind, sid, slot, len);
+            let _ = consume(&mut *cx, conn_of(&ring), kind, sid, slot, len).await;
         }
         return;
     }
@@ -466,7 +466,7 @@ fn deliver(cx: &mut Store<St>, ev: Ev) {
         vals.push(wasmtime::Val::I32(a));
     }
     eprintln!("[rna ] -> {name} fn={} {args:?}", binding.1);
-    if let Err(e) = f.call(&mut *cx, &vals, &mut []) {
+    if let Err(e) = f.call_async(&mut *cx, &vals, &mut []).await {
         eprintln!("[rna ] {name} threw: {e:#}");
         return;
     }
@@ -474,7 +474,7 @@ fn deliver(cx: &mut Store<St>, ev: Ev) {
 
 /// Deliver one completion per turn, oldest first: the page awaits every
 /// deferred callback, so a delivery must not run back-to-back with the next.
-pub fn pump<T: wasmtime::AsContextMut<Data = St>>(cx: &mut T) {
+pub async fn pump<T: wasmtime::AsContextMut<Data = St>>(cx: &mut T) {
     let d = cx.as_context().data();
     let me = (if d.is_main { d.main_ptr } else { d.mbx_ptr }).unwrap_or(ANY_Q);
     MAIN.store(me, std::sync::atomic::Ordering::Relaxed);
@@ -521,14 +521,14 @@ pub fn pump<T: wasmtime::AsContextMut<Data = St>>(cx: &mut T) {
             let tail = unsafe { *(d[ring.tail as usize].get() as *const u32) };
             if tail == slot {
                 let sp = crate::fibre::store_ptr();
-                let _ = consume(unsafe { &mut *sp }, conn_of(&ring), kind, sid, slot, len);
+                let _ = consume(unsafe { &mut *sp }, conn_of(&ring), kind, sid, slot, len).await;
             }
         }
     }
     crate::imports::thread::nudge_runners();
     if let Some(ev) = ev {
         let sp = crate::fibre::store_ptr();
-        deliver(unsafe { &mut *sp }, ev);
+        deliver(unsafe { &mut *sp }, ev).await;
     }
     cx.as_context_mut().data_mut().in_rna = false;
 }
