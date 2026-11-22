@@ -202,6 +202,7 @@ fn asm_eval(c: &mut wasmtime::Store<St>, key: u32, sigp: u32, buf: u32) -> f64 {
 
 /// Run one of the engine's ASM_CONSTS entries with decoded arguments.
 pub fn asm_invoke(c: &mut wasmtime::Store<St>, key: u32, vals: &[f64]) -> f64 {
+    c.data_mut().asm_last = key;
     let a = |i: usize| *vals.get(i).unwrap_or(&0.0) as u32;
 
     match key {
@@ -234,7 +235,9 @@ pub fn asm_invoke(c: &mut wasmtime::Store<St>, key: u32, vals: &[f64]) -> f64 {
         }
         9099902 => 0.0,                            // leave
         9111863 => {                               // crash report
-            eprintln!("[asm] CRASH {:?} {:?} args={:?}", rstr_ctx(&*c, a(0)), rstr_ctx(&*c, a(1)), (0..8).map(a).collect::<Vec<u32>>());
+            let d = c.data().mem.data();
+            let raw = |p: u32| (0..200u32).map(|i| unsafe { *d[p as usize + i as usize].get() }).take_while(|b| *b != 0).collect::<Vec<u8>>();
+            eprintln!("[asm] CRASH {:?} {:?} imp={} asm={}", String::from_utf8_lossy(&raw(a(0))), String::from_utf8_lossy(&raw(a(1))), c.data().imp_last, c.data().asm_last);
             for i in 1..6 {
                 let v = a(i);
                 if v > 0x1000 {

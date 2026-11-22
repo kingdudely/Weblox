@@ -45,6 +45,8 @@ pub struct St {
     pub cookie: Option<String>,
     /// the guest created a GL context
     pub gl_ctx: bool,
+    pub asm_last: u32,
+    pub imp_last: &'static str,
 }
 
 impl St {
@@ -78,6 +80,8 @@ impl St {
             fetch_hdrs: Default::default(),
             cookie: None,
             gl_ctx: false,
+            asm_last: 0,
+            imp_last: "",
         }
     }
 }

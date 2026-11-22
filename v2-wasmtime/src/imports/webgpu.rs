@@ -266,9 +266,9 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
         ($name:literal, ($($p:ident : $t:ty),*), $r:ty, $body:expr) => {
             l.func_wrap("env", $name, |mut c: Caller<'_, St>, $($p: $t),*| -> $r {
                 crate::trace::hit($name);
-                if std::env::var_os("WC_WGPU").is_some() { eprintln!("[wg  ] {}", $name); }
                 let p = crate::fibre::store_ptr();
                 let st = unsafe { &mut *p };
+                st.data_mut().imp_last = $name;
                 let m = mem_of(&*st);
                 ($body)(st, m)
             })?;
