@@ -97,6 +97,7 @@ pub fn run_main_jobs() {
                 unsafe { *d[buf as usize + i].get() = *b };
             }
         }
+        eprintln!("[mt  ] job key={} args={}", job.key, args.len());
         let v = asm_eval(cx, job.key, sigp, buf);
         let _ = job.tx.send(v);
     }

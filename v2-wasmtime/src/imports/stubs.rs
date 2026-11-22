@@ -122,6 +122,7 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
             let mut c = c;
             let mut c = &mut c;
             crate::trace::hit("recv_mt");
+            eprintln!("[mt  ] recv idx={index} fn={func:#x} done={done:#x} t={}", std::thread::current().name().unwrap_or("?"));
             let n = ((size.max(0) as usize) / 16).min(32);
             let mut vals: Vec<f64> = Vec::with_capacity(n);
             {

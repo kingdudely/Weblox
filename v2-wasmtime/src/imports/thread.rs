@@ -103,7 +103,7 @@ pub fn start_worker(
                 // `is_main_runtime_thread` makes the futex path hand off to
                 // the JS wait, which this host can poll; workers otherwise
                 // block an OS thread inside wasm and stop servicing anything.
-                let runtime_thread = if std::env::var_os("WC_RTMAIN").is_some() { 1 } else { 0 };
+                let runtime_thread = if std::env::var_os("WC_NORTMAIN").is_some() { 0 } else { 1 };
                 ti.call_async(&mut *store, (pthread as i32, async_thread, runtime_thread, 1, 0, 0)).await?;
                 let tls = inst.get_typed_func::<(), (i32,)>(&mut *store, "_emscripten_tls_init")?;
                 tls.call_async(&mut *store, ()).await?;
