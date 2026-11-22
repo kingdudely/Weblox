@@ -95,11 +95,25 @@ pub fn start_worker(
                 // stack (the arm happens inside them)
                 let ti = inst.get_typed_func::<(i32, i32, i32, i32, i32, i32), ()>(
                     &mut *store, "_emscripten_thread_init")?;
-                let async_thread = std::env::var_os("WC_WASYNC").is_some();
-                ti.call(&mut *store, (pthread as i32, async_thread as i32, 0, 1, 0, 0))?;
+                let async_thread = std::env::var_os("WC_WASYNC").is_some() as i32;
+                // `is_main_runtime_thread` makes the futex path hand off to
+                // the JS wait, which this host can poll; workers otherwise
+                // block an OS thread inside wasm and stop servicing anything.
+                let runtime_thread = if std::env::var_os("WC_RTMAIN").is_some() { 1 } else { 0 };
+                ti.call(&mut *store, (pthread as i32, async_thread, runtime_thread, 1, 0, 0))?;
                 let tls = inst.get_typed_func::<(), (i32,)>(&mut *store, "_emscripten_tls_init")?;
                 tls.call(&mut *store, ())?;
                 if std::env::var_os("WC_ST").is_some() { eprintln!("[st  ] {pthread:x} init+tls done"); }
+                if std::env::var_os("WC_PTHR").is_some() {
+                    if let Ok(ps) = inst.get_typed_func::<(), (i32,)>(&mut *store, "pthread_self") {
+                        if let Ok((tls,)) = ps.call(&mut *store, ()) {
+                            let tls = tls as u32;
+                            let d = store.data().mem.data();
+                            let w = |o: u32| unsafe { *(d[tls as usize + o as usize].get() as *const u32) };
+                            eprintln!("[pthr] {pthread:x} tls={tls:#x} tid={} mbx={}", w(24), w(68));
+                        }
+                    }
+                }
                 static EMBIND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
                 if !EMBIND.swap(true, std::sync::atomic::Ordering::Relaxed) {
                     if let Ok(b) = inst.get_typed_func::<(), ()>(&mut *store, "_embind_initialize_bindings") {
@@ -121,9 +135,11 @@ pub fn start_worker(
                 let (f0, f104, f112) = (at(0), at(104), at(112));
                 eprintln!("[pthr] {pthread:x} fields: +0={f0:#x} +104={f104:#x} +112={f112:#x}");
 
+                eprintln!("[pthr] {pthread:x} a");
                 let table = inst
                     .get_table(&mut *store, "__indirect_function_table")
                     .ok_or_else(|| anyhow!("no table"))?;
+                eprintln!("[pthr] {pthread:x} b");
                 let slot = table
                     .get(&mut *store, start as u64)
                     .ok_or_else(|| anyhow!("no start fn"))?;
@@ -131,6 +147,7 @@ pub fn start_worker(
                     wasmtime::Ref::Func(Some(f)) => f,
                     _ => return Err(anyhow!("start routine is not a func")),
                 };
+                eprintln!("[pthr] {pthread:x} c");
                 let raw = f.to_raw(&mut *store);
                 let lib = inst.get_func(&mut *store, "main_loop_iteration").map(|g| g.to_raw(&mut *store) as usize);
                 let ma = inst.get_func(&mut *store, "main_loop_iteration").map(|g| unsafe { *(g.to_raw(&mut *store) as *const usize) });
@@ -231,11 +248,26 @@ fn was_unwind(e: &wasmtime::Error) -> bool {
 static LATE: Mutex<Option<(u32, u32)>> = Mutex::new(None);
 static LATE_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-pub fn take_late() -> Option<(u32, u32)> {
-    if LATE_STARTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-        return None;
+/// The engine asks for the join thread while it is still inside the asm const
+/// that follows the audio device; the page only creates it once control is
+/// back on the event loop, and starting it earlier races the creator's own
+/// bookkeeping.  Mark it here and let the turn loop start it afterwards.
+static LATE_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn mark_late_ready() {
+    LATE_READY.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn start_late(engine: wasmtime::Engine, module: wasmtime::Module, mem: wasmtime::SharedMemory) {
+    if !LATE_READY.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
     }
-    LATE.lock().unwrap().take()
+    LATE_READY.store(false, std::sync::atomic::Ordering::Relaxed);
+    if LATE_STARTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    let Some((pthread, arg)) = LATE.lock().unwrap().take() else { return };
+    let _ = start_worker(engine, module, mem, pthread, 152308, arg);
 }
 
 pub use start_worker as start_worker_pub;
@@ -255,7 +287,9 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
                 let w = |o: u32| unsafe { *(d[arg as usize + o as usize].get() as *const u32) };
                 eprintln!("[pthc] join struct start={} arg={} +4={} +8={} +12={}", w(0), arg, w(4), w(8), w(12));
             }
-            if start == 152308 && LATE.lock().unwrap().is_none() && !LATE_STARTED.load(std::sync::atomic::Ordering::Relaxed) {
+            if start == 152308 && LATE.lock().unwrap().is_none()
+                && std::env::var_os("WC_NOLATE").is_none()
+            {
                 LATE.lock().unwrap().replace((pthread as u32, arg as u32));
                 return 0;
             }

@@ -179,6 +179,11 @@ fn asm_eval(c: &mut wasmtime::Store<St>, key: u32, sigp: u32, buf: u32) -> f64 {
         vals.push(v);
         off += if wide { 8 } else { 4 };
     }
+    asm_invoke(c, key, &vals)
+}
+
+/// Run one of the engine's ASM_CONSTS entries with decoded arguments.
+pub fn asm_invoke(c: &mut wasmtime::Store<St>, key: u32, vals: &[f64]) -> f64 {
     let a = |i: usize| *vals.get(i).unwrap_or(&0.0) as u32;
 
     match key {
@@ -229,12 +234,7 @@ fn asm_eval(c: &mut wasmtime::Store<St>, key: u32, sigp: u32, buf: u32) -> f64 {
             u32::from_le_bytes(b) as f64
         }
         9111979 => {
-            if let Some((pthread, arg)) = crate::imports::thread::take_late() {
-                if let (Some(engine), Some(module)) = (c.data().engine.clone(), c.data().module.clone()) {
-                    let mem = c.data().mem.clone();
-                    let _ = crate::imports::thread::start_worker(engine, module, mem, pthread, 152308, arg);
-                }
-            }
+            crate::imports::thread::mark_late_ready();
             let g = { let d = c.data().mem.data(); unsafe { *(d[8692188usize].get() as *const u32) } };
             eprintln!("[asm] fmod args={} {} g={g}", a(0) as i32, a(1) as i32);
             0.0
@@ -262,7 +262,27 @@ fn asm_eval(c: &mut wasmtime::Store<St>, key: u32, sigp: u32, buf: u32) -> f64 {
             let a0 = (key as usize).saturating_sub(48);
             let bytes: Vec<u8> = (a0..key as usize + 160).map(|i| unsafe { *d[i].get() }).collect();
             let txt: String = bytes.iter().map(|b| if (0x20..0x7f).contains(b) { *b as char } else { '.' }).collect();
-            eprintln!("[asm] unknown key {key} sig={sig:?} args={} {}", a(0) as i32, a(1) as i32);
+            eprintln!("[asm] unknown key {key} args={} {}", a(0) as i32, a(1) as i32);
+            0.0
+        }
+    }
+}
+
+/// The glue's `_emscripten_*` table, in the module's own order, for calls a
+/// worker queues on the main thread.  Only the browser-facing entries matter
+/// here; the rest are document event registration this host has no use for.
+pub fn main_thread_call(index: u32, a: &[f64]) -> f64 {
+    let a0 = |i: usize| *a.get(i).unwrap_or(&0.0) as u32;
+    match index {
+        10 => 1.0,          // devicePixelRatio
+        13 => 0.0,          // navigator.getGamepads().length
+        12 => -7.0,         // no live gamepad state
+        15 => 0.0,          // getGamepads
+        43 | 44 => 0.0,     // WebSocket close/free
+        _ => {
+            if std::env::var_os("WC_MBX").is_some() {
+                eprintln!("[mbx ] main call {index} args={:?} a0={}", a, a0(0));
+            }
             0.0
         }
     }

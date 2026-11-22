@@ -52,7 +52,10 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
             // An unbounded wait still gets a short deadline: `Atomics.waitAsync`
             // wakes on a notify we cannot observe, so spurious wake-ups are the
             // only way to stay correct.
-            let deadline = Some(std::time::Instant::now() + dur.unwrap_or(std::time::Duration::from_millis(2)));
+            // Poll often: a lost wake-up then costs a couple of milliseconds
+            // instead of the guest's whole timeout (which can be minutes).
+            let cap = std::time::Duration::from_millis(2);
+            let deadline = Some(std::time::Instant::now() + dur.unwrap_or(cap).min(cap));
             let mut n: u64 = 0;
             loop {
                 if std::env::var_os("WC_FUTEX").is_some() && n % 200 == 0 {

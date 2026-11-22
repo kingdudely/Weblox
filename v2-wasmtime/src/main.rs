@@ -496,6 +496,19 @@ fn run() -> Result<()> {
     };
     let mut turns = 0u64;
     let mut last_audio = Instant::now() - Duration::from_millis(100);
+    eprintln!("[mem] base={:p}", store.data().mem.data().as_ptr());
+    if let Ok(out) = std::env::var("WC_MAP") {
+        let mut f = std::fs::File::create(out).unwrap();
+        use std::io::Write;
+        let t = inst.get_table(&mut *store, "__indirect_function_table").unwrap();
+        let n = t.size(&mut *store);
+        for i in 0..n {
+            if let Some(wasmtime::Ref::Func(Some(fun))) = t.get(&mut *store, i) {
+                let rf = fun.to_raw(&mut *store); let raw = unsafe { *((rf as *const usize).add(1)) };
+                let _ = writeln!(f, "{raw:x} {i}");
+            }
+        }
+    }
     fibre::host_root(&mut *store);
     while Instant::now() < deadline {
         if turns % 100 == 0 {
@@ -538,6 +551,9 @@ fn run() -> Result<()> {
             eprintln!("[iter] turn {turns} failed: {e:#}");
             fibre::shutdown(&mut *store);
             return Err(e.into());
+        }
+        if let (Some(engine), Some(module)) = (store.data().engine.clone(), store.data().module.clone()) {
+            imports::thread::start_late(engine, module, store.data().mem.clone());
         }
         diag::checkpoint();
         match turn_sleep {

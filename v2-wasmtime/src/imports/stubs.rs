@@ -174,14 +174,43 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
     l.func_wrap("env", "__syscall_getuid32", |_c: Caller<'_, St>, | -> i32 { crate::trace::hit("__syscall_getuid32"); 0 })?;
     l.func_wrap("env", "_msync_js", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i64, | -> i32 { crate::trace::hit("_msync_js"); 0 })?;
     l.func_wrap("wasi_snapshot_preview1", "fd_pread", |_c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i64, a4: i32, | -> i32 { crate::trace::hit("fd_pread"); 0 })?;
-    l.func_wrap("env", "_emscripten_receive_on_main_thread_js", |c: Caller<'_, St>, a0: i32, a1: i32, a2: i32, a3: i32, a4: i32, a5: i32, a6: i32, | -> f64 {
-        crate::trace::hit("recv_mt");
-        if std::env::var_os("WC_MBX").is_some() {
-            eprintln!("[mbx ] receive fn={a0:#x} name={:?} caller={a2:#x} len={a3} done={a5:#x}",
-                      crate::state::rstr(&c, a1 as u32));
-        }
-        0.0
-    })?;
+    // The main thread runs the calls a worker queued for it.  Arguments are
+    // 16-byte pairs (an 8-byte tag, then either an int64 or a float64), and a
+    // nonzero `func` names an ASM_CONSTS entry while `index` selects the glue's
+    // `_emscripten_*` table.  A `done` callback turns the call into a promise.
+    l.func_wrap("env", "_emscripten_receive_on_main_thread_js",
+        |mut c: Caller<'_, St>, index: i32, func: i32, _caller: i32, buf: i32, size: i32,
+         done: i32, done_arg: i32| -> f64 {
+            crate::trace::hit("recv_mt");
+            let n = ((size.max(0) as usize) / 16).min(32);
+            let mut vals: Vec<f64> = Vec::with_capacity(n);
+            {
+                let d = c.data().mem.data();
+                for i in 0..n {
+                    let at = buf as usize + i * 16;
+                    let tag = unsafe { *(d[at].get() as *const u32) };
+                    let raw = unsafe { *(d[at + 8].get() as *const u64) };
+                    vals.push(if tag != 0 { raw as f64 } else { f64::from_bits(raw) });
+                }
+            }
+            if std::env::var_os("WC_MBX").is_some() {
+                eprintln!("[mbx ] recv index={index} fn={func:#x} args={vals:?} done={done:#x}");
+            }
+            let r = if func != 0 {
+                let sp = crate::fibre::store_ptr();
+                crate::imports::boot::asm_invoke(unsafe { &mut *sp }, func as u32, &vals)
+            } else {
+                crate::imports::boot::main_thread_call(index as u32, &vals)
+            };
+            if done != 0 {
+                if let Some(inst) = c.data().inst {
+                    if let Ok(f) = inst.get_typed_func::<(i32, i32, f64), ()>(&mut c, "_emscripten_run_js_on_main_thread_done") {
+                        let _ = f.call(&mut c, (done, done_arg, r));
+                    }
+                }
+            }
+            r
+        })?;
     l.func_wrap("env", "emscripten_check_blocking_allowed", |_c: Caller<'_, St>, | { crate::trace::hit("emscripten_check_blocking_allowed");  })?;
     l.func_wrap("env", "_emscripten_thread_cleanup", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("_emscripten_thread_cleanup");  })?;
     l.func_wrap("env", "emscripten_unwind_to_js_event_loop", |_c: Caller<'_, St>, | { crate::trace::hit("emscripten_unwind_to_js_event_loop");  })?;
