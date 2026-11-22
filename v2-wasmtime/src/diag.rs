@@ -70,7 +70,8 @@ pub fn watch(secs: u64) {
                 }
             }
         }
-        if !crate::imports::boot::BOOTED.load(Ordering::Relaxed) && ms > 40_000 && ms < 41_000 {
+        let lim = std::env::var("WC_STALL_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(13_000u128);
+        if !crate::imports::boot::BOOTED.load(Ordering::Relaxed) && ms > lim && ms < lim + 1000 {
             crate::imports::boot::restart();
         }
         if std::env::var_os("WC_HB").is_some() && ticks % 5 == 0 {

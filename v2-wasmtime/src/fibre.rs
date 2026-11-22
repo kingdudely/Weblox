@@ -494,6 +494,15 @@ pub fn call_fibre<T: wasmtime::AsContextMut<Data = St>>(
         } else {
             idle += 1;
         }
+        // A parked fibre may be waiting for a mailbox ring or an HTTP reply,
+        // and the idle loop is the only safe point a worker has while its
+        // fibre is suspended.
+        if iters % 20 == 0 && !st.data().is_main {
+            let _ = crate::imports::mailbox::pump_mailbox(unsafe { &mut *st });
+            if !is_live(st, id) {
+                return Ok(());
+            }
+        }
         // Nothing has run for a while.  A fibre parked under a token nobody
         // hands back wedges the whole thread, so wake the parked ones up.
         if idle == 200 {

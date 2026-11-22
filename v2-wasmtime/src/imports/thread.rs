@@ -135,11 +135,9 @@ pub fn start_worker(
                 let (f0, f104, f112) = (at(0), at(104), at(112));
                 eprintln!("[pthr] {pthread:x} fields: +0={f0:#x} +104={f104:#x} +112={f112:#x}");
 
-                eprintln!("[pthr] {pthread:x} a");
                 let table = inst
                     .get_table(&mut *store, "__indirect_function_table")
                     .ok_or_else(|| anyhow!("no table"))?;
-                eprintln!("[pthr] {pthread:x} b");
                 let slot = table
                     .get(&mut *store, start as u64)
                     .ok_or_else(|| anyhow!("no start fn"))?;
@@ -147,7 +145,6 @@ pub fn start_worker(
                     wasmtime::Ref::Func(Some(f)) => f,
                     _ => return Err(anyhow!("start routine is not a func")),
                 };
-                eprintln!("[pthr] {pthread:x} c");
                 let raw = f.to_raw(&mut *store);
                 let lib = inst.get_func(&mut *store, "main_loop_iteration").map(|g| g.to_raw(&mut *store) as usize);
                 let ma = inst.get_func(&mut *store, "main_loop_iteration").map(|g| unsafe { *(g.to_raw(&mut *store) as *const usize) });
@@ -281,11 +278,6 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
             };
             if std::env::var_os("WC_PTHR").is_some() {
                 eprintln!("[pthc] {} start_slot={start} arg={arg:#x}", std::thread::current().name().unwrap_or("?"));
-            }
-            if start == 152308 {
-                let d = c.data().mem.data();
-                let w = |o: u32| unsafe { *(d[arg as usize + o as usize].get() as *const u32) };
-                eprintln!("[pthc] join struct start={} arg={} +4={} +8={} +12={}", w(0), arg, w(4), w(8), w(12));
             }
             if start == 152308 && LATE.lock().unwrap().is_none()
                 && std::env::var_os("WC_NOLATE").is_none()
