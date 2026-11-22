@@ -32,6 +32,23 @@ pub fn advance_frame() {}
 /// export the way `onaudioprocess` would.
 pub static AUDIO: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Set once the join thread has its data model; a boot that has not got this
+/// far is wedged (the engine can deadlock one of its own start-up handshakes)
+/// and gets restarted.
+pub static BOOTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Replace this process with a fresh one: the guest keeps all its state in
+/// memory, so a retry has to start over, and the page reloads for the same
+/// reason.
+pub fn restart() -> ! {
+    use std::os::unix::process::CommandExt;
+    eprintln!("[boot] stalled, restarting");
+    let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let err = std::process::Command::new(&argv[0]).args(&argv[1..]).exec();
+    eprintln!("[boot] exec failed: {err}");
+    std::process::exit(1);
+}
+
 pub fn start_clock() {}
 
 struct MainJob {
@@ -315,6 +332,9 @@ pub fn register(l: &mut Linker<St>) -> anyhow::Result<()> {
     // console
     l.func_wrap("env", "emscripten_console_log", |_c: Caller<'_, St>, p: i32| {
         let s = rstr(&_c, p as u32);
+        if s.contains("join: initialized") || s.contains("joinGameSucceeded") {
+            BOOTED.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         if let Ok(k) = std::env::var("WC_BT_MSG") {
             if s.contains(&k) {
                 let mem = _c.data().mem.clone();
@@ -397,7 +417,12 @@ pub fn register(l: &mut Linker<St>) -> anyhow::Result<()> {
     })?;
 
     // clock / entropy / heap
-    l.func_wrap("env", "emscripten_get_now", || { crate::trace::hit("get_now"); crate::pump_frame(); perf_ms() })?;
+    l.func_wrap("env", "emscripten_get_now", |mut c: Caller<'_, St>| {
+        crate::trace::hit("get_now");
+        crate::pump_frame();
+        crate::imports::mailbox::pump_now(&mut c);
+        perf_ms()
+    })?;
     l.func_wrap("env", "emscripten_date_now", || {
         crate::pump_frame();
         let v = now_ms();

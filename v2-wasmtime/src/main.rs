@@ -552,6 +552,19 @@ fn run() -> Result<()> {
             fibre::shutdown(&mut *store);
             return Err(e.into());
         }
+        if let Ok(k) = std::env::var("WC_KICK") {
+            static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            if N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 50 == 0 {
+                for part in k.split(',') {
+                    if let Ok(a) = u32::from_str_radix(part.trim().trim_start_matches("0x"), 16) {
+                        let mem = store.data().mem.clone();
+                        let w = unsafe { *(mem.data()[a as usize].get() as *const u32) };
+                        unsafe { *(mem.data()[a as usize].get() as *mut u32) = w.wrapping_add(1) };
+                        let _ = mem.atomic_notify(a as u64, u32::MAX);
+                    }
+                }
+            }
+        }
         if let (Some(engine), Some(module)) = (store.data().engine.clone(), store.data().module.clone()) {
             imports::thread::start_late(engine, module, store.data().mem.clone());
         }

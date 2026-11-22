@@ -70,6 +70,9 @@ pub fn watch(secs: u64) {
                 }
             }
         }
+        if !crate::imports::boot::BOOTED.load(Ordering::Relaxed) && ms > 40_000 && ms < 41_000 {
+            crate::imports::boot::restart();
+        }
         if std::env::var_os("WC_HB").is_some() && ticks % 5 == 0 {
             eprintln!("[hb  ] dump at {ms} n={}", crate::fibre::TRACE_T.lock().unwrap().len());
             for (t, c, sp, w) in crate::fibre::TRACE_T.lock().unwrap().iter() {

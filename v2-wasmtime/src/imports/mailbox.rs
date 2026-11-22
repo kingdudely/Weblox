@@ -24,6 +24,9 @@ use wasmtime::{AsContextMut, Caller, Linker};
 use crate::state::St;
 
 static RINGS: Mutex<Option<HashMap<u32, u32>>> = Mutex::new(None);
+/// Bumped for every ring anywhere; a thread can test this without taking the
+/// map lock (which `emscripten_get_now` cannot afford).
+static RINGS_TOTAL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 static WAITERS: Mutex<Option<HashMap<u32, oneshot::Sender<()>>>> = Mutex::new(None);
 
 fn take_ring(target: u32) -> bool {
@@ -39,6 +42,7 @@ fn take_ring(target: u32) -> bool {
 }
 
 fn add_ring(target: u32) -> bool {
+    RINGS_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut g = RINGS.lock().unwrap();
     *g.get_or_insert_with(HashMap::new).entry(target).or_insert(0) += 1;
     let mut w = WAITERS.lock().unwrap();
@@ -84,6 +88,33 @@ pub async fn pump_mailbox<T: AsContextMut<Data = St>>(cx: &mut T) -> bool {
         check(cx).await;
     }
     true
+}
+
+fn pending(target: u32) -> bool {
+    RINGS.lock().unwrap().as_ref().and_then(|m| m.get(&target)).copied().unwrap_or(0) > 0
+}
+
+/// A worker runs guest code for long stretches and never reaches the idle loop,
+/// so its mailbox has to be drained from a point inside that code the way the
+/// page's event loop would.  Called from a frequently used import; only does
+/// work when something is actually queued.
+pub fn pump_now(c: &mut Caller<'_, St>) {
+    thread_local! {
+        static SEEN: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
+    let total = RINGS_TOTAL.load(std::sync::atomic::Ordering::Relaxed);
+    if SEEN.with(|s| s.get()) == total {
+        return;
+    }
+    SEEN.with(|s| s.set(total));
+    if c.data().is_main || c.data().in_drain {
+        return;
+    }
+    let Some(ptr) = c.data().mbx_ptr else { return };
+    if !pending(ptr) {
+        return;
+    }
+    let _ = futures::executor::block_on(pump_mailbox(c));
 }
 
 /// `pump_mailbox` for the main thread only.
@@ -148,6 +179,20 @@ async fn check<T: AsContextMut<Data = St>>(cx: &mut T) {
     else {
         return;
     };
+    if std::env::var_os("WC_MBX").is_some() {
+        let d = cx.as_context().data();
+        let p = if d.is_main { d.main_ptr } else { d.mbx_ptr };
+        if let Some(p) = p {
+            let mem = d.mem.clone();
+            let w = |o: u32| unsafe { *(mem.data()[p as usize + o as usize].get() as *const u32) };
+            let mbx = w(104);
+            let q = |o: u32| if mbx == 0 { 0 } else { unsafe { *(mem.data()[mbx as usize + o as usize].get() as *const u32) } };
+            let (a, b) = (q(44), q(48));
+            if a != b {
+                eprintln!("[mbx ] check {} mbx={mbx:#x} q={a}/{b}", std::thread::current().name().unwrap_or("?"));
+            }
+        }
+    }
     cx.as_context_mut().data_mut().in_drain = true;
     if let Err(e) = f.call(&mut *cx, &[], &mut []) {
         static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
@@ -190,7 +235,11 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
             crate::trace::hit("mbx_notify");
             crate::diag::notify();
             if std::env::var_os("WC_MBX").is_some() {
-                eprintln!("[mbx ] notify {target:#x} from {self_thread:#x}");
+                let mem = c.data().mem.clone();
+                let w = |a: u32, o: u32| unsafe { *(mem.data()[a as usize + o as usize].get() as *const u32) };
+                let mbx = w(target as u32, 104);
+                let q = |o: u32| if mbx == 0 { 0 } else { w(mbx, o) };
+                eprintln!("[mbx ] notify {target:#x} from {self_thread:#x} mbx={mbx:#x} q={}/{}", q(44), q(48));
             }
             add_ring(target as u32);
             // the receiver is parked in `Atomics.waitAsync` on its mailbox
