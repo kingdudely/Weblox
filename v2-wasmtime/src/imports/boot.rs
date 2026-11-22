@@ -234,7 +234,22 @@ pub fn asm_invoke(c: &mut wasmtime::Store<St>, key: u32, vals: &[f64]) -> f64 {
         }
         9099902 => 0.0,                            // leave
         9111863 => {                               // crash report
-            eprintln!("[asm] CRASH {} {}", rstr_ctx(&*c, a(0)), rstr_ctx(&*c, a(1)));
+            eprintln!("[asm] CRASH {:?} {:?} args={:?}", rstr_ctx(&*c, a(0)), rstr_ctx(&*c, a(1)), (0..8).map(a).collect::<Vec<u32>>());
+            for i in 1..6 {
+                let v = a(i);
+                if v > 0x1000 {
+                    let d = c.data().mem.data();
+                    let mut out = Vec::new();
+                    let mut k = v as usize;
+                    while k < d.len() && out.len() < 160 {
+                        let b = unsafe { *d[k].get() };
+                        if b == 0 { break }
+                        if (0x20..0x7f).contains(&b) { out.push(b) } else { out.push(b'.') }
+                        k += 1;
+                    }
+                    if out.len() > 3 { eprintln!("[asm]   arg{i}->{}: {}", v, String::from_utf8_lossy(&out)); }
+                }
+            }
             0.0
         }
         9119019 => 0.0,                            // saveIxpSettings
@@ -621,6 +636,18 @@ pub fn register(l: &mut Linker<St>) -> anyhow::Result<()> {
                 ti.call_async(&mut *st, (ptr, 1, 1, 1, 262144, 0)).await?;
                 let tls = inst.get_typed_func::<(), (i32,)>(&mut *st, "_emscripten_tls_init")?;
                 tls.call_async(&mut *st, ()).await?;
+                // with TLS live, the module knows its own pthread: arm the main
+                // mailbox exactly as the glue's `Er` does
+                if let Ok(ps) = inst.get_typed_func::<(), (i32,)>(&mut *st, "pthread_self") {
+                    if let Ok((me,)) = ps.call_async(&mut *st, ()).await {
+                        if me != 0 {
+                            let me = me as u32;
+                            st.data_mut().main_ptr = Some(me);
+                            unsafe { *(st.data().mem.data()[me as usize + 112].get() as *mut u32) = 1 }
+                            eprintln!("[mbx ] main pthread {me:#x} (armed)");
+                        }
+                    }
+                }
                 eprintln!("[wasm] main thread init, tls done");
                 Ok(())
             });
