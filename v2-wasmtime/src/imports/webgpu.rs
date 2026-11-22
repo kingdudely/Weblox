@@ -442,6 +442,7 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
     f!("wgpuQueueWriteTexture", (q: i32, dst: i32, data: i32, len: i32, layout: i32, extent: i32), (), |st: &mut wasmtime::Store<St>, m: M<'_>| {
         let _ = q;
         let bytes = raw(st, data as u32, len.max(0) as usize);
+        if std::env::var_os("WC_WGPU").is_some() { eprintln!("[wgt ] len={len} tex={} mip={} ext={}x{}x{} bpr={} rows={}", m.u32(dst), m.u32(dst + 4), m.u32(extent), m.u32(extent + 4), m.u32(extent + 8), m.u32(layout + 8), m.u32(layout + 12)); }
         let tex = m.u32(dst);
         let mip = m.u32(dst + 4);
         let origin = wgpu::Origin3d { x: m.u32(dst + 8), y: m.u32(dst + 12), z: m.u32(dst + 16) };
@@ -1036,6 +1037,8 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
     })?;
 
     f!("presentBrowserFrame", (d: i32, tex: i32, cmd: i32), (), |_st: &mut wasmtime::Store<St>, _m: M<'_>| {
+        static ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+        if ONCE.swap(false, std::sync::atomic::Ordering::Relaxed) { eprintln!("[wgpu] first present"); }
         let _ = d;
         let Some(Obj::Cmd(cmd)) = take(cmd as u32) else { return };
         let Some(src) = with(|g| g.objs.get(&(tex as u32)).cloned_tex()) else { return };
