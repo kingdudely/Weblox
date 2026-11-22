@@ -33,6 +33,9 @@ if (!cookie) {
   process.exit(1);
 }
 
+const UA =
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36";
+app.userAgentFallback = UA;
 app.commandLine.appendSwitch("enable-unsafe-webgpu");
 app.commandLine.appendSwitch("enable-features", "Vulkan");
 app.commandLine.appendSwitch("use-angle", "vulkan");
@@ -98,7 +101,8 @@ app.whenReady().then(async () => {
   const returnUrl = `https://www.roblox.com/games/${place}`;
   win.loadURL(
     `https://play.roblox.com/games/start?placeId=${place}` +
-      `&returnUrl=${encodeURIComponent(returnUrl)}`,
+      `&returnUrl=${encodeURIComponent(returnUrl)}` +
+      (process.env.WC_RENDERER ? `&renderer=${process.env.WC_RENDERER}` : ""),
   );
   } catch (e) {
     console.error("startup failed:", e);
