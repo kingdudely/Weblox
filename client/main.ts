@@ -40,6 +40,33 @@ const syncSurface = () => {
 syncSurface();
 win.addEventListener("resize", syncSurface);
 
+// Optional self-capture of the app's own rendered canvas, written to a local
+// file. System/Wayland screenshot APIs are unavailable in this environment.
+const dumpDest = Deno.env.get("WC_DUMP_FILE") ?? "/tmp/opencode/appdump.png";
+const dumpFrame = Deno.env.get("WC_DUMP") === "1"
+  ? async (tex: any, device: any, w: number, h: number) => {
+    try {
+      const G = globalThis as any;
+      const bpr = Math.ceil((w * 4) / 256) * 256;
+      const buf = device.createBuffer({ size: bpr * h, usage: G.GPUBufferUsage.COPY_DST | G.GPUBufferUsage.MAP_READ });
+      const enc = device.createCommandEncoder();
+      enc.copyTextureToBuffer({ texture: tex }, { buffer: buf, bytesPerRow: bpr, rowsPerImage: h }, { width: w, height: h });
+      device.queue.submit([enc.finish()]);
+      await buf.mapAsync(G.GPUMapMode.READ);
+      const raw = new Uint8Array(buf.getMappedRange()).slice();
+      buf.unmap();
+      const header = new TextEncoder().encode(`${w}x${h}\n`);
+      const out = new Uint8Array(header.byteLength + raw.byteLength);
+      out.set(header); out.set(raw, header.byteLength);
+      await Deno.writeFile(dumpDest, out);
+      console.error("[dump] wrote", dumpDest, w, h, bpr, raw.byteLength);
+    } catch (e) {
+      console.error("[dump] failed", String(e));
+    }
+  }
+  : null;
+if (dumpFrame) setTimeout(() => { (host as any).capture = dumpFrame; }, Number(Deno.env.get("WC_DUMP_MS") ?? 20000));
+
 // The watchdog lives on its own thread: the engine can block the main one.
 const watchdog = new Worker(new URL("./page/watchdog.ts", import.meta.url), {
   type: "module",

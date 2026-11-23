@@ -31,7 +31,11 @@ async function source(url: string): Promise<string> {
   for (const u of urls) {
     const path = canonical(new URL(u, stubUrl).href);
     const hit = syncSource(path);
-    if (hit === null) throw new Error(`importScripts: ${u} is not mirrored`);
+    if (hit === null) {
+      console.error("[worker] not mirrored:", path);
+      (globalThis as any).postMessage?.({ __error: `importScripts: ${path} is not mirrored` });
+      throw new Error(`importScripts: ${u} is not mirrored`);
+    }
     (0, eval)(`${hit}\n//# sourceURL=${path}`);
   }
 };
@@ -41,6 +45,12 @@ function syncSource(url: string): string | null {
   try { return Deno.readTextFileSync(mirrorFile(url)); } catch { return null; }
 }
 
-const stub = await source(stubUrl);
-(0, eval)(`${stub}\n//# sourceURL=${stubUrl}`);
-(globalThis as any).postMessage({ __ready: 1 });
+try {
+  const stub = await source(stubUrl);
+  (0, eval)(`${stub}\n//# sourceURL=${stubUrl}`);
+  (globalThis as any).postMessage({ __ready: 1 });
+} catch (e) {
+  console.error("[worker] boot failed", e);
+  (globalThis as any).postMessage?.({ __error: String(e) });
+  throw e;
+}

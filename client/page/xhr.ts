@@ -29,6 +29,14 @@ export function patchJoin(raw) {
   let js;
   try { js = isStr ? JSON.parse(res.joinScript) : res.joinScript; } catch { return null; }
   if (!js || typeof js !== "object" || js.gameFqdn) return null;
+  if (Deno.env.get("WC_JOIN_DEBUG") === "1") {
+    console.error("[join ] keys", Object.keys(js).join(","),
+      "status", res.status,
+      "token", typeof js.NetStackTokenValue, String(js.NetStackTokenValue ?? "").length,
+      "port", js.NetStackPort,
+      "machine", js.MachineAddress,
+      "udmux", JSON.stringify(js.UdmuxEndpoints));
+  }
   try {
     const vip = ipv4Parts(js.UdmuxEndpoints?.[0]?.Address);
     if (vip[3] % 2 !== 1 || vip[3] === 255) return null;
@@ -77,7 +85,7 @@ export class XHR {
     } catch { this._join = false; }
   }
   setRequestHeader(k, v) {
-    if (this._join && String(k).toLowerCase() === "rbx-user-agent") v = "Roblox/Darwin";
+    if (this._join && String(k).toLowerCase() === "rbx-user-agent") v = Deno.env.get("WC_RBX_UA") ?? "Roblox/WinInet";
     this._h.set(k, v);
   }
   getResponseHeader(k) { return this._k?.get(k) ?? null; }
@@ -101,7 +109,7 @@ export class XHR {
   }
   send(body) {
     const ctrl = (this._ctrl = new AbortController());
-    if (this._join && !this._h.has("rbx-user-agent")) this._h.set("rbx-user-agent", "Roblox/Darwin");
+    if (this._join && !this._h.has("rbx-user-agent")) this._h.set("rbx-user-agent", Deno.env.get("WC_RBX_UA") ?? "Roblox/WinInet");
     patchHeaders(this._url, this._h);
     console.error("[xhr ]", this._method, this._url, [...this._h.keys()].join(","));
     const timer = this.timeout ? setTimeout(() => { ctrl.abort(); this.ontimeout?.({}); }, this.timeout) : null;

@@ -218,6 +218,7 @@ export class Canvas extends El {
         configure: (cfg) => {
           this.cfg = cfg;
           const d: any = cfg?.device;
+          if (this.host) (this.host as any).gpuDevice = d;
           if (d && !watched.has(d)) {
             watched.add(d);
             d.lost?.then((info: any) => {
@@ -238,6 +239,13 @@ export class Canvas extends El {
           }
           this.host?.frame?.();
           if (Deno.env.get("WC_SIZES") === "1") log("texture", tex.width, tex.height, "surface", surface.width, surface.height, "canvas", this.width, this.height, "client", this.clientWidth, this.clientHeight);
+          const host: any = this.host;
+          if (host?.capture) {
+            const cap = host.capture, d = this.cfg?.device, cw = tex.width, ch = tex.height;
+            host.capture = null;
+            // Runs after the glue submits its copy, before present clears it.
+            queueMicrotask(() => { try { cap(tex, d, cw, ch); } catch (e) { log("capture failed", String(e)); } });
+          }
           queueMicrotask(() => surface.present());
           return tex;
         },
@@ -565,7 +573,7 @@ export function patchHeaders(url: string, h: Headers) {
   if (!h.has("user-agent")) h.set("user-agent", UA);
   h.set("origin", ORIGIN);
   h.set("referer", PAGE + (globalThis as any).location.search);
-  h.set("rbx-user-agent", "Roblox/Darwin");
+  h.set("rbx-user-agent", Deno.env.get("WC_RBX_UA") ?? "Roblox/WinInet");
 }
 
 /**
@@ -587,6 +595,7 @@ function patchEngineWorkers(kind: "main" | "worker") {
       u.hash = encodeURIComponent(String(url));
       this._w = new DenoWorker(u, { type: "module", name: opts.name, deno: { permissions: "inherit" } });
       this._w.onerror = (e: any) => {
+        console.error("[worker] error", e?.message ?? String(e));
         try { e?.preventDefault?.(); } catch {}
         this.onerror?.(e);
         return true;
@@ -599,6 +608,7 @@ function patchEngineWorkers(kind: "main" | "worker") {
           return;
         }
         if (e.data?.__log) { log("worker:", e.data.__log); return; }
+        if (e.data?.__error) { console.error("[worker] failed:", e.data.__error); return; }
         this.onmessage?.(e);
       };
     }
