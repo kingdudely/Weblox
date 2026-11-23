@@ -37,13 +37,14 @@ const restart = (why: string) => {
 
 const arm = (ms = progressed ? runTimeout : timeout) => {
   clearTimeout(timer);
+  if (timeout <= 0) return; // WC_WATCHDOG_MS=0 disables all restarts
   timer = setTimeout(() => restart(`no frame for ${ms} ms`), ms);
 };
 arm();
 
 (globalThis as any).onmessage = (e: any) => {
   const d = e.data;
-  if (d?.lost) return restart("GPU device lost");
+  if (d?.lost) return timeout > 0 ? restart("GPU device lost") : undefined;
   if (d?.progress) {
     progressed = true;
     tries = 0;

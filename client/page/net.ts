@@ -130,8 +130,14 @@ export function installFetch() {
   const real = globalThis.fetch;
   const pin = Deno.env.get("WC_BUILD_VERSION") ?? "0.748.0.7481526";
   const upload = () => (Deno.env.get("WC_ENGINE") ?? "").split("/webclient/")[1]?.replace(/-RobloxWebClient$/, "") ?? "";
+  const netDebug = Deno.env.get("WC_NET_DEBUG") === "1";
   (globalThis as any).fetch = async (input: any, init: any = {}) => {
     let url = canonical(typeof input === "string" ? input : input.url);
+    const trace = netDebug ? `${Math.round(performance.now())}ms` : "";
+    if (netDebug) console.error("[net ] ->", trace, (init.method ?? "GET"), url.slice(0, 120));
+    const done = (status: any = "") => {
+      if (netDebug) console.error("[net ] <-", `${Math.round(performance.now())}ms`, status, url.slice(0, 80));
+    };
     // The CDN rejects Deno's UA outright.
     if (/^https:\/\/([a-z0-9-]+\.)*(roblox\.com|rbxcdn\.com|robloxlabs\.com)\//.test(url)) {
       const h = new Headers(init.headers ?? {});
@@ -141,12 +147,14 @@ export function installFetch() {
     // The launcher asks the settings service which build to run; answer with
     // the mirrored one so both halves agree.
     if (/clientsettings\.roblox\.com\/v2\/client-version\/WebClientApp/.test(url)) {
+      done("local");
       return Response.json({ version: pin, clientVersionUpload: upload(), bootstrapperVersion: "" });
     }
     if (/\/v2\/settings\/application\//.test(url) && Deno.env.get("WC_GLES") === "1") {
       const r = await real(url, init);
       const j = await r.json();
       (j.applicationSettings ??= {}).FFlagWasmPreferWebGPU = "False";
+      done("gles");
       return Response.json(j);
     }
     if (/^https:\/\/(setup\.rbxcdn\.com|play\.roblox\.com)\//.test(url)) {
@@ -155,9 +163,12 @@ export function installFetch() {
         if (!r.ok) throw new Error(`${url}: HTTP ${r.status}`);
         return new Uint8Array(await r.arrayBuffer());
       });
+      done("mirror");
       return new Response(body as any, { headers: { "content-type": TEXT.test(url) ? "text/javascript" : "application/octet-stream" } });
     }
-    return real(url, init);
+    const r = await real(url, init);
+    done(r.status);
+    return r;
   };
 }
 

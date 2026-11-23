@@ -209,6 +209,7 @@ export class Canvas extends El {
       const surface = this.host.surface;
       const raw = (this.raw = surface.getContext("webgpu"));
       const watched = new WeakSet<any>();
+      let pendingPresent = false;
       // The glue copies into `getCurrentTexture()` and never presents; the
       // copy is submitted before the current task ends, so a microtask is a
       // safe point to hand the frame to the compositor.
@@ -246,7 +247,13 @@ export class Canvas extends El {
             // Runs after the glue submits its copy, before present clears it.
             queueMicrotask(() => { try { cap(tex, d, cw, ch); } catch (e) { log("capture failed", String(e)); } });
           }
-          queueMicrotask(() => surface.present());
+          if (!pendingPresent) {
+            pendingPresent = true;
+            queueMicrotask(() => {
+              pendingPresent = false;
+              try { surface.present(); } catch { /* already presented this frame */ }
+            });
+          }
           return tex;
         },
       };
@@ -280,6 +287,32 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
   // messages through it), so leave addEventListener alone and dispatch events.
   if (!worker) (globalThis as any).window = globalThis;
   (globalThis as any).self = globalThis;
+  // Log the engine -> page lifecycle callbacks. If any of these never fire,
+  // the loading screen stays up even though the network join succeeded.
+  if (!worker) {
+    let hook: any, joined: any, status: any;
+    const wrap = (name: string, store: (f: any) => void, get: () => any) =>
+      Object.defineProperty(globalThis, name, {
+        configurable: true,
+        get: () => get(),
+        set: (f: any) => {
+          console.error("[env] hook installed:", name);
+          store((...a: any[]) => {
+            console.error("[env] hook CALLED:", name, JSON.stringify(a)?.slice(0, 300));
+            if (name === "__onEngineLoadingStatus" && Deno.env.get("WC_FORCE_DISMISS") !== "0" &&
+                /Loading experience/.test(JSON.stringify(a))) {
+              setTimeout(() => (globalThis as any).__onDefaultLoadingScreenRemoved?.({}), 3000);
+            }
+            return f(...a);
+          });
+        },
+      });
+    wrap("__onDefaultLoadingScreenRemoved", (f) => (hook = f), () => hook);
+    wrap("__onExperienceJoined", (f) => (joined = f), () => joined);
+    wrap("__onEngineLoadingStatus", (f) => (status = f), () => status);
+    // WasmPlayer.js does not install this one, so provide a listener.
+    (globalThis as any).__onExperienceJoined = () => {};
+  }
   // The glue gates its JSPI (fiber) machinery on this interface existing.
   if (!(globalThis as any).WorkerGlobalScope) (globalThis as any).WorkerGlobalScope = class WorkerGlobalScope {};
 
@@ -573,7 +606,7 @@ export function patchHeaders(url: string, h: Headers) {
   if (!h.has("user-agent")) h.set("user-agent", UA);
   h.set("origin", ORIGIN);
   h.set("referer", PAGE + (globalThis as any).location.search);
-  h.set("rbx-user-agent", Deno.env.get("WC_RBX_UA") ?? "Roblox/WinInet");
+  h.set("rbx-user-agent", Deno.env.get("WC_RBX_UA") ?? "Roblox/Darwin");
 }
 
 /**
@@ -602,6 +635,7 @@ function patchEngineWorkers(kind: "main" | "worker") {
       };
       this._w.onmessage = (e: any) => {
         if (e.data?.__ready) {
+          if (Deno.env.get("WC_NET_DEBUG") === "1") console.error("[worker] __ready received");
           this._ready = true;
           for (const [m, t] of this._q) this._w.postMessage(m, t);
           this._q.length = 0;

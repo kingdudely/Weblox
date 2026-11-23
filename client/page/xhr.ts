@@ -28,14 +28,20 @@ export function patchJoin(raw) {
   const isStr = typeof res.joinScript === "string";
   let js;
   try { js = isStr ? JSON.parse(res.joinScript) : res.joinScript; } catch { return null; }
-  if (!js || typeof js !== "object" || js.gameFqdn) return null;
+  // The server sends a native VIP in `gameFqdn`; the browser must connect to
+  // the paired browser VIP instead, so always rewrite it (even when present).
+  if (!js || typeof js !== "object") return null;
   if (Deno.env.get("WC_JOIN_DEBUG") === "1") {
     console.error("[join ] keys", Object.keys(js).join(","),
       "status", res.status,
       "token", typeof js.NetStackTokenValue, String(js.NetStackTokenValue ?? "").length,
       "port", js.NetStackPort,
       "machine", js.MachineAddress,
-      "udmux", JSON.stringify(js.UdmuxEndpoints));
+      "udmux", JSON.stringify(js.UdmuxEndpoints),
+      "rawGameFqdn", JSON.stringify(js.gameFqdn),
+      "TokenValue", typeof js.TokenValue, String(js.TokenValue ?? "").length,
+      "ServerPort", js.ServerPort, "ClientPort", js.ClientPort,
+      "NetStackConfig", JSON.stringify(js.NetStackConfig)?.slice(0, 180));
   }
   try {
     const vip = ipv4Parts(js.UdmuxEndpoints?.[0]?.Address);
@@ -48,8 +54,22 @@ export function patchJoin(raw) {
     js.gameFqdn = `${tokenHex(js.NetStackTokenValue)}-${ipv4Hex(machine)}-` +
       `${port.toString(16).padStart(4, "0")}.${ipv4Hex(browserVip)}.${DOMAIN}`;
     res.joinScript = isStr ? JSON.stringify(js) : js;
+    if (Deno.env.get("WC_JOIN_DEBUG") === "1") console.error("[join ] set gameFqdn", js.gameFqdn);
     return JSON.stringify(res);
   } catch { return null; }
+}
+
+/** Roblox occasionally returns a join response with an empty network token;
+ *  retrying the same request gets a usable one. Detect that before delivering
+ *  the response to the engine, which would otherwise fail with no transport. */
+function joinTokenMissing(buf: Uint8Array) {
+  try {
+    const res = JSON.parse(new TextDecoder().decode(buf));
+    const js = typeof res.joinScript === "string" ? JSON.parse(res.joinScript) : res.joinScript;
+    if (!js || typeof js !== "object") return false;
+    const t = js.NetStackTokenValue;
+    return typeof t === "string" ? t.length < 16 : true;
+  } catch { return false; }
 }
 
 export class XHR {
@@ -85,7 +105,7 @@ export class XHR {
     } catch { this._join = false; }
   }
   setRequestHeader(k, v) {
-    if (this._join && String(k).toLowerCase() === "rbx-user-agent") v = Deno.env.get("WC_RBX_UA") ?? "Roblox/WinInet";
+    if (this._join && String(k).toLowerCase() === "rbx-user-agent") v = Deno.env.get("WC_RBX_UA") ?? "Roblox/Darwin";
     this._h.set(k, v);
   }
   getResponseHeader(k) { return this._k?.get(k) ?? null; }
@@ -109,36 +129,54 @@ export class XHR {
   }
   send(body) {
     const ctrl = (this._ctrl = new AbortController());
-    if (this._join && !this._h.has("rbx-user-agent")) this._h.set("rbx-user-agent", Deno.env.get("WC_RBX_UA") ?? "Roblox/WinInet");
+    // One consistent native identity for the join: a Chrome User-Agent paired
+    // with a Roblox rbx-user-agent is a contradiction, and native clients
+    // (Boblox/Rum) mint the session with a single Android identity.
+    if (this._join) {
+      const identity = Deno.env.get("WC_JOIN_UA") ?? "Roblox/Android/2.743.1136";
+      this._h.set("user-agent", identity);
+      this._h.set("rbx-user-agent", identity);
+    }
     patchHeaders(this._url, this._h);
     console.error("[xhr ]", this._method, this._url, [...this._h.keys()].join(","));
     const timer = this.timeout ? setTimeout(() => { ctrl.abort(); this.ontimeout?.({}); }, this.timeout) : null;
     this.readyState = 2;
     this.onreadystatechange?.({});
-    fetch(this._url, { method: this._method, headers: this._h, body, signal: ctrl.signal, redirect: "follow" })
-      .then(async (r) => {
-        this._k = r.headers;
-        this.status = r.status;
-        if (!r.ok) console.error("[xhr ]", this._method, this._url, "->", r.status);
-        this.statusText = r.statusText;
-        this.responseURL = r.url;
-        const total = Number(r.headers.get("content-length")) || 0;
-        this.readyState = 3;
-        if (r.body) {
-          let loaded = 0;
-          for await (const c of r.body) {
-            this._chunks.push(c);
-            loaded += c.length;
-            this._setResponse(false);
-            this.onprogress?.({ loaded, total, lengthComputable: !!total });
+    const attempt = (n: number) =>
+      fetch(this._url, { method: this._method, headers: this._h, body, signal: ctrl.signal, redirect: "follow" })
+        .then(async (r) => {
+          this._k = r.headers;
+          this.status = r.status;
+          if (!r.ok) console.error("[xhr ]", this._method, this._url, "->", r.status);
+          this.statusText = r.statusText;
+          this.responseURL = r.url;
+          const total = Number(r.headers.get("content-length")) || 0;
+          this.readyState = 3;
+          if (r.body) {
+            let loaded = 0;
+            for await (const c of r.body) {
+              this._chunks.push(c);
+              loaded += c.length;
+              this._setResponse(false);
+              this.onprogress?.({ loaded, total, lengthComputable: !!total });
+            }
           }
-        }
-        this._setResponse(true);
-        this.readyState = 4;
-        this.onreadystatechange?.({});
-        this.onload?.({});
-        clearTimeout(timer);
-      })
+          const bytes = this._chunks.reduce((a, c) => a + c.length, 0);
+          const buf = new Uint8Array(bytes);
+          let at = 0;
+          for (const c of this._chunks) { buf.set(c, at); at += c.length; }
+          if (this._join && r.ok && joinTokenMissing(buf) && n < 3) {
+            console.error("[xhr ] retrying gamejoin: empty network token (attempt", n + 1, ")");
+            this._chunks = [];
+            return attempt(n + 1);
+          }
+          this._setResponse(true);
+          this.readyState = 4;
+          this.onreadystatechange?.({});
+          this.onload?.({});
+          clearTimeout(timer);
+        });
+    attempt(1)
       .catch((e) => {
         clearTimeout(timer);
         if (e.name === "AbortError") { this.onabort?.({}); return; }
