@@ -13,3 +13,9 @@ v3-wasm2c/data/cache/
 client/client.*.bak/
 client/opscheck*/
 client/*.pcap
+
+# Generated engine artifacts in secondary harnesses (regenerate locally; keep source)
+v2-wasmtime/data/cache/
+v2-wasmtime/data/content/
+v3-wasm2c/gen/
+v3-wasm2c/sliced.c
