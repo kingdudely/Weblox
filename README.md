@@ -4,16 +4,24 @@ Copyright notice, and the three host attempts
 
 Run Roblox's web client on a native host, eventually for many accounts.
 
-Three attempts live here, in the order they were made:
+Four attempts live here:
 
 | dir | what it is | state |
 | --- | --- | --- |
-| `electron/` | Chromium window pointed at `play.roblox.com`, with the join-patch extension | **works** — joins, renders, input, leave |
+| `client/` | Deno raw backend (no DOM, WebGPU + WebTransport), wasm supplies the whole protocol | **primary product** — HTTP join works, but game server never opens data streams (see [investigation](client/INVESTIGATION.md)); low-RAM goal |
+| `electron/` | Chromium window pointed at `play.roblox.com`, with the join-patch extension | **works** — joins, renders, input, leave. Reference implementation: it proves the engine/protocol itself is fine |
 | `v2-wasmtime/` | Rust host embedding the real `WebClient.wasm` under wasmtime | parked |
 | `v3-wasm2c/` | wasm2c translation of the same module into C | parked experiment |
 
-`electron` is the current one and the reference implementation: anything the
-other hosts do differently is a host bug.
+**Read first:** [client/README.md](client/README.md) for how to run/build the
+primary client, and [client/INVESTIGATION.md](client/INVESTIGATION.md) for the
+full byte-level evidence on why it stalls and what has been ruled out. Starting
+the Deno join from scratch without reading those will repeat already-failed
+experiments.
+
+Large generated artifacts (cached engine files, wasmtime compile cache, wasm2c
+translation, captures) are **not** in git. See [REGENERATING.md](REGENERATING.md)
+for how to recreate each one.
 
 ## Running the Electron version
 
@@ -43,14 +51,16 @@ non-browser host.
 
 Two facts that cost a lot to learn and are worth keeping:
 
-- Deno's own WebTransport client is not interoperable with Roblox's server: it
-  never sends `sec-webtransport-http3-draft`, so the server answers with
-  draft-02 stream framing, which Deno's reader parses as draft-07 and drops.
-  A quinn-based client (`@moq/web-transport`) works.
-- The public join gate is passed with `rbx-user-agent: Roblox/Darwin` plus
-  `origin`/`referer: https://play.roblox.com`, and the browser host name is
-  derived by incrementing the last octet of the native UDMUX address
-  (`.33` → `.34`).
+- The public join gate is passed with `rbx-user-agent: Roblox/Darwin` (the
+  browser UA stays the Chrome UA). `Roblox/Web` returns `status 12` for public
+  places. The browser host name (`gameFqdn`) is derived by incrementing the last
+  octet of the native UDMUX address (`.33` → `.34`) when the server returns
+  `gameFqdn: null`. See [client/README.md](client/README.md).
+- The WebTransport/QUIC discrepancy is **not** just the missing `origin` header
+  or a single npm library — four stacks (Deno/quinn, wtransport, libquiche,
+  rwebtransport with BoringSSL) fail identically, and all observable
+  protocol bytes match Chrome. See [client/INVESTIGATION.md](client/INVESTIGATION.md)
+  before forming a new transport hypothesis.
 
 ## Licensing
 

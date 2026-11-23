@@ -48,6 +48,10 @@ deno desktop -A --include page --include mirror --include page/watchdog.ts main.
 `Bundle client` appears. The binary lands at `client/client/`. Builds take
 ~45 s. Use `/tmp/opencode/fasttest.sh` for short A/B runs.
 
+Large generated artifacts (`mirror/`, the v2 wasmtime cache, the v3 wasm2c
+translation, captures) are not in git; see [REGENERATING.md](../REGENERATING.md)
+for how to recreate each.
+
 `mirror/` is gitignored and must stay that way — it holds cached Roblox files.
 The build version and page asset hash are resolved from live endpoints, so a new
 Roblox build needs `rm -rf mirror` (or `WC_REFRESH=1`). Current engine:

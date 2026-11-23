@@ -60,14 +60,37 @@ channels for Chrome.
 
 ## Remaining hypotheses / next experiments
 
-1. **Wasm import bisection** (user's suggestion). The wasm imports 342 functions
-   (`env` + `wasi_snapshot_preview1`). Stub groups of non-WebTransport imports
-   and see if the join changes. Prime suspects: `read_host_info_int/string`
-   (f.hostInfo — OS/GPU/browser values sent to gamejoin), `js_fetch_file`
-   (asset/DataModel loading), `rbx_opfs_*`, `js_web_client_ms_since_navigation`,
-   `js_web_client_page_visible`, `random_get`. The import object is built in
-   `WebClient.js` as `{env: We, wasi_snapshot_preview1: We}`; the names are
-   listed in `vn()` around `presentBrowserFrame:Ya,proc_exit:Sr`.
+1. **Wasm import bisection** (user's suggestion — IN PROGRESS, inconclusive).
+   The wasm imports 342 functions (`env` + `wasi_snapshot_preview1`). Stub
+   groups of non-WebTransport imports and see if the join changes. Prime
+   suspects: `read_host_info_int/string` (f.hostInfo — OS/GPU/browser values
+   sent to gamejoin), `js_fetch_file` (asset/DataModel loading), `rbx_opfs_*`,
+   `js_web_client_ms_since_navigation`, `js_web_client_page_visible`,
+   `random_get`. The import object is built in `WebClient.js` as
+   `{env: We, wasi_snapshot_preview1: We}`; the names are listed in `vn()`
+   around `presentBrowserFrame:Ya,proc_exit:Sr`.
+
+   A hook was added: `env.ts` reads `WC_STUB_IMPORTS` (a JSON array of import
+   names) and sets `globalThis.__STUB_IMPORTS`; the **mirror** copy of
+   `WebClient.js` (gitignored, regenerated from the CDN) must also carry this
+   snippet inside `vn()`, right before `return e`:
+
+   ```js
+   if (globalThis.__STUB_IMPORTS) {
+     for (const k of globalThis.__STUB_IMPORTS) {
+       if (k in e.env) e.env[k] = function(){ return 0 };
+       if (k in e.wasi_snapshot_preview1) e.wasi_snapshot_preview1[k] = function(){ return 0 };
+     }
+     console.error("[stub] imports", JSON.stringify(globalThis.__STUB_IMPORTS));
+   }
+   ```
+
+   Re-apply that patch to `client/mirror/files/WebClient.js` after any mirror
+   refresh, then rebuild. First test stubbing
+   `read_host_info_int/read_host_info_string/js_web_client_page_visible/
+   js_web_client_ms_since_navigation` did **not** reach WebTransport (early
+   init stalled at `[pthread] thread #1 created`), so it neither confirms nor
+   rules out the hypothesis — retry with a smaller group.
 2. **Decompile the wasm's join-config path** to find which field decides to open
    channels (no logging flag exists in the 85 wasm exports; no logging FFlag
    string exists in the binary).

@@ -283,6 +283,10 @@ export interface Page {
  */
 export function install(kind: "main" | "worker", host?: Host, opts: { place?: number; cookie?: string; renderer?: string } = {}): Page {
   const worker = kind === "worker";
+  const stubImports = Deno.env.get("WC_STUB_IMPORTS");
+  if (stubImports) {
+    try { (globalThis as any).__STUB_IMPORTS = JSON.parse(stubImports); } catch {}
+  }
   (globalThis as any).__wcRnaLog = Deno.env.get("WC_RNA_LOG") === "1";
   (globalThis as any).__wcRnaDump = Deno.env.get("WC_RNA_DUMP") === "1";
   (globalThis as any).__wcProgress = (m: string) => host?.progress?.(m);
