@@ -4,8 +4,15 @@
 
 The engine reaches `NetworkClient:Create` → `Connection accepted` → `serverId`
 → `Replicator created`, then never logs `Time taken to initialize schema` or
-`Assigned peer id`. The GUI stays on "Joining server". Chrome with the same
-engine/account/place gets schema in ~40-100 ms and finishes loading.
+`Assigned peer id`. The GUI stays on "Joining server", then eventually shows Roblox's "lost
+connection due to an unknown error" screen (confirmed by the user in the native
+window). Chrome with the same engine/account/place gets schema in ~40-100 ms and
+finishes loading.
+
+A separate input bug was fixed alongside this: pointer events were delivered
+only to the canvas, so buttons on that in-engine screen (retry/leave) could not
+be clicked. They now bubble through `body` → `document` → `window` as they do in
+a browser. This does not change the join outcome.
 
 ## Definitive finding
 

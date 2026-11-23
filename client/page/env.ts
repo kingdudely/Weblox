@@ -722,9 +722,20 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
         if (t === "mouseup" || t === "pointerup") buttons &= ~bit;
         if (t === "mouseleave") buttons = 0;
         const held = Number.isInteger(e.buttons) ? e.buttons : buttons;
-        const c = cloneEvent(e, { movementX: dx, movementY: dy, buttons: held });
+        const c = cloneEvent(e, { movementX: dx, movementY: dy, buttons: held, target: canvas });
         trace(t, c);
         canvas.dispatchEvent(c);
+        // In a browser a click on the canvas bubbles through body -> document
+        // -> window. Roblox's UI (including the post-join retry/leave buttons)
+        // listens on document/window in places, so deliver the same event up
+        // that chain. Only the canvas originally received it, which made those
+        // buttons look dead.
+        if (t !== "mousemove" && t !== "pointermove" && t !== "mouseleave") {
+          for (const [node, label] of [[doc.body, "body"], [doc, "document"], [globalThis, "window"]] as [EventTarget, string][]) {
+            const b = cloneEvent(e, { movementX: dx, movementY: dy, buttons: held, target: canvas, currentTarget: label });
+            node.dispatchEvent(b);
+          }
+        }
       });
     }
     host.on("resize", (e) => {
