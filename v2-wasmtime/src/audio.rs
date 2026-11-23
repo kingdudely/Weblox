@@ -38,7 +38,12 @@ pub fn sample_rate() -> f64 {
     RATE as f64
 }
 
+pub fn enabled() -> bool {
+    std::env::var_os("WC_AUDIO").is_some()
+}
+
 pub fn init() -> f64 {
+    if !enabled() { return RATE as f64 }
     ON.store(true, Ordering::Relaxed);
     with(|o| o.node = o.node.take());
     RATE as f64
@@ -53,6 +58,7 @@ pub fn create_processor(frames: usize) {
 }
 
 pub fn connect() {
+    if !enabled() { return }
     ON.store(true, Ordering::Relaxed);
     let (frames, ch) = with(|o| {
         o.running = true;
@@ -147,7 +153,7 @@ pub fn copy(st: &wasmtime::Store<St>, p: u32, offset: u32, frames: u32, channels
 
 /// How many frames to mix now, if the device is pulling.
 pub fn want() -> Option<u32> {
-    if !ON.load(Ordering::Relaxed) { return None }
+    if !enabled() || !ON.load(Ordering::Relaxed) { return None }
     with(|o| {
         let (frames, ch) = o.node?;
         if !o.running { return None }

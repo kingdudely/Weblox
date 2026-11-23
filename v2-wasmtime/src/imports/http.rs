@@ -371,14 +371,18 @@ fn patch_join(body: &[u8]) -> Result<Vec<u8>, String> {
         return Err(format!("port {port}"));
     }
     let hex = |a: [u8; 4]| a.iter().map(|b| format!("{b:02x}")).collect::<String>();
-    let host = format!(
-        "{}-{}-{:04x}.{}.qdmux.roblox.com",
-        token_hex(obj.get("NetStackTokenValue").and_then(|t| t.as_str()).ok_or("no token")?)
-            .ok_or("bad token")?,
-        hex(machine),
-        port,
-        hex(native)
-    );
+    let host = if std::env::var_os("WC_JOINIP").is_some() {
+        format!("{}.{}.{}.{}", native[0], native[1], native[2], native[3])
+    } else {
+        format!(
+            "{}-{}-{:04x}.{}.qdmux.roblox.com",
+            token_hex(obj.get("NetStackTokenValue").and_then(|t| t.as_str()).ok_or("no token")?)
+                .ok_or("bad token")?,
+            hex(machine),
+            port,
+            hex(native)
+        )
+    };
     eprintln!("[join] route {host}");
     obj["gameFqdn"] = serde_json::Value::String(host);
     *js = if as_string {
@@ -746,6 +750,7 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
             // flow decide it had lost the connection.
             if std::env::var_os("WC_ASYNCHTTP").is_some() {
                 let join = is_join(&req.url);
+                let mem = c.data().mem.clone();
                 eprintln!("[http*] queued {} me={me:#x}", req.url);
                 crate::imports::rna::rt().spawn_blocking(move || {
                     eprintln!("[http*] run {} {}", req.method, req.url);
@@ -757,6 +762,11 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
                         ));
                     }
                     DONE.lock().unwrap().push(Reply { me, fetch: f, onload, onerror, onstate, res, retry: false });
+                    // the owner is parked on its mailbox word; wake it so it
+                    // reaches a safe point and takes the reply
+                    if me != 0 {
+                        let _ = mem.atomic_notify(me as u64, 1);
+                    }
                 });
             } else {
                 // The engine's fetch wrapper expects the request to occupy the

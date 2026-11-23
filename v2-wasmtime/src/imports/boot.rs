@@ -439,7 +439,26 @@ pub fn register(l: &mut Linker<St>) -> anyhow::Result<()> {
         eprintln!("[assert] {msg}");
         Err(wasmtime::Error::msg(msg))
     })?;
-    l.func_wrap("env", "_abort_js", || -> wasmtime::Result<()> {
+    l.func_wrap("env", "_abort_js", |c: Caller<'_, St>| -> wasmtime::Result<()> {
+        {
+            let bt = wasmtime::WasmBacktrace::force_capture(&c);
+            let mut t = String::new();
+            for f in bt.frames() { t.push_str(&format!(" {}@{:x}", f.func_index(), f.func_offset().unwrap_or(0))); }
+            eprintln!("[bt  ]{t}");
+        }
+        if std::env::var_os("WC_ABORTMEM").is_some() {
+            let mem = c.data().mem.clone();
+            for a in [8314572u32, 7334024] {
+                let d = mem.data();
+                let mut v = Vec::new();
+                for k in 0..120 {
+                    let ch = unsafe { *d[(a + k) as usize].get() };
+                    if ch == 0 { break }
+                    v.push(ch);
+                }
+                eprintln!("[abm ] {a} {:?} {}", String::from_utf8_lossy(&v), v.len());
+            }
+        }
         eprintln!("[abort]");
         Err(wasmtime::Error::msg("abort"))
     })?;
@@ -494,7 +513,7 @@ pub fn register(l: &mut Linker<St>) -> anyhow::Result<()> {
     l.func_wrap("env", "emscripten_asm_const_int_sync_on_main_thread",
         |mut c: Caller<'_, St>, key: i32, sig: i32, buf: i32| -> i32 {
             crate::trace::hit("asm_main");
-            eprintln!("[asmk] {}", key);
+            eprintln!("[asmk] {key} th={} main={}", std::thread::current().name().unwrap_or("?"), c.data().is_main as u8);
             if c.data().is_main {
                 return (({ let sp = crate::fibre::store_ptr(); asm_eval(unsafe { &mut *sp }, key as u32, sig as u32, buf as u32) })) as u32 as i32;
             }
@@ -502,7 +521,9 @@ pub fn register(l: &mut Linker<St>) -> anyhow::Result<()> {
             let sp = crate::fibre::store_ptr(); let args = pack_args(unsafe { &*sp }, &sigs, buf as u32);
             let (tx, rx) = std::sync::mpsc::channel();
             JOBS.lock().unwrap().push(MainJob { key: key as u32, sig: sigs, args, tx });
-            match rx.recv_timeout(std::time::Duration::from_secs(30)) {
+            let got = rx.recv_timeout(std::time::Duration::from_secs(30));
+            eprintln!("[asmr] {key} th={} ok={}", std::thread::current().name().unwrap_or("?"), got.is_ok());
+            match got {
                 Ok(v) => v as u32 as i32,
                 Err(_) => 0,
             }

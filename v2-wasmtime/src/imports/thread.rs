@@ -105,8 +105,10 @@ pub fn start_worker(
                 // block an OS thread inside wasm and stop servicing anything.
                 let runtime_thread = if std::env::var_os("WC_NORTMAIN").is_some() { 0 } else { 1 };
                 ti.call_async(&mut *store, (pthread as i32, async_thread, runtime_thread, 1, 0, 0)).await?;
+                if std::env::var_os("WC_PTHR").is_some() { eprintln!("[pthr] {pthread:x} init done"); }
                 let tls = inst.get_typed_func::<(), (i32,)>(&mut *store, "_emscripten_tls_init")?;
                 tls.call_async(&mut *store, ()).await?;
+                if std::env::var_os("WC_PTHR").is_some() { eprintln!("[pthr] {pthread:x} tls done"); }
                 if std::env::var_os("WC_ST").is_some() { eprintln!("[st  ] {pthread:x} init+tls done"); }
                 if std::env::var_os("WC_PTHR").is_some() {
                     if let Ok(ps) = inst.get_typed_func::<(), (i32,)>(&mut *store, "pthread_self") {
@@ -118,12 +120,12 @@ pub fn start_worker(
                         }
                     }
                 }
-                static EMBIND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-                if !EMBIND.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                    if let Ok(b) = inst.get_typed_func::<(), ()>(&mut *store, "_embind_initialize_bindings") {
-                        let _ = b.call_async(&mut *store, ()).await;
-                    }
+                // each worker instance owns its own binding table, exactly as
+                // the page's per-worker isolate does
+                if let Ok(b) = inst.get_typed_func::<(), ()>(&mut *store, "_embind_initialize_bindings") {
+                    let _ = b.call_async(&mut *store, ()).await;
                 }
+                if std::env::var_os("WC_PTHR").is_some() { eprintln!("[pthr] {pthread:x} embind done"); }
                 // the glue arms each worker's mailbox (`Er`) right after TLS:
                 // mark it ready and remember it so rings can be drained here
                 store.data_mut().mbx_ptr = Some(pthread);
@@ -169,6 +171,7 @@ pub fn start_worker(
                         }
                     }
                     let mut out = [Val::I32(0)];
+                    if std::env::var_os("WC_PTHR").is_some() { eprintln!("[pthr] {pthread:x} task start"); }
                     if is_runner_start(start) {
                         add_runner(pthread);
                     }
@@ -177,6 +180,7 @@ pub fn start_worker(
                     }
                     let mut unwound = false;
                     let mut returned = false;
+                    if std::env::var_os("WC_PTHR").is_some() { eprintln!("[pthr] {pthread:x} calling routine"); }
                     match f.call_async(&mut *st, &[Val::I32(arg as i32)], &mut out).await {
                         Err(e) if was_unwind(&e) => unwound = true,
                         Err(e) => eprintln!("[pthr] entry {pthread:x} threw: {e:#}"),
@@ -214,7 +218,8 @@ pub fn start_worker(
                             }
                             if returned && take_nudge(pthread) {
                                 eprintln!("[pthr] rerun {pthread:x} start={start}");
-                                match f.call_async(&mut *st, &[Val::I32(arg as i32)], &mut out).await {
+                                if std::env::var_os("WC_PTHR").is_some() { eprintln!("[pthr] {pthread:x} calling routine"); }
+                    match f.call_async(&mut *st, &[Val::I32(arg as i32)], &mut out).await {
                                     Ok(()) => {}
                                     Err(e) => eprintln!("[pthr] rerun {pthread:x} threw: {e:#}"),
                                 }

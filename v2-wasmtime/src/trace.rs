@@ -12,11 +12,22 @@ thread_local! {
     static SEQ: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
+static TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn tick() -> u64 {
+    TICK.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn all() -> Vec<(String, Vec<&'static str>)> {
+    HIST.lock().unwrap().as_ref().map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect()).unwrap_or_default()
+}
+
 pub fn enabled() -> bool {
     std::env::var_os("WC_TRACE").is_some()
 }
 
 pub fn hit(name: &'static str) {
+    TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if enabled() {
         let mut g = HIST.lock().unwrap();
         let m = g.get_or_insert_with(std::collections::HashMap::new);

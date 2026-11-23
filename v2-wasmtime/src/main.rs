@@ -535,14 +535,18 @@ fn run() -> Result<()> {
         // the engine's frame clock must move even if the clock thread is late
         imports::boot::advance_frame();
 
-        let no_audio = std::env::var_os("WC_NOAUDIO").is_some();
-        if !no_audio && crate::audio::want().is_some() {
-            let chunk = crate::audio::want().unwrap_or(1024);
+        // Audio is a ScriptProcessor: the page mixes on the main thread, but
+        // only once per buffer, and the main loop keeps servicing the mailbox
+        // and the engine in between.  One chunk per turn, never back to back.
+        let no_audio = !crate::audio::enabled() || std::env::var_os("WC_NOAUDIO").is_some();
+        let due = last_audio.elapsed() >= Duration::from_millis(6);
+        if !no_audio && due && crate::audio::want().is_some() {
             last_audio = Instant::now();
+            let chunk = crate::audio::want().unwrap_or(1024);
             if let Ok(mix) = inst.get_typed_func::<(i32,), ()>(&mut *store, "FMOD_JS_MixFunction") {
                 let t0 = Instant::now();
                 let _ = fibre::block_on(mix.call_async(&mut *store, (chunk as i32,)));
-                if t0.elapsed().as_millis() > 5 { eprintln!("[mix ] {}ms chunk={chunk}", t0.elapsed().as_millis()); }
+                if t0.elapsed().as_millis() > 25 { eprintln!("[mix ] {}ms chunk={chunk}", t0.elapsed().as_millis()); }
             }
         }
         if false {
@@ -572,7 +576,8 @@ fn run() -> Result<()> {
                 }
             }
         });
-        if store.data().gl_ctx {
+        let no_render = std::env::var_os("WC_NORENDER").is_some();
+        if store.data().gl_ctx && !no_render {
             gfx::poll();
         }
         let t_turn = Instant::now();
@@ -583,7 +588,7 @@ fn run() -> Result<()> {
             fibre::shutdown(&mut *store);
             return Err(e.into());
         }
-        if store.data().gl_ctx {
+        if store.data().gl_ctx && !no_render {
             gfx::present();
         }
         if imports::input::pending() {
@@ -607,6 +612,27 @@ fn run() -> Result<()> {
         }
         if let (Some(engine), Some(module)) = (store.data().engine.clone(), store.data().module.clone()) {
             imports::thread::start_late(engine, module, store.data().mem.clone());
+        }
+        {
+            static ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !ONCE.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                if let Ok(v) = std::env::var("WC_DUMPAT") {
+                    let d = store.data().mem.data();
+                    for part in v.split(',') {
+                        if let Ok(a) = u32::from_str_radix(part.trim().trim_start_matches("0x"), 16) {
+                            let mut b = Vec::new();
+                            let mut k = a as usize;
+                            while k < d.len() && b.len() < 100 {
+                                let ch = unsafe { *d[k].get() };
+                                if ch == 0 { break }
+                                b.push(ch);
+                                k += 1;
+                            }
+                            eprintln!("[dumpat] {a:#x} {:?} words={:?}", String::from_utf8_lossy(&b), (0..4).map(|i| unsafe { *(d[(a as usize)+4*i].get() as *const u32) }).collect::<Vec<u32>>());
+                        }
+                    }
+                }
+            }
         }
         diag::checkpoint();
         match turn_sleep {

@@ -1038,6 +1038,7 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
     })?;
 
     f!("presentBrowserFrame", (d: i32, tex: i32, cmd: i32), (), |_st: &mut wasmtime::Store<St>, _m: M<'_>| {
+        if std::env::var_os("WC_NORENDER").is_some() { return }
         static ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
         if ONCE.swap(false, std::sync::atomic::Ordering::Relaxed) { eprintln!("[wgpu] first present"); }
         let _ = d;

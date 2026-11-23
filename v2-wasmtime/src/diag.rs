@@ -44,6 +44,7 @@ pub fn checkpoint() -> u64 {
 /// Once a second: turn rate, nested count, and whatever is being awaited.
 pub fn watch(secs: u64) {
     let mut prev = checkpoint();
+    let mut prev_act = crate::trace::tick();
     let mut stalls = 0u32;
     let mut dumped = false;
     let mut ticks = 0u64;
@@ -82,16 +83,12 @@ pub fn watch(secs: u64) {
                 eprintln!("[hb  ] {t} cur={c:#x} sp={sp:#x} waiting={w} last: {}", tail.join(" "));
             }
         }
-        if now == prev {
+        let act = crate::trace::tick();
+        if now == prev && act == prev_act {
             stalls += 1;
             if stalls as u64 >= secs {
                 eprintln!("[stall] nothing moved for {stalls}s");
-                let names: Vec<String> = {
-                    let m = crate::fibre::TRACE_T.lock().unwrap();
-                    m.iter().map(|(t, _, _, _)| t.clone()).collect()
-                };
-                for t in names {
-                    let h = crate::trace::hist_of(&t);
+                for (t, h) in crate::trace::all() {
                     let tail: Vec<&str> = h.iter().rev().take(14).cloned().collect();
                     eprintln!("[stall] {t} last: {}", tail.join(" "));
                 }
@@ -104,6 +101,7 @@ pub fn watch(secs: u64) {
             stalls = 0;
         }
         prev = now;
+        prev_act = act;
     }
 }
 

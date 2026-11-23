@@ -534,7 +534,7 @@ pub async fn pump<T: wasmtime::AsContextMut<Data = St>>(cx: &mut T) {
 }
 
 pub fn register(l: &mut Linker<St>) -> Result<()> {
-    l.func_wrap("env", "rbx_wasm_rna_is_supported_js", |_c: Caller<'_, St>| -> i32 { 1 })?;
+    l.func_wrap("env", "rbx_wasm_rna_is_supported_js", |_c: Caller<'_, St>| -> i32 { eprintln!("[rna ] is_supported"); 1 })?;
 
     l.func_wrap(
         "env",
