@@ -13,9 +13,11 @@ Emscripten's pthreads (`page/worker.ts`). No Rust host, no Electron.
 Defaults: cookie from `/home/john/mizg.txt`, place `189707`. Override with
 `WC_COOKIE_FILE`, `WC_PLACE`, or the first argument.
 
-The client recovers from a stalled "Joining server" by restarting itself after
-30 seconds without a rendered frame (`page/watchdog.ts`). Set
-`WC_WATCHDOG_MS=0` to disable, or `WC_WATCHDOG_LOG=1` to see restarts.
+The client recovers from a stalled "Joining server" by restarting itself on a
+separate thread (`page/watchdog.ts`): after 18 s if the gamejoin POST never
+happens, or 45 s if it did but no frame appeared, and immediately on a GPU
+device loss. Set `WC_WATCHDOG_MS=0` to disable, or `WC_WATCHDOG_LOG=1` to see
+restarts.
 
 ## Build
 
