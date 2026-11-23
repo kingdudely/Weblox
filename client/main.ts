@@ -16,9 +16,11 @@ Deno.env.set("WC_ENGINE", base);
 Deno.env.set("WC_PAGE_ASSETS", await resolvePage());
 installFetch();
 
-const adapter = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
+// Deno requires requestAdapter() before a window surface can be created. The
+// engine creates its own device from `navigator.gpu` (WasmPlayer.js) and the
+// canvas is configured with that device, so don't keep a second device here.
+const adapter = await (globalThis as any).navigator?.gpu?.requestAdapter({ powerPreference: "high-performance" });
 if (!adapter) throw new Error("no WebGPU adapter");
-const device = await adapter.requestDevice({ requiredFeatures: [...adapter.features], requiredLimits: adapter.limits as any });
 
 const win = new (Deno as any).BrowserWindow({ title: "Alcohol", width: 1280, height: 720 });
 // The first BrowserWindow adopts the startup window, whose size the
@@ -46,12 +48,14 @@ const watchdog = new Worker(new URL("./page/watchdog.ts", import.meta.url), {
 watchdog.postMessage({
   exe: Deno.execPath(),
   args: Deno.args,
-  timeout: Number(Deno.env.get("WC_WATCHDOG_MS") ?? 30000),
+  timeout: Number(Deno.env.get("WC_WATCHDOG_MS") ?? 18000),
 });
 
 const host = {
   surface,
   frame: () => watchdog.postMessage({ frame: 1 }),
+  deviceLost: () => watchdog.postMessage({ lost: 1 }),
+  progress: (m: string) => watchdog.postMessage({ progress: m }),
   width: () => surface.width,
   height: () => surface.height,
   dpr: () => 1,
@@ -63,8 +67,8 @@ const host = {
 };
 
 const page = install("main", host, { place, cookie });
-const ctx = page.canvas.getContext("webgpu");
-ctx.configure({ device, format: navigator.gpu.getPreferredCanvasFormat(), alphaMode: "opaque" });
+// The engine configures this context with its own device during bootstrap.
+page.canvas.getContext("webgpu");
 
 if (Deno.env.get("WC_SELFTEST") === "1") {
   setTimeout(() => {

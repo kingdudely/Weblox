@@ -32,6 +32,10 @@ export interface Host {
   setTitle(title: string): void;
   /** Called when the engine presents a frame. */
   frame?(): void;
+  /** Called when the GPU device behind the surface is lost. */
+  deviceLost?(info: any): void;
+  /** Called at engine milestones so the watchdog can adapt its deadline. */
+  progress?(milestone: string): void;
 }
 
 /** Build a synthetic event the way the DOM would expose it. */
@@ -204,6 +208,7 @@ export class Canvas extends El {
       if (!this.host) return (this.gpu ||= this.oc!.getContext("webgpu"));
       const surface = this.host.surface;
       const raw = (this.raw = surface.getContext("webgpu"));
+      const watched = new WeakSet<any>();
       // The glue copies into `getCurrentTexture()` and never presents; the
       // copy is submitted before the current task ends, so a microtask is a
       // safe point to hand the frame to the compositor.
@@ -212,12 +217,25 @@ export class Canvas extends El {
         canvas: this,
         configure: (cfg) => {
           this.cfg = cfg;
+          const d: any = cfg?.device;
+          if (d && !watched.has(d)) {
+            watched.add(d);
+            d.lost?.then((info: any) => {
+              log("GPU device lost", info?.reason ?? "", info?.message ?? "");
+              this.host?.deviceLost?.(info);
+            });
+          }
           if (Deno.env.get("WC_SIZES") === "1") log("configure", "surface", raw.getConfiguration?.() ?? "", "canvas", this.width, this.height, "client", this.clientWidth, this.clientHeight, JSON.stringify(cfg));
           raw.configure(cfg);
         },
         unconfigure: () => raw.unconfigure?.(),
         getCurrentTexture: () => {
-          const tex = raw.getCurrentTexture();
+          let tex;
+          try { tex = raw.getCurrentTexture(); }
+          catch (e) {
+            if (/device.{0,20}lost|lost.{0,20}device/i.test(String(e))) this.host?.deviceLost?.(e);
+            throw e;
+          }
           this.host?.frame?.();
           if (Deno.env.get("WC_SIZES") === "1") log("texture", tex.width, tex.height, "surface", surface.width, surface.height, "canvas", this.width, this.height, "client", this.clientWidth, this.clientHeight);
           queueMicrotask(() => surface.present());
@@ -248,6 +266,7 @@ export interface Page {
  */
 export function install(kind: "main" | "worker", host?: Host, opts: { place?: number; cookie?: string; renderer?: string } = {}): Page {
   const worker = kind === "worker";
+  (globalThis as any).__wcProgress = (m: string) => host?.progress?.(m);
 
   // The global scope is already an EventTarget (and Deno dispatches worker
   // messages through it), so leave addEventListener alone and dispatch events.
@@ -353,6 +372,9 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
 
   const opfs = makeOPFS();
   let observers: any[] = [];
+
+  const gpu = (globalThis as any).navigator?.gpu;
+
   const nav = {
     userAgent: UA,
     appVersion: UA.replace("Mozilla/", ""),
@@ -368,7 +390,7 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
     onLine: true,
     cookieEnabled: true,
     webdriver: false,
-    gpu: (globalThis as any).navigator?.gpu,
+    gpu,
     doNotTrack: null,
     userAgentData: { mobile: false, platform: "Linux x86_64", brands: [{ brand: "Chromium", version: "157" }] },
     storage: {
@@ -450,22 +472,37 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
     const trace = (t: string, e: any) => {
       if (traceInput()) log("input", t, "key=", e.key, "code=", e.code, "kc=", keyCodeOf(e), "xy=", e.clientX, e.clientY, "btn=", e.button, "mov=", e.movementX, e.movementY);
     };
+    let lastX = 0, lastY = 0, havePos = false, buttons = 0;
+    // A native context menu grabs the pointer on some window backends, after
+    // which mousemove stops being delivered at all. Suppress it.
+    host.on("contextmenu", (e: any) => { try { e.preventDefault(); } catch { /* not cancelable */ } });
+
     for (const t of ["keydown", "keyup", "focus", "blur", "mouseleave", "mouseenter"]) {
       host.on(t, (e) => {
+        if (t === "blur" || t === "mouseleave") buttons = 0;
         const c = cloneEvent(e);
         trace(t, c);
         globalThis.dispatchEvent(c);
         doc.dispatchEvent(cloneEvent(e));
       });
     }
-    let lastX = 0, lastY = 0, buttons = 0;
+    // DOM `button` indices 0,1,2 are left,middle,right but `buttons` bits
+    // are 1,4,2 respectively. Getting this wrong makes the engine think the
+    // middle button is held after a right click.
+    const BUTTON_BITS = [1, 4, 2, 8, 16];
     for (const t of canvasTypes) {
       host.on(t, (e: any) => {
-        const dx = e.clientX - lastX, dy = e.clientY - lastY;
-        lastX = e.clientX; lastY = e.clientY;
-        if (t === "mousedown") buttons |= 1 << (e.button ?? 0);
-        if (t === "mouseup") buttons &= ~(1 << (e.button ?? 0));
-        const c = cloneEvent(e, { movementX: dx, movementY: dy, buttons });
+        const x = e.clientX, y = e.clientY;
+        const finite = Number.isFinite(x) && Number.isFinite(y);
+        const dx = finite && havePos ? x - lastX : 0;
+        const dy = finite && havePos ? y - lastY : 0;
+        lastX = x; lastY = y; havePos = finite;
+        const bit = BUTTON_BITS[e.button ?? 0] ?? 1;
+        if (t === "mousedown" || t === "pointerdown") buttons |= bit;
+        if (t === "mouseup" || t === "pointerup") buttons &= ~bit;
+        if (t === "mouseleave") buttons = 0;
+        const held = Number.isInteger(e.buttons) ? e.buttons : buttons;
+        const c = cloneEvent(e, { movementX: dx, movementY: dy, buttons: held });
         trace(t, c);
         canvas.dispatchEvent(c);
       });

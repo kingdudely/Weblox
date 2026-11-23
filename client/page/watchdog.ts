@@ -1,17 +1,21 @@
-// A separate thread, so it keeps running when the engine blocks the main
-// thread. If no frame arrives for a while, start a fresh client and exit this
-// one. This is the "reload the join when it fails" safety net.
+// Runs on its own thread: the engine can block the main one. Restart when a
+// GPU device is lost (the renderer can no longer draw) or when no frame has
+// arrived for too long. The deadline widens once gamejoin is posted, so a
+// pre-join stall is recovered in ~18s instead of waiting 30s every time.
 const msg = await new Promise<any>((r) => { (globalThis as any).onmessage = (e: any) => r(e.data); });
-const { exe, args, timeout = 45000 } = msg;
-const tries = Number(Deno.env.get("WC_RESTARTS") ?? 0);
+const { exe, args, timeout = 18000 } = msg;
+const runTimeout = Math.max(timeout, 45000);
+let tries = Number(Deno.env.get("WC_RESTARTS") ?? 0);
 let timer: ReturnType<typeof setTimeout> | undefined;
 let spawned = false;
+let progressed = false;
 
-const restart = () => {
+const restart = (why: string) => {
   if (spawned) return;
   spawned = true;
-  console.error("[watchdog] no frame for", timeout, "ms - restarting");
-  if (tries >= 3) {
+  clearTimeout(timer);
+  console.error("[watchdog]", why, "- restarting");
+  if (tries >= 8) {
     console.error("[watchdog] restart limit reached");
     return;
   }
@@ -25,15 +29,31 @@ const restart = () => {
     }).spawn();
   } catch (e) {
     console.error("[watchdog] spawn failed", e);
+    spawned = false;
     return;
   }
   Deno.kill(Deno.pid, "SIGKILL");
 };
 
-const arm = () => {
+const arm = (ms = progressed ? runTimeout : timeout) => {
   clearTimeout(timer);
-  timer = setTimeout(restart, timeout);
+  timer = setTimeout(() => restart(`no frame for ${ms} ms`), ms);
 };
 arm();
-(globalThis as any).onmessage = () => arm();
+
+(globalThis as any).onmessage = (e: any) => {
+  const d = e.data;
+  if (d?.lost) return restart("GPU device lost");
+  if (d?.progress) {
+    progressed = true;
+    tries = 0;
+    arm();
+    return;
+  }
+  if (d?.frame) {
+    progressed = true;
+    tries = 0;
+    arm();
+  }
+};
 setInterval(() => {}, 1 << 30);

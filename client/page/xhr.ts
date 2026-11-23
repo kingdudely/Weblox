@@ -73,6 +73,7 @@ export class XHR {
     try {
       const u = new URL(this._url, location.href);
       this._join = String(method).toUpperCase() === "POST" && u.origin === JOIN_ORIGIN && JOIN_PATHS.has(u.pathname);
+      if (this._join) (globalThis as any).__wcProgress?.("gamejoin");
     } catch { this._join = false; }
   }
   setRequestHeader(k, v) {

@@ -25,14 +25,38 @@ export function mirrorFile(url: string) {
   return `${mirrorDir()}/files/${name}`;
 }
 
+/**
+ * Files are cached by basename, so a stale entry from another deployment can
+ * be served for a changed URL (this broke Roblox's cursor PNG: 191 bytes
+ * cached, 716 expected). Remember the exact URL beside each file; when a new
+ * build changes the URL, the file is re-fetched. Legacy entries without a
+ * sidecar are revalidated once for small files, which is where cursors and
+ * glue scripts live, without re-downloading the hundred-megabyte wasm.
+ */
 async function cached(url: string, load: () => Promise<Uint8Array>) {
   const file = mirrorFile(url);
+  const meta = `${file}.url`;
+  // Some assets get a fresh cache-busting query each session; only the path
+  // identifies the build, so that's what the sidecar records.
+  const key = url.split("?")[0];
   if (!refresh()) {
-    try { return await Deno.readFile(file); } catch { /* miss */ }
+    try {
+      if (await Deno.readTextFile(meta) === key) return await Deno.readFile(file);
+    } catch { /* no sidecar: a legacy cache entry */ }
+    try {
+      const body = await Deno.readFile(file);
+      if (body.byteLength > 2_000_000) {
+        await Deno.mkdir(`${mirrorDir()}/files`, { recursive: true });
+        await Deno.writeTextFile(meta, key);
+        return body;
+      }
+      console.error("[net ] revalidating cached", url.split("/").pop());
+    } catch { /* miss */ }
   }
   const body = await load();
   await Deno.mkdir(`${mirrorDir()}/files`, { recursive: true });
   await Deno.writeFile(file, body);
+  await Deno.writeTextFile(meta, key);
   return body;
 }
 
