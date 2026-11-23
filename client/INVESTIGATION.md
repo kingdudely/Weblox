@@ -1,0 +1,100 @@
+# Why Deno is stuck on "Joining server" — investigation record
+
+## Symptom
+
+The engine reaches `NetworkClient:Create` → `Connection accepted` → `serverId`
+→ `Replicator created`, then never logs `Time taken to initialize schema` or
+`Assigned peer id`. The GUI stays on "Joining server". Chrome with the same
+engine/account/place gets schema in ~40-100 ms and finishes loading.
+
+## Definitive finding
+
+**The server never opens Roblox's 12 data streams for our WebTransport session.**
+
+Instrumented Chrome's extension worker and our `env.ts` wrapper to log every
+`createUnidirectionalStream()` write. The two clients send byte-identical
+protocol messages:
+
+```
+12x stream header   06 01 04 <channel u32be>       (identical)
+ctrl hello          80 00 00 02 00 00              (identical)
+OpenUnreliable      80 00 00 0a 02 04 ...          (identical ch3/5/6/11 wires 2/4/6/8)
+ctrl app=0          06 01 00 63 74 72 6c            (identical)
+early-auth          80 00 00 67 a8 12 21 ... 107B  (identical structure)
+0x90                12600-ish B                      (session data differs)
+0x92                14 B
+0x8A                1780-ish B
+0x8F                6 B
+```
+
+Server response difference:
+- **Chrome**: 2 server streams open *before* early-auth, 8 more after, then a
+  2 MB+ continuous DataModel stream (QUIC stream 27). NetLog confirms.
+- **Deno**: **zero** server streams. Only 32-byte datagrams.
+
+Those 32-byte datagrams are **normal keepalives** — Chrome receives byte-identical
+ones (`05 <seq> 00 f1 14 10 <ts1> <ts2> 00...`). They are not a rejection.
+
+## Everything ruled out (with evidence)
+
+| Hypothesis | Evidence against |
+|---|---|
+| QUIC stack / Origin / headers | 4 implementations fail identically: Deno/quinn, wtransport napi, libquiche, rwebtransport (quiche+BoringSSL, Chrome TLS profile, Origin+`sec-webtransport-http3-draft02`). Local WT server confirmed our rwebtransport options emit exactly Chrome's CONNECT headers. |
+| TLS fingerprint | rwebtransport uses BoringSSL with Chrome's curve/sigalg/GREASE profile. |
+| Low-level UDP framing | dumpcap on `CloudflareWARP`: both use QUIC v1, both get Retry packets, both use RUPP framing to UDMUX. Only normal stack differences (DCID 8 vs 20, TP values). |
+| `getStats()` fake | `WC_REAL_STATS=1` (real zeros) → same failure. |
+| Wrapper interference | `WC_WT_PASSTHROUGH=1` → same failure. |
+| Account | `/tmp/opencode/jebus.txt` (jebuscristgaming, verified in 0x90 payload) → same failure. `mizg` (MissGurl_2345) → same failure. |
+| HTTP User-Agent / Origin on join | `WC_JOIN_HTTP_UA` / `WC_JOIN_NO_ORIGIN` → same failure. |
+| Join response structure | HAR vs our dump: both 70 keys, identical key sets; only 4 per-session value differences (`TokenValue`, `PepperId`, `AccountAge`, `CharacterAppearance` URL). Same top-level keys incl. `authenticationTicket`. |
+| Engine build mismatch | Both use `version-1ef59424f70d4932-RobloxWebClient` (HAR + mirror sidecars). |
+| `gameFqdn` derivation | Same formula as extension; `rawGameFqdn` always null; we now skip patching when it is present. |
+| A7 message missing from writes | Chrome's writes also contain no distinct A7 message. Not the differentiator. |
+
+## What is NOT known
+
+The discriminator is inside the join session credentials or a wasm-side state
+difference that none of the above instrumentation exposes. The server accepts
+the QUIC session from both clients, pings both, but only opens Roblox's game
+channels for Chrome.
+
+## Remaining hypotheses / next experiments
+
+1. **Wasm import bisection** (user's suggestion). The wasm imports 342 functions
+   (`env` + `wasi_snapshot_preview1`). Stub groups of non-WebTransport imports
+   and see if the join changes. Prime suspects: `read_host_info_int/string`
+   (f.hostInfo — OS/GPU/browser values sent to gamejoin), `js_fetch_file`
+   (asset/DataModel loading), `rbx_opfs_*`, `js_web_client_ms_since_navigation`,
+   `js_web_client_page_visible`, `random_get`. The import object is built in
+   `WebClient.js` as `{env: We, wasi_snapshot_preview1: We}`; the names are
+   listed in `vn()` around `presentBrowserFrame:Ya,proc_exit:Sr`.
+2. **Decompile the wasm's join-config path** to find which field decides to open
+   channels (no logging flag exists in the 85 wasm exports; no logging FFlag
+   string exists in the binary).
+3. **Rebuild Deno's QUIC/HTTP3 TP+SETTINGS to Chrome's exact values** —
+   previously rejected by the user as too heavy.
+4. **Browser/CEF backend** — proven to work, loses low-RAM goal.
+
+## Useful commands
+
+```sh
+# short A/B run
+FAST_RUNS=4 /tmp/opencode/fasttest.sh env WC_WATCHDOG_MS=0
+
+# one diagnostic run with full RNA + byte dumps
+cd /home/john/Alcohol/client
+WC_RNA_LOG=1 WC_RNA_DUMP=1 WC_WT_DUMP=1 WC_WATCHDOG_MS=90000 \
+  WC_WT_HANDSHAKE_MS=0 WC_REJOIN=0 timeout 90 ./run.sh 189707
+
+# parse a pcapng capture
+python3 /tmp/opencode/pcapng.py /tmp/opencode/deno_warp.pcap
+
+# Chrome with CDP (extension must be loaded in the profile)
+DISPLAY=:0 google-chrome --remote-debugging-port=9337 \
+  --user-data-dir=/tmp/opencode/chromeprof \
+  'https://play.roblox.com/games/start?placeId=189707'
+cd /tmp/opencode && deno run -A cdp_all.ts
+```
+
+Note: ~50% of raw runs stall in early init at `[pthread] thread #1 created`
+before even reaching gamejoin. This is a separate flaky symptom; retry.

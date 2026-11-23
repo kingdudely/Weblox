@@ -36,6 +36,8 @@ export interface Host {
   deviceLost?(info: any): void;
   /** Called at engine milestones so the watchdog can adapt its deadline. */
   progress?(milestone: string): void;
+  /** Called when WebTransport never yields server data: the server is dead. */
+  handshakeFail?(reason: string): void;
 }
 
 /** Build a synthetic event the way the DOM would expose it. */
@@ -281,12 +283,185 @@ export interface Page {
  */
 export function install(kind: "main" | "worker", host?: Host, opts: { place?: number; cookie?: string; renderer?: string } = {}): Page {
   const worker = kind === "worker";
+  (globalThis as any).__wcRnaLog = Deno.env.get("WC_RNA_LOG") === "1";
+  (globalThis as any).__wcRnaDump = Deno.env.get("WC_RNA_DUMP") === "1";
   (globalThis as any).__wcProgress = (m: string) => host?.progress?.(m);
+  // A WebTransport handshake that never produces server data is a dead server
+  // (old RCC build), not a transport bug. The engine lives in the worker, so
+  // forward the signal to main through the patched Worker channel.
+  (globalThis as any).__wcHandshakeFail = (m: string) => {
+    if (worker) (globalThis as any).postMessage?.({ __handshakeFailed: m });
+    else host?.handshakeFail?.(m);
+  };
 
   // The global scope is already an EventTarget (and Deno dispatches worker
   // messages through it), so leave addEventListener alone and dispatch events.
   if (!worker) (globalThis as any).window = globalThis;
   (globalThis as any).self = globalThis;
+  // Trace WebTransport so a stalled replication is diagnosable.
+  const WT: any = (globalThis as any).WebTransport;
+  if (WT && Deno.env.get("WC_WT_PASSTHROUGH") !== "1") {
+    (globalThis as any).WebTransport = class extends WT {
+      getStats() {
+        if (Deno.env.get("WC_REAL_STATS") === "1") {
+          return WT.prototype.getStats.call(this);
+        }
+        // Deno returns all-zero counters; the engine's replication scheduler
+        // reads these every tick and treats zero as a stalled link. Report
+        // plausible live values so it keeps sending.
+        return Promise.resolve({
+          smoothedRtt: 0.02, minRtt: 0.015, rttVariation: 0.002,
+          estimatedSendRate: 2_000_000, atSendCapacity: false,
+          packetsSent: 100, bytesSent: 20000, bytesSentOverhead: 500,
+          packetsReceived: 100, bytesReceived: 20000,
+          packetsLost: 0, bytesLost: 0,
+          datagrams: { droppedIncoming: 0, expiredIncoming: 0, expiredOutgoing: 0, lostOutgoing: 0 },
+        });
+      }
+      constructor(url: any, opts: any) {
+        // rwebtransport supports Origin/custom headers on the Extended CONNECT;
+        // Deno's built-in ignores these extra dictionary members.
+        const o: any = opts ? { ...opts } : {};
+        const origin = Deno.env.get("WC_WT_ORIGIN_HDR");
+        if (origin) o.origin = origin;
+        const ua = Deno.env.get("WC_WT_UA_HDR");
+        if (ua) o.headers = { ...(o.headers ?? {}), "user-agent": ua };
+        if (Deno.env.get("WC_WT_CHROME_HDRS") === "1") {
+          o.headers = {
+            ...(o.headers ?? {}),
+            "sec-webtransport-http3-draft02": "1",
+            "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36",
+          };
+        }
+        super(url, o);
+        console.error("[wt ] new", String(url), "hashes", opts?.serverCertificateHashes?.length ?? 0, "unreliable", opts?.requireUnreliable, "cc", opts?.congestionControl);
+        // Roblox servers that accept the browser route open a unidirectional
+        // stream and send real replication data within a few seconds. Broken
+        // (older RCC build) servers only answer with 32-byte keepalives and
+        // never produce a stream; Deno's WebTransport does not enforce Chrome's
+        // 4s idle timeout, so ready() stays resolved and the UI hangs forever.
+        // Detect that here and ask the watchdog to rejoin onto another server.
+        const handshakeMs = Number(Deno.env.get("WC_WT_HANDSHAKE_MS") ?? 6000);
+        const minData = Number(Deno.env.get("WC_WT_MIN_DATA") ?? 64);
+        let streamAccepted = false;
+        let failed = false;
+        let failTimer: ReturnType<typeof setTimeout> | undefined;
+        const markAlive = (why: string) => {
+          if (failed || streamAccepted) return;
+          streamAccepted = true;
+          clearTimeout(failTimer);
+          console.error("[wt ] handshake alive:", why);
+        };
+        const signalFail = (why: string) => {
+          if (failed || streamAccepted) return;
+          failed = true;
+          clearTimeout(failTimer);
+          console.error("[wt ] HANDSHAKE FAIL:", why, "- requesting rejoin");
+          (globalThis as any).__wcHandshakeFail?.(why);
+        };
+        if (handshakeMs > 0) {
+          failTimer = setTimeout(() => signalFail(`no server data after ${handshakeMs}ms`), handshakeMs);
+        }
+        const dg0: any = this.datagrams;
+        if (dg0?.readable?.getReader) {
+          const gr0 = dg0.readable.getReader.bind(dg0.readable);
+          dg0.readable.getReader = () => {
+            const r = gr0();
+            const rd = r.read.bind(r);
+            r.read = async () => {
+              const v = await rd();
+              if (!v.done) {
+                const n = v.value?.byteLength ?? 0;
+                console.error("[wt ] incoming datagram", n);
+                if (n > minData) markAlive(`datagram ${n}B`);
+              }
+              return v;
+            };
+            return r;
+          };
+        }
+        const iu0: any = this.incomingUnidirectionalStreams;
+        if (iu0?.getReader) {
+          const gr = iu0.getReader.bind(iu0);
+          iu0.getReader = () => {
+            const r = gr();
+            const read = r.read.bind(r);
+            r.read = async () => {
+              const v = await read();
+              if (!v.done) {
+                console.error("[wt ] incoming stream accepted");
+                markAlive("server stream");
+              }
+              return v;
+            };
+            return r;
+          };
+        }
+        this.ready.then(
+          () => {
+            console.error("[wt ] ready", String(url), "maxDG", this.datagrams?.maxDatagramSize);
+            let streams = 0, writes = 0;
+            const mk = this.createUnidirectionalStream?.bind(this);
+            if (mk) this.createUnidirectionalStream = () => {
+              const p = mk();
+              const sid = ++streams;
+              if (sid <= 5) console.error("[wt ] stream create", sid);
+              p.then((s: any) => {
+                if (!s?.getWriter) return;
+                const gw = s.getWriter.bind(s);
+                s.getWriter = () => {
+                  const w = gw();
+                  const wr = w.write.bind(w);
+                  w.write = (chunk: any) => {
+                    ++writes;
+                    if (Deno.env.get("WC_WT_DUMP") === "1") {
+                      const b = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk?.buffer ?? chunk ?? []);
+                      console.error("[wtdump]", sid, writes, b.byteLength,
+                        Array.from(b).map((x) => x.toString(16).padStart(2, "0")).join(" "));
+                    } else if (writes <= 8) console.error("[wt ] stream write", sid, writes, chunk?.byteLength);
+                    return wr(chunk);
+                  };
+                  return w;
+                };
+              }).catch(() => {});
+              return p;
+            };
+            const dg = this.datagrams;
+            if (dg) {
+              let n = 0;
+              const orig = dg.writable?.getWriter?.bind(dg.writable);
+              if (orig) dg.writable.getWriter = () => {
+                const w = orig();
+                const write = w.write.bind(w);
+                w.write = (chunk: any) => {
+                  ++n;
+                  if (Deno.env.get("WC_WT_DUMP") === "1") {
+                    const b = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk?.buffer ?? chunk ?? []);
+                    console.error("[wtdg]", n, b.byteLength, Array.from(b.slice(0, 64)).map((x) => x.toString(16).padStart(2, "0")).join(" "));
+                  } else if (n <= 5) console.error("[wt ] datagram write", n, chunk?.byteLength);
+                  const p = write(chunk);
+                  p.then(() => console.error("[wt ] datagram ACK", n),
+                    (e: any) => console.error("[wt ] datagram WRITE ERR", n, e?.name, e?.message));
+                  return p;
+                };
+                return w;
+              };
+            }
+          },
+          (e: any) => {
+            console.error("[wt ] ready FAILED", e?.name, e?.message);
+            signalFail(`ready rejected: ${e?.name ?? "error"}`);
+          },
+        );
+        this.closed.then((e: any) => {
+          console.error("[wt ] closed", e?.closeCode, e?.reason);
+          clearTimeout(failTimer);
+        }).catch(() => {});
+      }
+    };
+  } else {
+    console.error("[wt ] WebTransport unavailable");
+  }
   // Log the engine -> page lifecycle callbacks. If any of these never fire,
   // the loading screen stays up even though the network join succeeded.
   if (!worker) {
@@ -643,6 +818,7 @@ function patchEngineWorkers(kind: "main" | "worker") {
         }
         if (e.data?.__log) { log("worker:", e.data.__log); return; }
         if (e.data?.__error) { console.error("[worker] failed:", e.data.__error); return; }
+        if (e.data?.__handshakeFailed) { (globalThis as any).__wcHandshakeFail?.(e.data.__handshakeFailed); return; }
         this.onmessage?.(e);
       };
     }

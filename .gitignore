@@ -1,5 +1,6 @@
 node_modules/
 *.log
+*.har
 v2-wasmtime/target/
 v3-wasm2c/gen/obj/
 v3-wasm2c/data/cache/
@@ -7,3 +8,8 @@ v3-wasm2c/data/cache/
 *.o
 *.a
 *.so
+
+# Large local experiment artifacts / backups (never commit these)
+client/client.*.bak/
+client/opscheck*/
+client/*.pcap

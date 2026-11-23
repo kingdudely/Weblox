@@ -11,6 +11,25 @@ const cookieFile = Deno.env.get("WC_COOKIE_FILE") ?? "/home/john/king.txt";
 let cookie = "";
 try { cookie = (await Deno.readTextFile(cookieFile)).trim().replace(/^\.ROBLOSECURITY=/, ""); } catch { console.error("[main] no cookie at", cookieFile); }
 
+// Optionally use a Rust/wtransport-backed WebTransport implementation instead
+// of Deno's built-in one (which omits Origin/User-Agent on CONNECT).
+if (Deno.env.get("WC_WT_LIB") === "1") {
+  const m: any = await import("npm:@webtransport-bun/webtransport@0.3.0");
+  (globalThis as any).WebTransport = m.WebTransport;
+  console.error("[wt ] using npm WebTransport library");
+} else if (Deno.env.get("WC_WT_FC") === "1") {
+  await import("npm:@fails-components/webtransport-transport-http3-quiche@1.6.12");
+  const m: any = await import("npm:@fails-components/webtransport@1.6.12");
+  (globalThis as any).WebTransport = m.WebTransport;
+  console.error("[wt ] using libquiche WebTransport");
+} else if (Deno.env.get("WC_WT_RW") === "1") {
+  // quiche + BoringSSL (Chromium's TLS stack) with Origin/custom headers on
+  // the Extended CONNECT -- the one difference from Chrome we can still test.
+  const m: any = await import("npm:rwebtransport@0.2.5");
+  (globalThis as any).WebTransport = m.WebTransport;
+  console.error("[wt ] using rwebtransport (Origin-capable)");
+}
+
 const base = await resolveEngine();
 Deno.env.set("WC_ENGINE", base);
 Deno.env.set("WC_PAGE_ASSETS", await resolvePage());
@@ -83,6 +102,10 @@ const host = {
   frame: () => watchdog.postMessage({ frame: 1 }),
   deviceLost: () => watchdog.postMessage({ lost: 1 }),
   progress: (m: string) => watchdog.postMessage({ progress: m }),
+  handshakeFail: (m: string) => {
+    console.error("[main] handshake fail -> rejoin:", m);
+    watchdog.postMessage({ handshakeFail: m });
+  },
   width: () => surface.width,
   height: () => surface.height,
   dpr: () => 1,
@@ -116,6 +139,11 @@ if (Deno.env.get("WC_SELFTEST") === "1") {
 }
 win.addEventListener("close", () => Deno.exit(0));
 win.setTitle(`${place} - Alcohol`);
+setTimeout(() => {
+  const m: any = (globalThis as any).Module ?? {};
+  const keys = Object.keys(m).filter((k) => /load|gui|game|ready|default|screen/i.test(k));
+  console.error("[module] lifecycle keys:", keys.join(","));
+}, 14000);
 
 // The start page's own globals.
 (globalThis as any).robloxWasmHostConfig = {

@@ -28,10 +28,17 @@ export function patchJoin(raw) {
   const isStr = typeof res.joinScript === "string";
   let js;
   try { js = isStr ? JSON.parse(res.joinScript) : res.joinScript; } catch { return null; }
-  // The server sends a native VIP in `gameFqdn`; the browser must connect to
-  // the paired browser VIP instead, so always rewrite it (even when present).
-  if (!js || typeof js !== "object") return null;
+  // Match the Chrome extension: only derive a browser route when the server
+  // did not provide gameFqdn. Never overwrite a value the server supplied.
+  if (!js || typeof js !== "object" || js.gameFqdn) return null;
+  if (Deno.env.get("WC_NO_FQDN") === "1") return null;
+  if (Deno.env.get("WC_JOIN_DUMP") === "1") {
+    try { Deno.writeTextFileSync("/tmp/opencode/our_joinscript.json", JSON.stringify(js, null, 1)); } catch {}
+  }
   if (Deno.env.get("WC_JOIN_DEBUG") === "1") {
+    console.error("[join ] topkeys", Object.keys(res).join(","),
+      "authenticationTicket", typeof res.authenticationTicket,
+      "authenticationUrl", String(res.authenticationUrl ?? "").slice(0, 120));
     console.error("[join ] keys", Object.keys(js).join(","),
       "status", res.status,
       "token", typeof js.NetStackTokenValue, String(js.NetStackTokenValue ?? "").length,
@@ -39,6 +46,7 @@ export function patchJoin(raw) {
       "machine", js.MachineAddress,
       "udmux", JSON.stringify(js.UdmuxEndpoints),
       "rawGameFqdn", JSON.stringify(js.gameFqdn),
+      "ClientTicket", typeof js.ClientTicket, String(js.ClientTicket ?? "").length,
       "TokenValue", typeof js.TokenValue, String(js.TokenValue ?? "").length,
       "ServerPort", js.ServerPort, "ClientPort", js.ClientPort,
       "NetStackConfig", JSON.stringify(js.NetStackConfig)?.slice(0, 180));
@@ -132,12 +140,24 @@ export class XHR {
     // One consistent native identity for the join: a Chrome User-Agent paired
     // with a Roblox rbx-user-agent is a contradiction, and native clients
     // (Boblox/Rum) mint the session with a single Android identity.
+    // Match the Chrome extension: only rbx-user-agent is overridden; the
+    // regular User-Agent stays the browser one (patchHeaders sets it).
     if (this._join) {
-      const identity = Deno.env.get("WC_JOIN_UA") ?? "Roblox/Android/2.743.1136";
-      this._h.set("user-agent", identity);
-      this._h.set("rbx-user-agent", identity);
+      this._h.set("rbx-user-agent", Deno.env.get("WC_JOIN_UA") ?? "Roblox/Darwin");
+      // Boblox uses ONE consistent identity on both headers. WC_JOIN_HTTP_UA
+      // lets us test that without changing the browser UA used for CDN assets.
+      const httpUa = Deno.env.get("WC_JOIN_HTTP_UA");
+      if (httpUa) this._h.set("user-agent", httpUa);
     }
     patchHeaders(this._url, this._h);
+    if (this._join && Deno.env.get("WC_JOIN_NO_ORIGIN") === "1") {
+      this._h.delete("origin");
+      this._h.set("referer", "");
+    }
+    if (this._join && Deno.env.get("WC_JOIN_DEBUG") === "1") {
+      console.error("[xhr ] JOIN BODY", String(body ?? "").slice(0, 1200));
+      console.error("[xhr ] JOIN HEADERS", JSON.stringify([...this._h.entries()]));
+    }
     console.error("[xhr ]", this._method, this._url, [...this._h.keys()].join(","));
     const timer = this.timeout ? setTimeout(() => { ctrl.abort(); this.ontimeout?.({}); }, this.timeout) : null;
     this.readyState = 2;

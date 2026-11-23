@@ -1,8 +1,24 @@
 # Alcohol — Roblox web client in a native window
 
-The engine is Roblox's own web build. Deno supplies the browser-shaped page
-(`page/env.ts`), the window and WebGPU surface (`main.ts`), and real threads for
-Emscripten's pthreads (`page/worker.ts`). No Rust host, no Electron.
+The engine is Roblox's own web build (`WebClient.wasm` + `WebClient.js`), running
+on Deno with no DOM. Deno supplies the browser-shaped page (`page/env.ts`), the
+window/WebGPU surface (`main.ts`), and real threads for Emscripten pthreads
+(`page/worker.ts`). There is no Rust host and no Electron in this product.
+
+**The Rust/wasmtime harness under `../v2-wasmtime` is a secondary research
+harness only. Keep it. Do not delete or rewrite it.**
+
+## Current status (IMPORTANT — read before changing anything)
+
+**The client joins the HTTP/gamejoin layer successfully but the game server never
+opens Roblox's data channels, so the UI stays on "Joining server" forever.**
+Chrome with the same engine, account, and place works. Everything observable has
+been compared byte-for-byte and is identical; see `INVESTIGATION.md` in this
+directory for the full evidence table and the experiments already ruled out.
+
+Do **not** re-run the old "Origin header" / "npm WebTransport library" / "fake
+`getStats()`" / "account" hypotheses — they are all ruled out. Read
+`INVESTIGATION.md` first.
 
 ## Run
 
@@ -11,66 +27,106 @@ Emscripten's pthreads (`page/worker.ts`). No Rust host, no Electron.
 ```
 
 Defaults: cookie from `/home/john/mizg.txt`, place `189707`. Override with
-`WC_COOKIE_FILE`, `WC_PLACE`, or the first argument.
+`WC_COOKIE_FILE`, `WC_PLACE`, or the first argument. A known-good alternative
+cookie for the `jebuscristgaming` account is `/tmp/opencode/jebus.txt`.
 
-The client recovers from a stalled "Joining server" by restarting itself on a
-separate thread (`page/watchdog.ts`): after 18 s if the gamejoin POST never
-happens, or 45 s if it did but no frame appeared, and immediately on a GPU
-device loss. Set `WC_WATCHDOG_MS=0` to disable all restarts (including device
-loss), or `WC_WATCHDOG_LOG=1` to see them. Only one client should be joined at
-a time — overlapping sessions on the same account get disconnected.
+The client restarts itself on a separate thread (`page/watchdog.ts`) when it
+detects a GPU device loss, a pre-join stall (18 s), a post-join stall (45 s), or
+a WebTransport handshake failure (see below). `WC_WATCHDOG_MS=0` disables the
+frame/stall restarts; `WC_REJOIN=0` disables handshake-failure rejoins;
+`WC_WATCHDOG_LOG=1` prints them. Only one client should be joined at a time —
+overlapping sessions on the same account get disconnected.
 
 ## Build
 
 ```sh
+deno check main.ts page/*.ts
 deno desktop -A --include page --include mirror --include page/watchdog.ts main.ts
 ```
 
-`deno desktop` bundles **and runs** the app, so stop it (Ctrl-C) once `Bundle
-client` appears. The binary lands in `client/client/`.
+`deno desktop` bundles **and runs** the app, so stop it (Ctrl-C / kill) once
+`Bundle client` appears. The binary lands at `client/client/`. Builds take
+~45 s. Use `/tmp/opencode/fasttest.sh` for short A/B runs.
 
-## Network / cache
+`mirror/` is gitignored and must stay that way — it holds cached Roblox files.
+The build version and page asset hash are resolved from live endpoints, so a new
+Roblox build needs `rm -rf mirror` (or `WC_REFRESH=1`). Current engine:
+`version-1ef59424f70d4932-RobloxWebClient` (0.748.0.7481526) — verified
+identical to the build Chrome loads.
 
-Engine files and assets are fetched once and cached under `mirror/`. The build
-version and the page's asset hash are detected from the real endpoints, so a
-new Roblox build only needs `rm -rf mirror` (or `WC_REFRESH=1`) to be picked up.
+## Architecture
 
-- `WC_ENGINE` — pin the engine base URL
-- `WC_PAGE_ASSETS` — pin the page asset prefix
-- `WC_REFRESH=1` — re-resolve the build and re-download files
-- `WC_MIRROR` — alternate mirror directory
-- `WC_GLES=1` — force WebGL flags instead of WebGPU
-- `WC_JOIN_UA` — the identity used for the gamejoin request. Both `user-agent`
-  and `rbx-user-agent` are set to the same value (default
-  `Roblox/Android/2.743.1136`), matching the native clients (Boblox/Rum). A
-  Chrome `user-agent` paired with a `Roblox/*` `rbx-user-agent` is a
-  contradiction and was associated with empty network tokens.
-- `WC_RBX_UA` — legacy override for `rbx-user-agent` on non-join requests
-  (unused for gamejoin now).
+- `main.ts` — bootstrap, WebGPU adapter, native window, `Host` object, watchdog.
+- `page/env.ts` — browser surface: `window`, `self`, canvas, events, XHR, fetch
+  shims, WebTransport wrapper, RNA event bridge, worker patching.
+- `page/worker.ts` — real Emscripten worker; `eval`s `stub.js` from the mirror.
+- `page/net.ts` — engine URL resolution, mirror cache, `fetch` patching.
+- `page/xhr.ts` — XHR shim; `patchJoin()` adds the browser `gameFqdn`.
+- `page/watchdog.ts` — separate-thread restarts.
+- `page/opfs.ts`, `page/audio.ts` — OPFS shim, stub audio.
+- `mirror/files/` — cached WebClient.js/wasm/asset files (gitignored).
 
-The gamejoin response is rewritten to add `gameFqdn` (the server returns
-`null` for public places), and a response with an empty network token is
-retried automatically up to 3 times. The engine's default loading screen is
-dismissed once it reaches "Loading experience..." (`WC_FORCE_DISMISS=0` keeps
-it).
+### The join identity (do not "simplify" this)
 
-## Debug
+Public places require `rbx-user-agent: Roblox/Darwin` on the gamejoin POST;
+`Roblox/Web` returns HTTP 200 / `status: 12` ("Playtesters Only") for both test
+accounts. The regular `user-agent` stays the browser UA, matching the Chrome
+extension. `patchJoin()` derives `gameFqdn` only when the response has none
+(the server always returns `null` for public places) using the extension's
+formula: `tokenHex(NetStackTokenValue)-ipv4Hex(MachineAddress)-portHex.browserVipHex.qdmux.roblox.com`,
+where `browserVip = UdmuxEndpoints[0].Address` with the last octet **+1**.
 
-- `WC_INPUT=1` — log every event delivered to the engine, with the synthesized
-  `keyCode`, `buttons`, and `movementX/Y` Deno omits
-- `WC_SIZES=1` — log surface/canvas sizes when configuring and presenting
-- `WC_SELFTEST=1` — inject one key/mouse/wheel sequence after 4 s
-- `WC_JOIN_DEBUG=1` — log the fields of the gamejoin response, including the
-  raw `gameFqdn` and both token fields
-- `WC_NET_DEBUG=1` — log every fetch start/finish and worker `__ready`
-- `WC_FORCE_DISMISS=0` — keep the engine's default loading screen
-- `WC_DUMP=1` — capture the app's own rendered canvas to a local raw file
-  (`WC_DUMP_FILE`, default `/tmp/opencode/appdump.png`). System/Wayland
-  screenshot APIs are unavailable here; convert the raw BGRA dump with
-  `python3 -c "from PIL import Image; d=open('$WC_DUMP_FILE','rb').read(); i=d.index(b'\\n'); w,h=map(int,d[:i].decode().split('x')); b=((w*4+255)//256)*256; Image.frombytes('RGBA',(w,h),d[i+1:],'raw','BGRA',b).save('/tmp/opencode/appview.png')"`
+## Environment flags
 
-## Status
+Join / identity:
+- `WC_COOKIE_FILE`, `WC_PLACE`
+- `WC_JOIN_UA` — `rbx-user-agent` for gamejoin (default `Roblox/Darwin`)
+- `WC_RBX_UA` — `rbx-user-agent` for non-join Roblox requests
+- `WC_JOIN_HTTP_UA` — override the regular `user-agent` on the join only
+- `WC_JOIN_NO_ORIGIN=1` — drop `origin`/`referer` from the join (test)
+- `WC_JOIN_DEBUG=1` — log join keys/values and dump joinScript to
+  `/tmp/opencode/our_joinscript.json`
+- `WC_NO_FQDN=1` — do not patch `gameFqdn`
+- `WC_FORCE_DISMISS=0` — keep the synthetic loading screen dismissal off
 
-Join, rendering, and input work. Audio is still a stub (`AudioContext` with a
-ScriptProcessor and no output device); it is kept in `page/env.ts` and will be
-replaced with a real CPAL-backed `AudioContext` next.
+Networking:
+- `WC_ENGINE`, `WC_PAGE_ASSETS`, `WC_MIRROR`, `WC_REFRESH=1`, `WC_GLES=1`
+- `WC_WT_LIB=1` — npm `@webtransport-bun` (ruled out)
+- `WC_WT_FC=1` — npm `@fails-components` (ruled out)
+- `WC_WT_RW=1` — npm `rwebtransport` (Origin-capable; ruled out)
+- `WC_WT_PASSTHROUGH=1` — zero wrapper overrides (ruled out)
+- `WC_WT_ORIGIN_HDR`, `WC_WT_UA_HDR`, `WC_WT_CHROME_HDRS=1` — CONNECT headers
+- `WC_REAL_STATS=1` — use Deno's real `getStats()` (ruled out)
+
+Diagnostics (gated, safe to leave in):
+- `WC_RNA_LOG=1` — log every wasm RNA event (`[rna]`)
+- `WC_RNA_DUMP=1` — dump incoming datagram bytes (`[rxbytes]`)
+- `WC_WT_DUMP=1` — dump all WebTransport stream writes (`[wtdump]`) and
+  datagram writes (`[wtdg]`)
+- `WC_DUMP=1`, `WC_DUMP_FILE`, `WC_DUMP_MS` — self-capture of the rendered canvas
+- `WC_NET_DEBUG=1`, `WC_SIZES=1`, `WC_INPUT=1`
+- `WC_WT_HANDSHAKE_MS` — rejoin timeout when no server stream appears
+  (0 disables); `WC_REJOIN_MAX` (default 12)
+
+## Known-good comparison data on disk
+
+- `/home/john/Alcohol/play.roblox.com.har` — Chrome HAR with the successful
+  gamejoin request/response (912 entries).
+- `/tmp/opencode/chrome_netlog2.json` — Chrome NetLog (valid JSON, 290676
+  events) with full QUIC/HTTP3 frames of a successful session.
+- `/tmp/opencode/chrome_udp.pcap`, `chrome_warp.pcap`, `deno_warp.pcap` — UDP
+  captures (pcapng; parse with `/tmp/opencode/pcapng.py`). Traffic runs over the
+  `CloudflareWARP` interface (172.16.0.2), so capture there, not `wlp2s0`.
+- `/tmp/opencode/cdp_*.ts` — CDP scripts used to attach to Chrome on port 9337.
+- `/tmp/opencode/purewt.ts` — standalone WebTransport probe (join + connect).
+
+## Do not do these again
+
+- Rebuilding Deno's Rust source (user rejected: "editing deno is not good
+  practice", "its building forever"). The local source copy at
+  `/tmp/opencode/deno-src` has a `WC_WT_ORIGIN` patch but it was never compiled.
+- Manually implementing the Roblox protocol in JS like Boblox does. The whole
+  point of Alcohol is that the wasm does the protocol.
+- Replacing the wasm's engine files with older ones.
+
+See `INVESTIGATION.md` for the full evidence and remaining hypotheses.
