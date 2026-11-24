@@ -88,6 +88,9 @@ Join / identity:
 - `WC_RBX_UA` — `rbx-user-agent` for non-join Roblox requests
 - `WC_JOIN_HTTP_UA` — override the regular `user-agent` on the join only
 - `WC_JOIN_NO_ORIGIN=1` — drop `origin`/`referer` from the join (test)
+- `WC_JOB=<jobUuid>` — pin to one server instance by rewriting the join to
+  `/v1/join-game-instance` with that `gameId` (used for the same-job control
+  test in `INVESTIGATION.md`)
 - `WC_JOIN_DEBUG=1` — log join keys/values and dump joinScript to
   `/tmp/opencode/our_joinscript.json`
 - `WC_NO_FQDN=1` — do not patch `gameFqdn`

@@ -79,6 +79,61 @@ This definitively rules out: server/job variance, account, join-response
 structure, and `gameFqdn` derivation. The discriminator is entirely on the
 client side: the WebTransport implementation or the wasm's environment.
 
+## Flow-control hypothesis (being tested)
+
+QUIC transport parameters reported by Chrome's NetLog vs the stacks we tried:
+
+| parameter | Chrome | Deno/quinn | rwebtransport (before patch) |
+|---|---|---|---|
+| `initial_max_stream_data` (uni) | **6,291,456** | ~1.25 MB | 1,048,576 |
+| `initial_max_data` | 15,728,640 | — | 10,485,760 |
+| `max_udp_payload_size` | 1472 | — | 1350 |
+| `max_streams_uni` | 103 | 100 | 256 |
+| `max_datagram_frame_size` | 65536 | — | 65536 (quiche `enable_dgram`) |
+
+Roblox's DataModel stream is **2 MB+**. A 1 MB / 1.25 MB per-stream receive
+window cannot accept it: the server opens the stream but is immediately
+flow-control blocked, so no STREAM frame bytes ever arrive and the client never
+observes an incoming stream. This would explain why *all four* stacks fail
+identically and why the server keeps pinging instead of closing the session.
+rwebtransport's Rust source (`crates/native/src/config.rs`) has these values as
+constants; Chrome's H3 SETTINGS from the NetLog are
+`ENABLE_CONNECT_PROTOCOL=1, H3_DATAGRAM=1, MAX_FIELD_SECTION_SIZE=65536,
+QPACK_BLOCKED_STREAMS=100, QPACK_MAX_TABLE_CAPACITY=65536` plus GREASE — no
+Roblox-specific WebTransport setting.
+
+An rwebtransport rebuild with Chrome's values was completed and tested:
+**still no streams.** A second rebuild with Chrome's exact H3 SETTINGS (only
+`ENABLE_CONNECT_PROTOCOL`, `H3_DATAGRAM`, `MAX_FIELD_SECTION_SIZE`, QPACK — no
+WebTransport session-credit settings) also failed. The stock addon/source were
+restored afterwards. Flow control and H3 SETTINGS are now ruled out.
+
+## Final byte-level comparison of the 0x90 client-info message
+
+With the job pinned to Chrome's exact job and the same account, Chrome's and our
+0x90 payloads (from full WebTransport write dumps; Chrome captured via an
+instrumented copy of the extension + CDP) have **identical structure**: 51 keys
+each, same key set apart from the randomized `rbx*` experiment-hash keys, and
+all join/session fields match. The only non-session text difference is
+`UserAgentStr`:
+
+- Chrome: `Browser/Chrome/157.0.8103.78`, screen `1366x768`
+- Ours: `Browser/Chromium/157.0.0.0`, screen `800x600`
+
+Adding `WC_CHROME_HINTS=1` to replicate Chrome's Client Hints (`Google Chrome`
+brand, `157.0.8103.78`, 1366x768 screen) made those strings match — and the
+join **still failed**. `UserAgentStr` is not the gate.
+
+Also verified: the wasm really does call `incomingUnidirectionalStreams.getReader()`
+(`[wt ] GET READER ...`), but `read()` never resolves with any value — no server
+stream reaches the JS layer. Incoming datagrams are only 32/33-byte keepalives
+(2033 + 1933 observed); there is no larger challenge datagram.
+
+Five WebTransport implementations now fail identically: Deno/quinn,
+@webtransport-bun, @fails-components (libquiche), rwebtransport (quiche +
+BoringSSL, with Chrome's TPs and H3 SETTINGS), and quico (pure JS). Chrome's
+own network stack joins the same job successfully.
+
 ## What is NOT known
 
 The discriminator is inside the join session credentials or a wasm-side state

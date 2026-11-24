@@ -28,6 +28,12 @@ if (Deno.env.get("WC_WT_LIB") === "1") {
   const m: any = await import("npm:rwebtransport@0.2.5");
   (globalThis as any).WebTransport = m.WebTransport;
   console.error("[wt ] using rwebtransport (Origin-capable)");
+} else if (Deno.env.get("WC_WT_QUICO") === "1") {
+  // Pure-JS QUIC/HTTP3/WebTransport stack (untested alternative to the Rust
+  // implementations; needs Node >= 24 APIs, may not work under Deno).
+  const m: any = await import("npm:quico@0.10.2");
+  (globalThis as any).WebTransport = m.WebTransport;
+  console.error("[wt ] using quico (pure JS)");
 }
 
 const base = await resolveEngine();

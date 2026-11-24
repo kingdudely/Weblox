@@ -391,10 +391,13 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
         if (iu0?.getReader) {
           const gr = iu0.getReader.bind(iu0);
           iu0.getReader = () => {
+            console.error("[wt ] GET READER on incomingUnidirectionalStreams");
             const r = gr();
+            let reads = 0;
             const read = r.read.bind(r);
             r.read = async () => {
               const v = await read();
+              if (++reads <= 3 || !v.done) console.error("[wt ] incoming read", reads, "done", v.done, "value", !!v.value);
               if (!v.done) {
                 console.error("[wt ] incoming stream accepted");
                 markAlive("server stream");
@@ -403,6 +406,8 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
             };
             return r;
           };
+        } else {
+          console.error("[wt ] NO incomingUnidirectionalStreams.getReader available");
         }
         this.ready.then(
           () => {
@@ -530,6 +535,7 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
   };
   (globalThis as any).webkitAudioContext = (globalThis as any).AudioContext;
 
+  const chromeHints = Deno.env.get("WC_CHROME_HINTS") === "1";
   const screenSize = () => ({
     width: host ? host.width() : 1280,
     height: host ? host.height() : 720,
@@ -541,7 +547,9 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
     innerHeight: { configurable: true, get: () => screenSize().height },
     outerWidth: { configurable: true, get: () => screenSize().width },
     outerHeight: { configurable: true, get: () => screenSize().height },
-    screen: { configurable: true, get: () => ({ ...screenSize(), availWidth: screenSize().width, availHeight: screenSize().height, colorDepth: 24, pixelDepth: 24 }) },
+    screen: { configurable: true, get: () => chromeHints
+      ? { width: 1366, height: 768, availWidth: 1366, availHeight: 768, colorDepth: 24, pixelDepth: 24 }
+      : { ...screenSize(), availWidth: screenSize().width, availHeight: screenSize().height, colorDepth: 24, pixelDepth: 24 } },
     scrollX: { configurable: true, value: 0 },
     scrollY: { configurable: true, value: 0 },
     pageXOffset: { configurable: true, value: 0 },
@@ -615,7 +623,19 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
     webdriver: false,
     gpu,
     doNotTrack: null,
-    userAgentData: { mobile: false, platform: "Linux x86_64", brands: [{ brand: "Chromium", version: "157" }] },
+    userAgentData: chromeHints
+      ? {
+        mobile: false, platform: "Linux x86_64",
+        brands: [{ brand: "Google Chrome", version: "157" }, { brand: "Chromium", version: "157" }],
+        getHighEntropyValues: async () => ({
+          model: "", platformVersion: "",
+          fullVersionList: [
+            { brand: "Google Chrome", version: "157.0.8103.78" },
+            { brand: "Chromium", version: "157.0.8103.78" },
+          ],
+        }),
+      }
+      : { mobile: false, platform: "Linux x86_64", brands: [{ brand: "Chromium", version: "157" }] },
     storage: {
       getDirectory: async () => opfs,
       estimate: async () => ({ usage: 0, quota: 1 << 30 }),

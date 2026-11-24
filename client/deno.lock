@@ -4,6 +4,8 @@
     "npm:@fails-components/webtransport-transport-http3-quiche@1.6.12": "1.6.12",
     "npm:@fails-components/webtransport@1.6.12": "1.6.12",
     "npm:@webtransport-bun/webtransport@0.3.0": "0.3.0",
+    "npm:quico@0.10.2": "0.10.2",
+    "npm:quico@latest": "0.10.2",
     "npm:rwebtransport@0.2.5": "0.2.5"
   },
   "npm": {
@@ -118,6 +120,12 @@
     "color-name@1.1.4": {
       "integrity": "sha512-dOy+3AuW3a2wNbZHIuMZpTcgjGuLU/uBL/ubcZF9OXbDo8ff4O8yVp5Bf0efS8uEoYo5q4Fx7dY9OgQGXgAsQA=="
     },
+    "cryptographic-formats@0.2.0": {
+      "integrity": "sha512-9O2QfdH4Cu+on0YF1kBDVSirhHWdYcdWB0M4M3CUbf+rvuSiE1NIg4woJ/g5h4KXUpyIQQDteG8ex4ktRHuQCw=="
+    },
+    "cryptographic-primitives@0.1.0": {
+      "integrity": "sha512-lCEZxc7Oj2uQ5O11rwUZX1L/9EAiYEuBZs6qpCiGHXH0OrV0gv8hillhDJYPu8z9s0BKfGsHv0PRpzhLTvFhmw=="
+    },
     "debug@4.4.3": {
       "integrity": "sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==",
       "dependencies": [
@@ -153,6 +161,9 @@
     },
     "file-uri-to-path@1.0.0": {
       "integrity": "sha512-0Zt+s3L7Vf1biwWZ29aARiVYLx7iMGnEUl9x33fbB/j3jR81u/O2LbqK+Bm1CDSNDKVtJ/YjwY7TUd5SkeLQLw=="
+    },
+    "flat-ranges@2.3.0": {
+      "integrity": "sha512-nRrzY1kzApr0K5T9fQVGlLYABAvCMl/y5dX6PMqUW7im70o5dyUgC4KVt3gYQSIfpEUN0oZ9zTFcHEV5WkzXWA=="
     },
     "fs-constants@1.0.0": {
       "integrity": "sha512-y6OAwoSIf7FyjMIv94u+b5rdheZEjzR63GTyZJm5qh4Bi+2YgwLCcI/fPFZkL5PSixOt6ZNKm+w+Hfp/Bciwow=="
@@ -196,6 +207,13 @@
       ],
       "optionalDependencies": [
         "graceful-fs"
+      ]
+    },
+    "lemon-tls@0.12.2": {
+      "integrity": "sha512-Ownb9aXUx9tI0BG6iwTBbjy1bgI/ZlnKpsDpQAkD7UF0luIpBcCxIyRq5tf9WPVr72QgJfK1jGwEyMCW4XzOIw==",
+      "dependencies": [
+        "cryptographic-formats",
+        "cryptographic-primitives"
       ]
     },
     "mimic-response@3.1.0": {
@@ -264,6 +282,15 @@
       "dependencies": [
         "end-of-stream",
         "once"
+      ]
+    },
+    "quico@0.10.2": {
+      "integrity": "sha512-EX38AgsjfUj++7u6k9idGfpEEDc1UvZcZYdIuW1GcJIbDghyGXCaAgmGrKhWCcf6I5YRyqDRBPw+9tCEoSczRg==",
+      "dependencies": [
+        "cryptographic-formats",
+        "cryptographic-primitives",
+        "flat-ranges",
+        "lemon-tls"
       ]
     },
     "rc@1.2.8": {
