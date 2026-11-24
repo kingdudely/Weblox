@@ -340,6 +340,24 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
             "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36",
           };
         }
+        if (Deno.env.get("WC_WT_FULL_HDRS") === "1") {
+          // Chrome adds these automatically to a WebTransport Extended CONNECT.
+          // A native WebTransport library sends none of them; Roblox's server
+          // may use them to decide whether to open game streams.
+          o.headers = {
+            ...(o.headers ?? {}),
+            origin: "https://play.roblox.com",
+            "sec-webtransport-http3-draft02": "1",
+            "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36",
+            "sec-ch-ua": '"Not-A.Brand";v="99", "Google Chrome";v="157", "Chromium";v="157"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Linux"',
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-site",
+            "sec-fetch-dest": "empty",
+            "accept-language": "en-US,en;q=0.9",
+          };
+        }
         super(url, o);
         console.error("[wt ] new", String(url), "hashes", opts?.serverCertificateHashes?.length ?? 0, "unreliable", opts?.requireUnreliable, "cc", opts?.congestionControl);
         // Roblox servers that accept the browser route open a unidirectional
@@ -657,7 +675,7 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
   // engine sets tracker cookies and must not clobber the session cookie.
   const jar = new Map<string, string>();
   if (opts.cookie) jar.set(".ROBLOSECURITY", opts.cookie);
-  jar.set("RBXEventTrackerV2", "browserid=wc");
+  jar.set("RBXEventTrackerV2", `browserid=${Deno.env.get("WC_BROWSER_ID") ?? "wc"}`);
   const cookie = {
     get: () => [...jar].map(([k, v]) => `${k}=${v}`).join("; "),
     set: (v: string) => {
