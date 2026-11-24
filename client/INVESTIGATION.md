@@ -129,6 +129,21 @@ Also verified: the wasm really does call `incomingUnidirectionalStreams.getReade
 stream reaches the JS layer. Incoming datagrams are only 32/33-byte keepalives
 (2033 + 1933 observed); there is no larger challenge datagram.
 
+## Clean WARP capture + stream-header logging (latest)
+
+A clean capture with Chrome fully closed and filtered to our exact qdmux
+4-tuple showed the server sending **1.4 MB / 1005 large packets** to Deno — so
+data does arrive at the QUIC layer. An instrumented rwebtransport build that
+logs every classified incoming stream header (`[DBGWT]`) logged **zero** WebTransport
+streams: the server never opens them at the H3 layer for our session.
+
+Ruled out after that: the WebTransport stream session-ID check (patched to
+accept any value), Chrome's full CONNECT header set (`WC_WT_FULL_HDRS=1`:
+`sec-fetch-*`, `sec-ch-ua-*`, Origin, draft02, UA), and a real numeric
+`RBXEventTrackerV2` browserid (Chrome's `BrowserTrackerId` is otherwise 0 for
+us; `WC_BROWSER_ID=1` sets it). None changed the outcome. The stock rwebtransport
+addon/source were restored.
+
 Five WebTransport implementations now fail identically: Deno/quinn,
 @webtransport-bun, @fails-components (libquiche), rwebtransport (quiche +
 BoringSSL, with Chrome's TPs and H3 SETTINGS), and quico (pure JS). Chrome's
