@@ -58,6 +58,27 @@ ones (`05 <seq> 00 f1 14 10 <ts1> <ts2> 00...`). They are not a rejection.
 | `gameFqdn` derivation | Same formula as extension; `rawGameFqdn` always null; we now skip patching when it is present. |
 | A7 message missing from writes | Chrome's writes also contain no distinct A7 message. Not the differentiator. |
 
+## Decisive control experiment — same job, same account (PASSED)
+
+Using `WC_JOB`, Deno can be pinned to the exact job Chrome joined:
+
+```sh
+WC_COOKIE_FILE=/tmp/opencode/jebus.txt \
+WC_JOB=fc522568-72ee-448d-b9d0-bfc1639343f2 \
+./run.sh 189707
+```
+
+This sends `POST /v1/join-game-instance` with `gameId` set to Chrome's job UUID.
+Result: the response has the **exact same** `MachineAddress` (10.190.0.80),
+`UdmuxEndpoints` (128.116.56.33:50612), and `NetStackPort` (63487) as the
+`jebuscristgaming` join in the sensitive HAR — i.e. the identical server and
+credentials Chrome used successfully. Deno **still** gets zero server streams
+and no schema.
+
+This definitively rules out: server/job variance, account, join-response
+structure, and `gameFqdn` derivation. The discriminator is entirely on the
+client side: the WebTransport implementation or the wasm's environment.
+
 ## What is NOT known
 
 The discriminator is inside the join session credentials or a wasm-side state

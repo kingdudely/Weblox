@@ -312,12 +312,15 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
         }
         // Deno returns all-zero counters; the engine's replication scheduler
         // reads these every tick and treats zero as a stalled link. Report
-        // plausible live values so it keeps sending.
+        // plausible values that keep increasing, so progress checks see a live
+        // link (static counters look stalled to a delta-based scheduler).
+        const s: any = (this as any).__wcStats ??= { n: 0, sent: 0, recv: 0 };
+        s.n++; s.sent += 137; s.recv += 149;
         return Promise.resolve({
           smoothedRtt: 0.02, minRtt: 0.015, rttVariation: 0.002,
           estimatedSendRate: 2_000_000, atSendCapacity: false,
-          packetsSent: 100, bytesSent: 20000, bytesSentOverhead: 500,
-          packetsReceived: 100, bytesReceived: 20000,
+          packetsSent: 100 + s.n, bytesSent: 20000 + s.sent, bytesSentOverhead: 500,
+          packetsReceived: 100 + s.n, bytesReceived: 20000 + s.recv,
           packetsLost: 0, bytesLost: 0,
           datagrams: { droppedIncoming: 0, expiredIncoming: 0, expiredOutgoing: 0, lostOutgoing: 0 },
         });

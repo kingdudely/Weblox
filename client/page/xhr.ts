@@ -106,8 +106,18 @@ export class XHR {
     this._method = method;
     this._url = String(url);
     this.readyState = 1;
+    // WC_JOB pins the session to one specific server instance so Deno and
+    // Chrome can be compared on the exact same job. Roblox's gamejoin API
+    // takes the job UUID in `gameId` on /v1/join-game-instance.
+    const job = Deno.env.get("WC_JOB");
+    this._jobInstance = false;
     try {
       const u = new URL(this._url, location.href);
+      if (job && u.origin === JOIN_ORIGIN && u.pathname === "/v1/join-game") {
+        u.pathname = "/v1/join-game-instance";
+        this._url = u.href;
+        this._jobInstance = true;
+      }
       this._join = String(method).toUpperCase() === "POST" && u.origin === JOIN_ORIGIN && JOIN_PATHS.has(u.pathname);
       if (this._join) (globalThis as any).__wcProgress?.("gamejoin");
     } catch { this._join = false; }
@@ -137,6 +147,17 @@ export class XHR {
   }
   send(body) {
     const ctrl = (this._ctrl = new AbortController());
+    if (this._jobInstance) {
+      try {
+        const raw = body instanceof Uint8Array ? new TextDecoder().decode(body)
+          : ArrayBuffer.isView(body) ? new TextDecoder().decode(new Uint8Array(body.buffer))
+          : String(body ?? "{}");
+        const o = JSON.parse(raw);
+        o.gameId = Deno.env.get("WC_JOB");
+        body = new TextEncoder().encode(JSON.stringify(o));
+        console.error("[xhr ] pinned job", o.gameId);
+      } catch (e) { console.error("[xhr ] pin job failed", String(e)); }
+    }
     // One consistent native identity for the join: a Chrome User-Agent paired
     // with a Roblox rbx-user-agent is a contradiction, and native clients
     // (Boblox/Rum) mint the session with a single Android identity.
