@@ -131,11 +131,14 @@ stream reaches the JS layer. Incoming datagrams are only 32/33-byte keepalives
 
 ## Clean WARP capture + stream-header logging (latest)
 
-A clean capture with Chrome fully closed and filtered to our exact qdmux
-4-tuple showed the server sending **1.4 MB / 1005 large packets** to Deno — so
-data does arrive at the QUIC layer. An instrumented rwebtransport build that
-logs every classified incoming stream header (`[DBGWT]`) logged **zero** WebTransport
-streams: the server never opens them at the H3 layer for our session.
+A clean capture filtered to our exact qdmux 4-tuple showed only **16 large
+incoming packets** (QUIC handshake / CONNECT response) and no stream data.
+An early analysis that appeared to show 1.4 MB of incoming stream data was
+wrong: the capture also contained a *second* qdmux connection from a separate
+WINE Roblox process on this machine. An instrumented rwebtransport build that
+logs every classified incoming stream header (`[DBGWT]`) logged **zero**
+WebTransport streams: the server never opens them at the H3 layer for our
+session.
 
 Ruled out after that: the WebTransport stream session-ID check (patched to
 accept any value), Chrome's full CONNECT header set (`WC_WT_FULL_HDRS=1`:
