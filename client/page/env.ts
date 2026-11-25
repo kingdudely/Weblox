@@ -546,7 +546,10 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
         }
         const c = cloneEvent(e, extra);
         trace(t, c);
-        canvas.dispatchEvent(c);
+        // The camera registers its wheel handler on the canvas; GUI scrolling
+        // is handled on document/window. Deliver wheel only to the latter so
+        // scrolling never reaches the camera.
+        if (t !== "wheel") canvas.dispatchEvent(c);
         // In a browser a click on the canvas bubbles through body -> document
         // -> window. Roblox's UI (including the post-join retry/leave buttons)
         // listens on document/window in places, so deliver the same event up
