@@ -6,6 +6,10 @@ import { patchHeaders } from "./env.ts";
 const JOIN_ORIGIN = "https://gamejoin.roblox.com";
 const JOIN_PATHS = new Set(["/v1/join-game", "/v1/join-game-instance", "/v1/join-reserved-game", "/v1/join-private-game"]);
 const DOMAIN = "qdmux.roblox.com";
+// Roblox intermittently answers status 2 with an empty NetStackTokenValue.
+// Re-post the same join in place until a usable token arrives (no restarts).
+const MAX_JOIN_RETRIES = 30;
+const RETRY_DELAY_MS = 250;
 
 function ipv4Parts(v) {
   if (typeof v !== "string") throw new Error("Missing IPv4 address");
@@ -34,26 +38,6 @@ export function patchJoin(raw) {
   // Roblox intermittently returns status 2 with an empty network token. Do not
   // fail the handshake here — the XHR layer retries the join request itself.
   if (!js.NetStackTokenValue || !js.UdmuxEndpoints?.length) return null;
-  if (Deno.env.get("WC_NO_FQDN") === "1") return null;
-  if (Deno.env.get("WC_JOIN_DUMP") === "1") {
-    try { Deno.writeTextFileSync("/tmp/opencode/our_joinscript.json", JSON.stringify(js, null, 1)); } catch {}
-  }
-  if (Deno.env.get("WC_JOIN_DEBUG") === "1") {
-    console.error("[join ] topkeys", Object.keys(res).join(","),
-      "authenticationTicket", typeof res.authenticationTicket,
-      "authenticationUrl", String(res.authenticationUrl ?? "").slice(0, 120));
-    console.error("[join ] keys", Object.keys(js).join(","),
-      "status", res.status,
-      "token", typeof js.NetStackTokenValue, String(js.NetStackTokenValue ?? "").length,
-      "port", js.NetStackPort,
-      "machine", js.MachineAddress,
-      "udmux", JSON.stringify(js.UdmuxEndpoints),
-      "rawGameFqdn", JSON.stringify(js.gameFqdn),
-      "ClientTicket", typeof js.ClientTicket, String(js.ClientTicket ?? "").length,
-      "TokenValue", typeof js.TokenValue, String(js.TokenValue ?? "").length,
-      "ServerPort", js.ServerPort, "ClientPort", js.ClientPort,
-      "NetStackConfig", JSON.stringify(js.NetStackConfig)?.slice(0, 180));
-  }
   try {
     const vip = ipv4Parts(js.UdmuxEndpoints?.[0]?.Address);
     if (vip[3] % 2 !== 1 || vip[3] === 255) return null;
@@ -65,7 +49,6 @@ export function patchJoin(raw) {
     js.gameFqdn = `${tokenHex(js.NetStackTokenValue)}-${ipv4Hex(machine)}-` +
       `${port.toString(16).padStart(4, "0")}.${ipv4Hex(browserVip)}.${DOMAIN}`;
     res.joinScript = isStr ? JSON.stringify(js) : js;
-    if (Deno.env.get("WC_JOIN_DEBUG") === "1") console.error("[join ] set gameFqdn", js.gameFqdn);
     return JSON.stringify(res);
   } catch { return null; }
 }
@@ -109,26 +92,12 @@ export class XHR {
     this._method = method;
     this._url = String(url);
     this.readyState = 1;
-    // WC_JOB pins the session to one specific server instance so Deno and
-    // Chrome can be compared on the exact same job. Roblox's gamejoin API
-    // takes the job UUID in `gameId` on /v1/join-game-instance.
-    const job = Deno.env.get("WC_JOB");
-    this._jobInstance = false;
     try {
       const u = new URL(this._url, location.href);
-      if (job && u.origin === JOIN_ORIGIN && u.pathname === "/v1/join-game") {
-        u.pathname = "/v1/join-game-instance";
-        this._url = u.href;
-        this._jobInstance = true;
-      }
       this._join = String(method).toUpperCase() === "POST" && u.origin === JOIN_ORIGIN && JOIN_PATHS.has(u.pathname);
-      if (this._join) (globalThis as any).__wcProgress?.("gamejoin");
     } catch { this._join = false; }
   }
-  setRequestHeader(k, v) {
-    if (this._join && String(k).toLowerCase() === "rbx-user-agent") v = Deno.env.get("WC_RBX_UA") ?? "Roblox/Darwin";
-    this._h.set(k, v);
-  }
+  setRequestHeader(k, v) { this._h.set(k, v); }
   getResponseHeader(k) { return this._k?.get(k) ?? null; }
   getAllResponseHeaders() {
     let out = "";
@@ -141,9 +110,6 @@ export class XHR {
     const buf = new Uint8Array(total);
     let at = 0;
     for (const c of this._chunks) { buf.set(c, at); at += c.length; }
-    if (final && this._join && Deno.env.get("WC_JOIN_DUMP") === "1") {
-      try { Deno.writeTextFileSync("/tmp/opencode/raw_join.json", new TextDecoder().decode(buf)); } catch {}
-    }
     const body = final && this._join ? patchJoin(new TextDecoder().decode(buf)) : null;
     const bytes = body === null ? buf : new TextEncoder().encode(body);
     if (this.responseType === "arraybuffer") this.response = bytes.buffer;
@@ -153,39 +119,10 @@ export class XHR {
   }
   send(body) {
     const ctrl = (this._ctrl = new AbortController());
-    if (this._jobInstance) {
-      try {
-        const raw = body instanceof Uint8Array ? new TextDecoder().decode(body)
-          : ArrayBuffer.isView(body) ? new TextDecoder().decode(new Uint8Array(body.buffer))
-          : String(body ?? "{}");
-        const o = JSON.parse(raw);
-        o.gameId = Deno.env.get("WC_JOB");
-        body = new TextEncoder().encode(JSON.stringify(o));
-        console.error("[xhr ] pinned job", o.gameId);
-      } catch (e) { console.error("[xhr ] pin job failed", String(e)); }
-    }
-    // One consistent native identity for the join: a Chrome User-Agent paired
-    // with a Roblox rbx-user-agent is a contradiction, and native clients
-    // (Boblox/Rum) mint the session with a single Android identity.
-    // Match the Chrome extension: only rbx-user-agent is overridden; the
-    // regular User-Agent stays the browser one (patchHeaders sets it).
-    if (this._join) {
-      this._h.set("rbx-user-agent", Deno.env.get("WC_JOIN_UA") ?? "Roblox/Darwin");
-      // Boblox uses ONE consistent identity on both headers. WC_JOIN_HTTP_UA
-      // lets us test that without changing the browser UA used for CDN assets.
-      const httpUa = Deno.env.get("WC_JOIN_HTTP_UA");
-      if (httpUa) this._h.set("user-agent", httpUa);
-    }
+    // Public places require rbx-user-agent: Roblox/Darwin on the join POST;
+    // the regular User-Agent stays the Chrome UA (set by patchHeaders).
+    if (this._join) this._h.set("rbx-user-agent", "Roblox/Darwin");
     patchHeaders(this._url, this._h);
-    if (this._join && Deno.env.get("WC_JOIN_NO_ORIGIN") === "1") {
-      this._h.delete("origin");
-      this._h.set("referer", "");
-    }
-    if (this._join && Deno.env.get("WC_JOIN_DEBUG") === "1") {
-      console.error("[xhr ] JOIN BODY", String(body ?? "").slice(0, 1200));
-      console.error("[xhr ] JOIN HEADERS", JSON.stringify([...this._h.entries()]));
-    }
-    console.error("[xhr ]", this._method, this._url, [...this._h.keys()].join(","));
     const timer = this.timeout ? setTimeout(() => { ctrl.abort(); this.ontimeout?.({}); }, this.timeout) : null;
     this.readyState = 2;
     this.onreadystatechange?.({});
@@ -212,11 +149,10 @@ export class XHR {
           const buf = new Uint8Array(bytes);
           let at = 0;
           for (const c of this._chunks) { buf.set(c, at); at += c.length; }
-          const maxJoinRetries = Number(Deno.env.get("WC_JOIN_RETRIES") ?? 30);
-          if (this._join && r.ok && joinTokenMissing(buf) && n <= maxJoinRetries) {
-            console.error("[xhr ] empty network token, retrying gamejoin (attempt", n, "/", maxJoinRetries, ")");
+          if (this._join && r.ok && joinTokenMissing(buf) && n <= MAX_JOIN_RETRIES) {
+            console.error("[xhr ] empty network token, retrying gamejoin (attempt", n, "/", MAX_JOIN_RETRIES, ")");
             this._chunks = [];
-            await new Promise((r) => setTimeout(r, 250));
+            await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
             return attempt(n + 1);
           }
           this._setResponse(true);

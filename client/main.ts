@@ -5,47 +5,23 @@
 // input, a title, and a place to put the page.
 import { install } from "./page/env.ts";
 import { resolveEngine, resolvePage, installFetch, canonical } from "./page/net.ts";
+import { lockCursor, recenterCursor } from "./page/x11.ts";
 
-const place = Number(Deno.args[0] ?? Deno.env.get("WC_PLACE") ?? 1818);
-const cookieFile = Deno.env.get("WC_COOKIE_FILE") ?? "/home/john/king.txt";
+const place = Number(Deno.args[0] ?? Deno.env.get("WC_PLACE") ?? 189707);
+const cookieFile = Deno.env.get("WC_COOKIE_FILE") ?? "/home/john/mizg.txt";
 let cookie = "";
-try { cookie = (await Deno.readTextFile(cookieFile)).trim().replace(/^\.ROBLOSECURITY=/, ""); } catch { console.error("[main] no cookie at", cookieFile); }
-
-// Pure-TS WebTransport draft-02 on Deno's raw QUIC API. Roblox/qdmux negotiates
-// draft-02 (Chrome NetLog: webtransport_http3_version=draft-02), while Deno's
-// built-in implementation omits the sec-webtransport-http3-draft02 CONNECT
-// header and has no WebIDL key to inject it.
-if (Deno.env.get("WC_WT_DRAFT02") === "1") {
-  // The draft-02 module delivers streams through its own demultiplexer, so the
-  // wrapper's "server data seen" probe never fires. Don't let the watchdog
-  // kill a session that is actually in game.
-  if (!Deno.env.has("WC_WT_HANDSHAKE_MS")) Deno.env.set("WC_WT_HANDSHAKE_MS", "0");
-  const m: any = await import("./page/draftwt.ts");
-  (globalThis as any).WebTransport = m.DraftWebTransport;
-  console.error("[wt ] using pure-TS draft-02 WebTransport (connectQuic)");
-} else if (Deno.env.get("WC_WT_LIB") === "1") {
-  const m: any = await import("npm:@webtransport-bun/webtransport@0.3.0");
-  (globalThis as any).WebTransport = m.WebTransport;
-  console.error("[wt ] using npm WebTransport library");
-} else if (Deno.env.get("WC_WT_FC") === "1") {
-  await import("npm:@fails-components/webtransport-transport-http3-quiche@1.6.12");
-  const m: any = await import("npm:@fails-components/webtransport@1.6.12");
-  (globalThis as any).WebTransport = m.WebTransport;
-  console.error("[wt ] using libquiche WebTransport");
-} else if (Deno.env.get("WC_WT_RW") === "1") {
-  // quiche + BoringSSL (Chromium's TLS stack) with Origin/custom headers on
-  // the Extended CONNECT -- the one difference from Chrome we can still test.
-  const m: any = await import("npm:rwebtransport@0.2.5");
-  (globalThis as any).WebTransport = m.WebTransport;
-  console.error("[wt ] using rwebtransport (Origin-capable)");
-} else if (Deno.env.get("WC_WT_QUICO") === "1") {
-  // Pure-JS QUIC/HTTP3/WebTransport stack (untested alternative to the Rust
-  // implementations; needs Node >= 24 APIs, may not work under Deno).
-  const m: any = await import("npm:quico@0.10.2");
-  (globalThis as any).WebTransport = m.WebTransport;
-  console.error("[wt ] using quico (pure JS)");
-
+try {
+  cookie = (await Deno.readTextFile(cookieFile)).trim().replace(/^\.ROBLOSECURITY=/, "");
+} catch {
+  throw new Error(`no .ROBLOSECURITY cookie at ${cookieFile} — set WC_COOKIE_FILE`);
 }
+if (!cookie) throw new Error(`empty .ROBLOSECURITY cookie at ${cookieFile}`);
+
+// Roblox/qdmux negotiates WebTransport draft-02, which Deno's built-in
+// implementation cannot send (no CONNECT-header hook). The pure-TS module
+// supplies that header over Deno's raw QUIC API. This is the only path.
+const { DraftWebTransport } = await import("./page/draftwt.ts");
+(globalThis as any).WebTransport = DraftWebTransport;
 
 const base = await resolveEngine();
 Deno.env.set("WC_ENGINE", base);
@@ -56,7 +32,7 @@ installFetch();
 // engine creates its own device from `navigator.gpu` (WasmPlayer.js) and the
 // canvas is configured with that device, so don't keep a second device here.
 const adapter = await (globalThis as any).navigator?.gpu?.requestAdapter({ powerPreference: "high-performance" });
-if (!adapter) throw new Error("no WebGPU adapter");
+if (!adapter) throw new Error("no WebGPU adapter — this host requires a WebGPU-capable GPU/driver");
 
 const win = new (Deno as any).BrowserWindow({ title: "Alcohol", width: 1280, height: 720 });
 // The first BrowserWindow adopts the startup window, whose size the
@@ -71,7 +47,6 @@ const syncSurface = () => {
     surface.width = w;
     surface.height = h;
   }
-  if (Deno.env.get("WC_SIZES") === "1") console.error("[main] window", w, h, "surface", surface.width, surface.height);
 };
 syncSurface();
 win.addEventListener("resize", syncSurface);
@@ -103,26 +78,8 @@ const dumpFrame = Deno.env.get("WC_DUMP") === "1"
   : null;
 if (dumpFrame) setTimeout(() => { (host as any).capture = dumpFrame; }, Number(Deno.env.get("WC_DUMP_MS") ?? 20000));
 
-// The watchdog lives on its own thread: the engine can block the main one.
-const watchdog = new Worker(new URL("./page/watchdog.ts", import.meta.url), {
-  type: "module",
-  deno: { permissions: "inherit" },
-});
-watchdog.postMessage({
-  exe: Deno.execPath(),
-  args: Deno.args,
-  timeout: Number(Deno.env.get("WC_WATCHDOG_MS") ?? 18000),
-});
-
 const host = {
   surface,
-  frame: () => watchdog.postMessage({ frame: 1 }),
-  deviceLost: () => watchdog.postMessage({ lost: 1 }),
-  progress: (m: string) => watchdog.postMessage({ progress: m }),
-  handshakeFail: (m: string) => {
-    console.error("[main] handshake fail -> rejoin:", m);
-    watchdog.postMessage({ handshakeFail: m });
-  },
   width: () => surface.width,
   height: () => surface.height,
   dpr: () => 1,
@@ -131,36 +88,20 @@ const host = {
     return () => win.removeEventListener(type, fn);
   },
   setTitle: (t: string) => win.setTitle(t),
+  lockCursor,
+  recenterCursor: () => {
+    const [x, y] = win.getPosition();
+    const [w, h] = win.getSize();
+    recenterCursor(x + w / 2, y + h / 2);
+  },
 };
 
 const page = install("main", host, { place, cookie });
 // The engine configures this context with its own device during bootstrap.
 page.canvas.getContext("webgpu");
 
-if (Deno.env.get("WC_SELFTEST") === "1") {
-  setTimeout(() => {
-    for (const [type, init] of [
-      ["keydown", { key: "w", code: "KeyW" }],
-      ["keyup", { key: "w", code: "KeyW" }],
-      ["mousemove", { clientX: 100, clientY: 100 }],
-      ["mousemove", { clientX: 140, clientY: 120 }],
-      ["mousedown", { clientX: 140, clientY: 120, button: 0 }],
-      ["mouseup", { clientX: 140, clientY: 120, button: 0 }],
-      ["wheel", { clientX: 140, clientY: 120, deltaX: 0, deltaY: -3 }],
-    ] as [string, any][]) {
-      const G = globalThis as any;
-      const C = type.startsWith("key") ? G.KeyboardEvent : type === "wheel" ? G.WheelEvent : G.MouseEvent;
-      win.dispatchEvent(new (C as any)(type, init));
-    }
-  }, 4000);
-}
-win.addEventListener("close", () => Deno.exit(0));
+win.addEventListener("close", () => { lockCursor(false); Deno.exit(0); });
 win.setTitle(`${place} - Alcohol`);
-setTimeout(() => {
-  const m: any = (globalThis as any).Module ?? {};
-  const keys = Object.keys(m).filter((k) => /load|gui|game|ready|default|screen/i.test(k));
-  console.error("[module] lifecycle keys:", keys.join(","));
-}, 14000);
 
 // The start page's own globals.
 (globalThis as any).robloxWasmHostConfig = {

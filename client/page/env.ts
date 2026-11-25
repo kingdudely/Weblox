@@ -30,14 +30,9 @@ export interface Host {
   /** Subscribe to a real window event; returns an unsubscribe. */
   on(type: string, fn: (e: any) => void): () => void;
   setTitle(title: string): void;
-  /** Called when the engine presents a frame. */
-  frame?(): void;
-  /** Called when the GPU device behind the surface is lost. */
-  deviceLost?(info: any): void;
-  /** Called at engine milestones so the watchdog can adapt its deadline. */
-  progress?(milestone: string): void;
-  /** Called when WebTransport never yields server data: the server is dead. */
-  handshakeFail?(reason: string): void;
+  /** Emulated pointer lock: hide/confine the OS cursor (X11 FFI). */
+  lockCursor?(on: boolean): void;
+  recenterCursor?(): void;
 }
 
 /** Build a synthetic event the way the DOM would expose it. */
@@ -135,6 +130,13 @@ export class El extends EventTarget {
   focus() {}
   blur() {}
   click() { send(this, "click"); }
+  /** WebClient checks `document.body?.requestPointerLock` before it locks.
+   *  Deno desktop has no native pointer-lock API, so emulate the DOM contract;
+   *  mouse deltas already arrive as relative motion from the window. */
+  requestPointerLock() {
+    (globalThis as any).document?.__lock?.(this);
+    return Promise.resolve();
+  }
   querySelector() { return null; }
   querySelectorAll() { return []; }
   closest() { return null; }
@@ -224,24 +226,13 @@ export class Canvas extends El {
           if (this.host) (this.host as any).gpuDevice = d;
           if (d && !watched.has(d)) {
             watched.add(d);
-            d.lost?.then((info: any) => {
-              log("GPU device lost", info?.reason ?? "", info?.message ?? "");
-              this.host?.deviceLost?.(info);
-            });
+            d.lost?.then((info: any) => log("GPU device lost", info?.reason ?? "", info?.message ?? ""));
           }
-          if (Deno.env.get("WC_SIZES") === "1") log("configure", "surface", raw.getConfiguration?.() ?? "", "canvas", this.width, this.height, "client", this.clientWidth, this.clientHeight, JSON.stringify(cfg));
           raw.configure(cfg);
         },
         unconfigure: () => raw.unconfigure?.(),
         getCurrentTexture: () => {
-          let tex;
-          try { tex = raw.getCurrentTexture(); }
-          catch (e) {
-            if (/device.{0,20}lost|lost.{0,20}device/i.test(String(e))) this.host?.deviceLost?.(e);
-            throw e;
-          }
-          this.host?.frame?.();
-          if (Deno.env.get("WC_SIZES") === "1") log("texture", tex.width, tex.height, "surface", surface.width, surface.height, "canvas", this.width, this.height, "client", this.clientWidth, this.clientHeight);
+          const tex = raw.getCurrentTexture();
           const host: any = this.host;
           if (host?.capture) {
             const cap = host.capture, d = this.cfg?.device, cw = tex.width, ch = tex.height;
@@ -266,7 +257,7 @@ export class Canvas extends El {
     if (kind === "2d") return make2D(this);
     return null;
   }
-  requestPointerLock() { (globalThis as any).document?.__lock?.(this); return Promise.resolve(); }
+  override requestPointerLock() { (globalThis as any).document?.__lock?.(this); return Promise.resolve(); }
   toDataURL() { return "data:image/png;base64,"; }
   toBlob(cb: (b: Blob) => void) { cb(new Blob()); }
 }
@@ -283,241 +274,10 @@ export interface Page {
  */
 export function install(kind: "main" | "worker", host?: Host, opts: { place?: number; cookie?: string; renderer?: string } = {}): Page {
   const worker = kind === "worker";
-  const stubImports = Deno.env.get("WC_STUB_IMPORTS");
-  if (stubImports) {
-    try { (globalThis as any).__STUB_IMPORTS = JSON.parse(stubImports); } catch {}
-  }
-  (globalThis as any).__wcRnaLog = Deno.env.get("WC_RNA_LOG") === "1";
-  (globalThis as any).__wcRnaDump = Deno.env.get("WC_RNA_DUMP") === "1";
-  (globalThis as any).__wcProgress = (m: string) => host?.progress?.(m);
-  // A WebTransport handshake that never produces server data is a dead server
-  // (old RCC build), not a transport bug. The engine lives in the worker, so
-  // forward the signal to main through the patched Worker channel.
-  (globalThis as any).__wcHandshakeFail = (m: string) => {
-    if (worker) (globalThis as any).postMessage?.({ __handshakeFailed: m });
-    else host?.handshakeFail?.(m);
-  };
-
   // The global scope is already an EventTarget (and Deno dispatches worker
   // messages through it), so leave addEventListener alone and dispatch events.
   if (!worker) (globalThis as any).window = globalThis;
   (globalThis as any).self = globalThis;
-  // Trace WebTransport so a stalled replication is diagnosable.
-  const WT: any = (globalThis as any).WebTransport;
-  if (WT && Deno.env.get("WC_WT_PASSTHROUGH") !== "1") {
-    (globalThis as any).WebTransport = class extends WT {
-      getStats() {
-        if (Deno.env.get("WC_REAL_STATS") === "1") {
-          return WT.prototype.getStats.call(this);
-        }
-        // Deno returns all-zero counters; the engine's replication scheduler
-        // reads these every tick and treats zero as a stalled link. Report
-        // plausible values that keep increasing, so progress checks see a live
-        // link (static counters look stalled to a delta-based scheduler).
-        const s: any = (this as any).__wcStats ??= { n: 0, sent: 0, recv: 0 };
-        s.n++; s.sent += 137; s.recv += 149;
-        return Promise.resolve({
-          smoothedRtt: 0.02, minRtt: 0.015, rttVariation: 0.002,
-          estimatedSendRate: 2_000_000, atSendCapacity: false,
-          packetsSent: 100 + s.n, bytesSent: 20000 + s.sent, bytesSentOverhead: 500,
-          packetsReceived: 100 + s.n, bytesReceived: 20000 + s.recv,
-          packetsLost: 0, bytesLost: 0,
-          datagrams: { droppedIncoming: 0, expiredIncoming: 0, expiredOutgoing: 0, lostOutgoing: 0 },
-        });
-      }
-      constructor(url: any, opts: any) {
-        // rwebtransport supports Origin/custom headers on the Extended CONNECT;
-        // Deno's built-in ignores these extra dictionary members.
-        const o: any = opts ? { ...opts } : {};
-        const origin = Deno.env.get("WC_WT_ORIGIN_HDR");
-        if (origin) o.origin = origin;
-        const ua = Deno.env.get("WC_WT_UA_HDR");
-        if (ua) o.headers = { ...(o.headers ?? {}), "user-agent": ua };
-        if (Deno.env.get("WC_WT_CHROME_HDRS") === "1") {
-          o.headers = {
-            ...(o.headers ?? {}),
-            "sec-webtransport-http3-draft02": "1",
-            "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36",
-          };
-        }
-        if (Deno.env.get("WC_WT_FULL_HDRS") === "1") {
-          // Chrome adds these automatically to a WebTransport Extended CONNECT.
-          // A native WebTransport library sends none of them; Roblox's server
-          // may use them to decide whether to open game streams.
-          o.headers = {
-            ...(o.headers ?? {}),
-            origin: "https://play.roblox.com",
-            "sec-webtransport-http3-draft02": "1",
-            "user-agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36",
-            "sec-ch-ua": '"Not-A.Brand";v="99", "Google Chrome";v="157", "Chromium";v="157"',
-            "sec-ch-ua-mobile": "?0",
-            "sec-ch-ua-platform": '"Linux"',
-            "sec-fetch-mode": "cors",
-            "sec-fetch-site": "same-site",
-            "sec-fetch-dest": "empty",
-            "accept-language": "en-US,en;q=0.9",
-          };
-        }
-        super(url, o);
-        console.error("[wt ] new", String(url), "hashes", opts?.serverCertificateHashes?.length ?? 0, "unreliable", opts?.requireUnreliable, "cc", opts?.congestionControl);
-        // Roblox servers that accept the browser route open a unidirectional
-        // stream and send real replication data within a few seconds. Broken
-        // (older RCC build) servers only answer with 32-byte keepalives and
-        // never produce a stream; Deno's WebTransport does not enforce Chrome's
-        // 4s idle timeout, so ready() stays resolved and the UI hangs forever.
-        // Detect that here and ask the watchdog to rejoin onto another server.
-        const handshakeMs = Number(Deno.env.get("WC_WT_HANDSHAKE_MS") ?? 6000);
-        const minData = Number(Deno.env.get("WC_WT_MIN_DATA") ?? 64);
-        let streamAccepted = false;
-        let failed = false;
-        let failTimer: ReturnType<typeof setTimeout> | undefined;
-        const markAlive = (why: string) => {
-          if (failed || streamAccepted) return;
-          streamAccepted = true;
-          clearTimeout(failTimer);
-          console.error("[wt ] handshake alive:", why);
-        };
-        const signalFail = (why: string) => {
-          if (failed || streamAccepted) return;
-          failed = true;
-          clearTimeout(failTimer);
-          console.error("[wt ] HANDSHAKE FAIL:", why, "- requesting rejoin");
-          (globalThis as any).__wcHandshakeFail?.(why);
-        };
-        if (handshakeMs > 0) {
-          failTimer = setTimeout(() => signalFail(`no server data after ${handshakeMs}ms`), handshakeMs);
-        }
-        const dg0: any = this.datagrams;
-        if (dg0?.readable?.getReader) {
-          const gr0 = dg0.readable.getReader.bind(dg0.readable);
-          dg0.readable.getReader = () => {
-            const r = gr0();
-            const rd = r.read.bind(r);
-            r.read = async () => {
-              const v = await rd();
-              if (!v.done) {
-                const n = v.value?.byteLength ?? 0;
-                console.error("[wt ] incoming datagram", n);
-                if (n > minData) markAlive(`datagram ${n}B`);
-              }
-              return v;
-            };
-            return r;
-          };
-        }
-        const iu0: any = this.incomingUnidirectionalStreams;
-        if (iu0?.getReader) {
-          const gr = iu0.getReader.bind(iu0);
-          iu0.getReader = () => {
-            console.error("[wt ] GET READER on incomingUnidirectionalStreams");
-            const r = gr();
-            let reads = 0;
-            const read = r.read.bind(r);
-            r.read = async () => {
-              const v = await read();
-              if (++reads <= 3 || !v.done) console.error("[wt ] incoming read", reads, "done", v.done, "value", !!v.value);
-              if (!v.done) {
-                console.error("[wt ] incoming stream accepted");
-                markAlive("server stream");
-              }
-              return v;
-            };
-            return r;
-          };
-        } else {
-          console.error("[wt ] NO incomingUnidirectionalStreams.getReader available");
-        }
-        this.ready.then(
-          () => {
-            console.error("[wt ] ready", String(url), "maxDG", this.datagrams?.maxDatagramSize);
-            let streams = 0, writes = 0;
-            const mk = this.createUnidirectionalStream?.bind(this);
-            if (mk) this.createUnidirectionalStream = () => {
-              const p = mk();
-              const sid = ++streams;
-              if (sid <= 5) console.error("[wt ] stream create", sid);
-              p.then((s: any) => {
-                if (!s?.getWriter) return;
-                const gw = s.getWriter.bind(s);
-                s.getWriter = () => {
-                  const w = gw();
-                  const wr = w.write.bind(w);
-                  w.write = (chunk: any) => {
-                    ++writes;
-                    if (Deno.env.get("WC_WT_DUMP") === "1") {
-                      const b = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk?.buffer ?? chunk ?? []);
-                      console.error("[wtdump]", sid, writes, b.byteLength,
-                        Array.from(b).map((x) => x.toString(16).padStart(2, "0")).join(" "));
-                    } else if (writes <= 8) console.error("[wt ] stream write", sid, writes, chunk?.byteLength);
-                    return wr(chunk);
-                  };
-                  return w;
-                };
-              }).catch(() => {});
-              return p;
-            };
-            const dg = this.datagrams;
-            if (dg) {
-              let n = 0;
-              const orig = dg.writable?.getWriter?.bind(dg.writable);
-              if (orig) dg.writable.getWriter = () => {
-                const w = orig();
-                const write = w.write.bind(w);
-                w.write = (chunk: any) => {
-                  ++n;
-                  if (Deno.env.get("WC_WT_DUMP") === "1") {
-                    const b = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk?.buffer ?? chunk ?? []);
-                    console.error("[wtdg]", n, b.byteLength, Array.from(b.slice(0, 64)).map((x) => x.toString(16).padStart(2, "0")).join(" "));
-                  } else if (n <= 5) console.error("[wt ] datagram write", n, chunk?.byteLength);
-                  const p = write(chunk);
-                  p.then(() => console.error("[wt ] datagram ACK", n),
-                    (e: any) => console.error("[wt ] datagram WRITE ERR", n, e?.name, e?.message));
-                  return p;
-                };
-                return w;
-              };
-            }
-          },
-          (e: any) => {
-            console.error("[wt ] ready FAILED", e?.name, e?.message);
-            signalFail(`ready rejected: ${e?.name ?? "error"}`);
-          },
-        );
-        this.closed.then((e: any) => {
-          console.error("[wt ] closed", e?.closeCode, e?.reason);
-          clearTimeout(failTimer);
-        }).catch(() => {});
-      }
-    };
-  } else {
-    console.error("[wt ] WebTransport unavailable");
-  }
-  // Log the engine -> page lifecycle callbacks. If any of these never fire,
-  // the loading screen stays up even though the network join succeeded.
-  if (!worker) {
-    let hook: any, joined: any, status: any;
-    const wrap = (name: string, store: (f: any) => void, get: () => any) =>
-      Object.defineProperty(globalThis, name, {
-        configurable: true,
-        get: () => get(),
-        set: (f: any) => {
-          console.error("[env] hook installed:", name);
-          store((...a: any[]) => {
-            console.error("[env] hook CALLED:", name, JSON.stringify(a)?.slice(0, 300));
-            if (name === "__onEngineLoadingStatus" && Deno.env.get("WC_FORCE_DISMISS") !== "0" &&
-                /Loading experience/.test(JSON.stringify(a))) {
-              setTimeout(() => (globalThis as any).__onDefaultLoadingScreenRemoved?.({}), 3000);
-            }
-            return f(...a);
-          });
-        },
-      });
-    wrap("__onDefaultLoadingScreenRemoved", (f) => (hook = f), () => hook);
-    wrap("__onExperienceJoined", (f) => (joined = f), () => joined);
-    wrap("__onEngineLoadingStatus", (f) => (status = f), () => status);
-    // WasmPlayer.js does not install this one, so provide a listener.
-    (globalThis as any).__onExperienceJoined = () => {};
-  }
   // The glue gates its JSPI (fiber) machinery on this interface existing.
   if (!(globalThis as any).WorkerGlobalScope) (globalThis as any).WorkerGlobalScope = class WorkerGlobalScope {};
 
@@ -553,7 +313,6 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
   };
   (globalThis as any).webkitAudioContext = (globalThis as any).AudioContext;
 
-  const chromeHints = Deno.env.get("WC_CHROME_HINTS") === "1";
   const screenSize = () => ({
     width: host ? host.width() : 1280,
     height: host ? host.height() : 720,
@@ -565,9 +324,7 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
     innerHeight: { configurable: true, get: () => screenSize().height },
     outerWidth: { configurable: true, get: () => screenSize().width },
     outerHeight: { configurable: true, get: () => screenSize().height },
-    screen: { configurable: true, get: () => chromeHints
-      ? { width: 1366, height: 768, availWidth: 1366, availHeight: 768, colorDepth: 24, pixelDepth: 24 }
-      : { ...screenSize(), availWidth: screenSize().width, availHeight: screenSize().height, colorDepth: 24, pixelDepth: 24 } },
+    screen: { configurable: true, get: () => ({ ...screenSize(), availWidth: screenSize().width, availHeight: screenSize().height, colorDepth: 24, pixelDepth: 24 }) },
     scrollX: { configurable: true, value: 0 },
     scrollY: { configurable: true, value: 0 },
     pageXOffset: { configurable: true, value: 0 },
@@ -641,19 +398,7 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
     webdriver: false,
     gpu,
     doNotTrack: null,
-    userAgentData: chromeHints
-      ? {
-        mobile: false, platform: "Linux x86_64",
-        brands: [{ brand: "Google Chrome", version: "157" }, { brand: "Chromium", version: "157" }],
-        getHighEntropyValues: async () => ({
-          model: "", platformVersion: "",
-          fullVersionList: [
-            { brand: "Google Chrome", version: "157.0.8103.78" },
-            { brand: "Chromium", version: "157.0.8103.78" },
-          ],
-        }),
-      }
-      : { mobile: false, platform: "Linux x86_64", brands: [{ brand: "Chromium", version: "157" }] },
+    userAgentData: { mobile: false, platform: "Linux x86_64", brands: [{ brand: "Chromium", version: "157" }] },
     storage: {
       getDirectory: async () => opfs,
       estimate: async () => ({ usage: 0, quota: 1 << 30 }),
@@ -675,7 +420,7 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
   // engine sets tracker cookies and must not clobber the session cookie.
   const jar = new Map<string, string>();
   if (opts.cookie) jar.set(".ROBLOSECURITY", opts.cookie);
-  jar.set("RBXEventTrackerV2", `browserid=${Deno.env.get("WC_BROWSER_ID") ?? "wc"}`);
+  jar.set("RBXEventTrackerV2", "browserid=wc");
   const cookie = {
     get: () => [...jar].map(([k, v]) => `${k}=${v}`).join("; "),
     set: (v: string) => {
@@ -714,11 +459,15 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
     exitPointerLock() {
       if (!doc.pointerLockElement) return;
       doc.pointerLockElement = null;
+      host?.lockCursor?.(false);
       doc.dispatchEvent(ev("pointerlockchange"));
+      globalThis.dispatchEvent(ev("pointerlockchange"));
     },
     __lock(target: any) {
       doc.pointerLockElement = target;
+      host?.lockCursor?.(true);
       doc.dispatchEvent(ev("pointerlockchange"));
+      globalThis.dispatchEvent(ev("pointerlockchange"));
     },
   });
   doc.body.appendChild(canvas);
@@ -731,7 +480,9 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
   if (host) {
     const canvasTypes = ["pointerdown", "pointerup", "pointermove", "mousedown", "mouseup", "mousemove", "click", "dblclick", "wheel", "contextmenu", "touchstart", "touchend", "touchmove", "touchcancel"];
     const trace = (t: string, e: any) => {
-      if (traceInput()) log("input", t, "key=", e.key, "code=", e.code, "kc=", keyCodeOf(e), "xy=", e.clientX, e.clientY, "btn=", e.button, "mov=", e.movementX, e.movementY);
+      if (traceInput()) log("input", t, "xy=", e.clientX, e.clientY, "btn=", e.button,
+        "mov=", e.movementX, e.movementY, "delta=", e.deltaX, e.deltaY,
+        "mode=", e.deltaMode, "lock=", !!doc.pointerLockElement);
     };
     let lastX = 0, lastY = 0, havePos = false, buttons = 0;
     // A native context menu grabs the pointer on some window backends, after
@@ -755,6 +506,12 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
       host.on(t, (e: any) => {
         const x = e.clientX, y = e.clientY;
         const finite = Number.isFinite(x) && Number.isFinite(y);
+        const locked = !!doc.pointerLockElement;
+        // While locked we warp the OS cursor back to the centre after every
+        // motion. Ignore the synthetic motion that warp generates, otherwise
+        // it cancels the real delta and the camera stops moving.
+        if (locked && finite && (t === "mousemove" || t === "pointermove") &&
+            Math.abs(x - host.width() / 2) < 1 && Math.abs(y - host.height() / 2) < 1) return;
         const dx = finite && havePos ? x - lastX : 0;
         const dy = finite && havePos ? y - lastY : 0;
         lastX = x; lastY = y; havePos = finite;
@@ -763,9 +520,20 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
         if (t === "mouseup" || t === "pointerup") buttons &= ~bit;
         if (t === "mouseleave") buttons = 0;
         const held = Number.isInteger(e.buttons) ? e.buttons : buttons;
-        const c = cloneEvent(e, { movementX: dx, movementY: dy, buttons: held, target: canvas });
+        const extra: Record<string, any> = { movementX: dx, movementY: dy, buttons: held, target: canvas };
+        // Deno/CEF can report wheel deltas in lines (deltaMode 1) or tiny pixel
+        // values; the engine reads raw pixels. Normalise to ~120px per notch.
+        if (t === "wheel") {
+          const scale = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 400 : 1;
+          const px = (v: number) => Math.abs(v) > 0 && Math.abs(v) < 20 ? v * 40 : v * scale;
+          extra.deltaX = px(e.deltaX ?? 0);
+          extra.deltaY = px(e.deltaY ?? 0);
+          extra.deltaMode = 0;
+        }
+        const c = cloneEvent(e, extra);
         trace(t, c);
         canvas.dispatchEvent(c);
+        if (locked && (t === "mousemove" || t === "pointermove")) host.recenterCursor?.();
         // In a browser a click on the canvas bubbles through body -> document
         // -> window. Roblox's UI (including the post-join retry/leave buttons)
         // listens on document/window in places, so deliver the same event up
@@ -773,7 +541,7 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
         // buttons look dead.
         if (t !== "mousemove" && t !== "pointermove" && t !== "mouseleave") {
           for (const [node, label] of [[doc.body, "body"], [doc, "document"], [globalThis, "window"]] as [EventTarget, string][]) {
-            const b = cloneEvent(e, { movementX: dx, movementY: dy, buttons: held, target: canvas, currentTarget: label });
+            const b = cloneEvent(e, { ...extra, currentTarget: label });
             node.dispatchEvent(b);
           }
         }
@@ -791,7 +559,6 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
   const realFetch = globalThis.fetch;
   (globalThis as any).fetch = async (input: any, init: any = {}) => {
     const url = typeof input === "string" ? input : input.url;
-    if (Deno.env.get("WC_FETCH_LOG") === "1") console.error("[fetch]", url);
     const h = new Headers(init.headers ?? (typeof input === "object" ? input.headers : undefined));
     patchHeaders(url, h);
     return realFetch(input, { ...init, headers: h });
@@ -838,7 +605,7 @@ export function patchHeaders(url: string, h: Headers) {
   if (!h.has("user-agent")) h.set("user-agent", UA);
   h.set("origin", ORIGIN);
   h.set("referer", PAGE + (globalThis as any).location.search);
-  h.set("rbx-user-agent", Deno.env.get("WC_RBX_UA") ?? "Roblox/Darwin");
+  h.set("rbx-user-agent", "Roblox/Darwin");
 }
 
 /**
@@ -867,7 +634,6 @@ function patchEngineWorkers(kind: "main" | "worker") {
       };
       this._w.onmessage = (e: any) => {
         if (e.data?.__ready) {
-          if (Deno.env.get("WC_NET_DEBUG") === "1") console.error("[worker] __ready received");
           this._ready = true;
           for (const [m, t] of this._q) this._w.postMessage(m, t);
           this._q.length = 0;
@@ -875,7 +641,6 @@ function patchEngineWorkers(kind: "main" | "worker") {
         }
         if (e.data?.__log) { log("worker:", e.data.__log); return; }
         if (e.data?.__error) { console.error("[worker] failed:", e.data.__error); return; }
-        if (e.data?.__handshakeFailed) { (globalThis as any).__wcHandshakeFail?.(e.data.__handshakeFailed); return; }
         this.onmessage?.(e);
       };
     }
