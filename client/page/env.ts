@@ -791,6 +791,7 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
   const realFetch = globalThis.fetch;
   (globalThis as any).fetch = async (input: any, init: any = {}) => {
     const url = typeof input === "string" ? input : input.url;
+    if (Deno.env.get("WC_FETCH_LOG") === "1") console.error("[fetch]", url);
     const h = new Headers(init.headers ?? (typeof input === "object" ? input.headers : undefined));
     patchHeaders(url, h);
     return realFetch(input, { ...init, headers: h });

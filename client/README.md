@@ -30,6 +30,21 @@ Defaults: cookie from `/home/john/mizg.txt`, place `189707`. Override with
 `WC_COOKIE_FILE`, `WC_PLACE`, or the first argument. A known-good alternative
 cookie for the `jebuscristgaming` account is `/tmp/opencode/jebus.txt`.
 
+**Working path:** build with `--unstable-net` and run with `WC_WT_DRAFT02=1`:
+
+```sh
+deno desktop -A --unstable-net --include page --include mirror --include page/watchdog.ts main.ts
+WC_WT_DRAFT02=1 ./run.sh 189707
+```
+
+`page/draftwt.ts` implements WebTransport draft-02 on Deno's raw QUIC API.
+Roblox/qdmux negotiates draft-02; Deno's built-in WebTransport has no way to
+send the required `sec-webtransport-http3-draft02: 1` CONNECT header (verified
+by reading Deno's source: the WebIDL converter has no `headers` key), so it
+never receives replication streams. The draft-02 module adds that header and
+demultiplexes server streams itself. This path reached schema + peer id and a
+full in-game join.
+
 The client restarts itself on a separate thread (`page/watchdog.ts`) when it
 detects a GPU device loss, a pre-join stall (18 s), a post-join stall (45 s), or
 a WebTransport handshake failure (see below). `WC_WATCHDOG_MS=0` disables the
@@ -41,7 +56,7 @@ overlapping sessions on the same account get disconnected.
 
 ```sh
 deno check main.ts page/*.ts
-deno desktop -A --include page --include mirror --include page/watchdog.ts main.ts
+deno desktop -A --unstable-net --include page --include mirror --include page/watchdog.ts main.ts
 ```
 
 `deno desktop` bundles **and runs** the app, so stop it (Ctrl-C / kill) once
@@ -97,6 +112,7 @@ Join / identity:
 - `WC_FORCE_DISMISS=0` — keep the synthetic loading screen dismissal off
 
 Networking:
+- `WC_WT_DRAFT02=1` — **working path**: draft-02 WT on `Deno.connectQuic`
 - `WC_ENGINE`, `WC_PAGE_ASSETS`, `WC_MIRROR`, `WC_REFRESH=1`, `WC_GLES=1`
 - `WC_WT_LIB=1` — npm `@webtransport-bun` (ruled out)
 - `WC_WT_FC=1` — npm `@fails-components` (ruled out)

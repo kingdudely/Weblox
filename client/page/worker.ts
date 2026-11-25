@@ -13,6 +13,11 @@ if (cookieFile) {
   try { cookie = (await Deno.readTextFile(cookieFile)).trim().replace(/^\.ROBLOSECURITY=/, ""); } catch { /* none */ }
 }
 
+if (Deno.env.get("WC_WT_DRAFT02") === "1") {
+  const m: any = await import("./draftwt.ts");
+  (globalThis as any).WebTransport = m.DraftWebTransport;
+  console.error("[draft02] worker override installed");
+}
 install("worker", undefined, { cookie });
 globalThis.name = "em-pthread";
 Object.defineProperty(globalThis, "location", { configurable: true, value: new URL(stubUrl) });

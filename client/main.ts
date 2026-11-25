@@ -11,9 +11,15 @@ const cookieFile = Deno.env.get("WC_COOKIE_FILE") ?? "/home/john/king.txt";
 let cookie = "";
 try { cookie = (await Deno.readTextFile(cookieFile)).trim().replace(/^\.ROBLOSECURITY=/, ""); } catch { console.error("[main] no cookie at", cookieFile); }
 
-// Optionally use a Rust/wtransport-backed WebTransport implementation instead
-// of Deno's built-in one (which omits Origin/User-Agent on CONNECT).
-if (Deno.env.get("WC_WT_LIB") === "1") {
+// Pure-TS WebTransport draft-02 on Deno's raw QUIC API. Roblox/qdmux negotiates
+// draft-02 (Chrome NetLog: webtransport_http3_version=draft-02), while Deno's
+// built-in implementation omits the sec-webtransport-http3-draft02 CONNECT
+// header and has no WebIDL key to inject it.
+if (Deno.env.get("WC_WT_DRAFT02") === "1") {
+  const m: any = await import("./page/draftwt.ts");
+  (globalThis as any).WebTransport = m.DraftWebTransport;
+  console.error("[wt ] using pure-TS draft-02 WebTransport (connectQuic)");
+} else if (Deno.env.get("WC_WT_LIB") === "1") {
   const m: any = await import("npm:@webtransport-bun/webtransport@0.3.0");
   (globalThis as any).WebTransport = m.WebTransport;
   console.error("[wt ] using npm WebTransport library");
@@ -34,6 +40,7 @@ if (Deno.env.get("WC_WT_LIB") === "1") {
   const m: any = await import("npm:quico@0.10.2");
   (globalThis as any).WebTransport = m.WebTransport;
   console.error("[wt ] using quico (pure JS)");
+
 }
 
 const base = await resolveEngine();
