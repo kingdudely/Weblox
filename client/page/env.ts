@@ -506,6 +506,7 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
       host.on(t, (e: any) => {
         const x = e.clientX, y = e.clientY;
         const finite = Number.isFinite(x) && Number.isFinite(y);
+        const prevX = lastX, prevY = lastY;
         const dx = finite && havePos ? x - lastX : 0;
         const dy = finite && havePos ? y - lastY : 0;
         lastX = x; lastY = y; havePos = finite;
@@ -535,6 +536,13 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
           // drag and rotate the view instead of zooming.
           extra.button = 0;
           extra.buttons = 0;
+          // Roblox also copies clientX/Y into every wheel event; a position
+          // different from the last mousemove can be read as a look delta.
+          extra.clientX = prevX;
+          extra.clientY = prevY;
+          // The engine copies deltaZ too; some camera paths zoom off that
+          // field rather than deltaY.
+          extra.deltaZ = extra.deltaY;
         }
         const c = cloneEvent(e, extra);
         trace(t, c);
