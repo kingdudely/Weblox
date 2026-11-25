@@ -34,7 +34,7 @@ export interface Host {
 
 /** Build a synthetic event the way the DOM would expose it. */
 export function ev(type: string, props: Record<string, any> = {}) {
-  const e = new Event(type);
+  const e = new Event(type, { bubbles: true, cancelable: true });
   for (const [k, v] of Object.entries(props)) Object.defineProperty(e, k, { value: v, configurable: true, enumerable: true });
   return e;
 }
@@ -65,8 +65,17 @@ export function keyCodeOf(e: any): number {
 export function cloneEvent(e: Event, extra: Record<string, any> = {}): Event {
   const raw: any = e;
   const C = raw.constructor as any;
+  // The engine reads `defaultPrevented` to know a UI element consumed the
+  // wheel. Deno's raw events are not usable as init dictionaries, so copy the
+  // fields explicitly and make the clone cancelable/bubbling like a browser's.
+  const init: Record<string, any> = { bubbles: true, cancelable: true };
+  for (const k of ["clientX", "clientY", "screenX", "screenY", "button", "buttons",
+    "deltaX", "deltaY", "deltaZ", "deltaMode", "key", "code", "charCode",
+    "ctrlKey", "shiftKey", "altKey", "metaKey", "repeat", "timeStamp"]) {
+    if (k in raw) init[k] = (raw as any)[k];
+  }
   let out: any;
-  try { out = new C(e.type, e); } catch { out = new Event(e.type); }
+  try { out = new C(e.type, init); } catch { out = ev(e.type); }
   const fields: Record<string, any> = {
     keyCode: keyCodeOf(raw),
     which: raw.type.startsWith("key") ? keyCodeOf(raw) : (raw.button ?? 0) + 1,
@@ -556,9 +565,13 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
         // that chain. Only the canvas originally received it, which made those
         // buttons look dead.
         if (t !== "mousemove" && t !== "pointermove" && t !== "mouseleave") {
+          // Dispatch ONE event up the chain: a UI handler's preventDefault must
+          // stay visible to later handlers (the engine reads defaultPrevented
+          // to decide whether the wheel was consumed by UI instead of camera).
           for (const [node, label] of [[doc.body, "body"], [doc, "document"], [globalThis, "window"]] as [EventTarget, string][]) {
-            const b = cloneEvent(e, { ...extra, currentTarget: label });
-            node.dispatchEvent(b);
+            try { Object.defineProperty(c, "currentTarget", { value: label, configurable: true }); } catch { /* read-only */ }
+            node.dispatchEvent(c);
+            if (c.defaultPrevented) break;
           }
         }
       });
