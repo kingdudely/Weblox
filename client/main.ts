@@ -33,10 +33,12 @@ installFetch();
 const adapter = await (globalThis as any).navigator?.gpu?.requestAdapter({ powerPreference: "high-performance" });
 if (!adapter) throw new Error("no WebGPU adapter — this host requires a WebGPU-capable GPU/driver");
 
-const win = new (Deno as any).BrowserWindow({ title: "Alcohol", width: 1280, height: 720 });
+const WIN_W = Number(Deno.env.get("WC_WIN_W") ?? 1280);
+const WIN_H = Number(Deno.env.get("WC_WIN_H") ?? 720);
+const win = new (Deno as any).BrowserWindow({ title: "Alcohol", width: WIN_W, height: WIN_H });
 // The first BrowserWindow adopts the startup window, whose size the
 // constructor cannot change; set it explicitly so client and surface agree.
-win.setSize(1280, 720);
+win.setSize(WIN_W, WIN_H);
 const surface = win.getNativeWindow();
 // The surface is the window's content area. Keep it exactly the size of the
 // client area; the compositor scales any mismatch, which looks like stretch.

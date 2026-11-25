@@ -212,7 +212,10 @@ export class Canvas extends El {
     if (!s || (s.width === w && s.height === h)) return;
     s.width = w;
     s.height = h;
-    if (this.cfg) s.configure(this.cfg);
+    // Do NOT reconfigure here.  The engine resizes main targets right after
+    // join while it has live pipelines/textures; reconfiguring the surface at
+    // that moment kills the WebGPU device ("Device LOST") and main_loop stops.
+    // The surface follows the canvas width/height on its own.
   }
 
   getContext(kind: string, attrs?: any) {
