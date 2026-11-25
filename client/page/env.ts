@@ -520,9 +520,15 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
         if (t === "wheel") {
           const scale = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 400 : 1;
           const px = (v: number) => Math.abs(v) > 0 && Math.abs(v) < 20 ? v * 40 : v * scale;
-          extra.deltaX = px(e.deltaX ?? 0);
-          extra.deltaY = px(e.deltaY ?? 0);
+          // Deno delivers raw wheel steps; the engine expects the direction
+          // the OS/browser uses for natural scrolling (inverted from raw X11).
+          extra.deltaX = -px(e.deltaX ?? 0);
+          extra.deltaY = -px(e.deltaY ?? 0);
           extra.deltaMode = 0;
+          // A wheel is not a look motion. Any stale movementX/Y would be read
+          // by the camera handler as pitch/yaw, tilting the view on scroll.
+          extra.movementX = 0;
+          extra.movementY = 0;
         }
         const c = cloneEvent(e, extra);
         trace(t, c);
