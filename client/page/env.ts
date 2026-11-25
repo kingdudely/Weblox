@@ -30,9 +30,6 @@ export interface Host {
   /** Subscribe to a real window event; returns an unsubscribe. */
   on(type: string, fn: (e: any) => void): () => void;
   setTitle(title: string): void;
-  /** Emulated pointer lock: hide/confine the OS cursor (X11 FFI). */
-  lockCursor?(on: boolean): void;
-  recenterCursor?(): void;
 }
 
 /** Build a synthetic event the way the DOM would expose it. */
@@ -94,6 +91,9 @@ export interface SurfaceContext {
 
 export class El extends EventTarget {
   tagName: string;
+  // WebClient.js only installs a wheel handler when `typeof e.onwheel !==
+  // "undefined"`. Without this property its scroll handler is never registered.
+  onwheel: ((e: any) => void) | null = null;
   style: Record<string, any> = {};
   dataset: Record<string, any> = {};
   children: any[] = [];
@@ -344,6 +344,7 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
   });
 
   (globalThis as any).onerror = null;
+  (globalThis as any).onwheel = null;
   (globalThis as any).addEventListener("error", (e: any) => log("window error", e.message || e));
   (globalThis as any).open = () => null;
   (globalThis as any).close = () => {};
@@ -442,6 +443,7 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
     readyState: "complete",
     visibilityState: "visible",
     hidden: false,
+    onwheel: null,
     fullscreenElement: null,
     currentScript: { src: "" },
     _ids: new Map<string, any>([["canvas", canvas]]),
@@ -459,13 +461,11 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
     exitPointerLock() {
       if (!doc.pointerLockElement) return;
       doc.pointerLockElement = null;
-      host?.lockCursor?.(false);
       doc.dispatchEvent(ev("pointerlockchange"));
       globalThis.dispatchEvent(ev("pointerlockchange"));
     },
     __lock(target: any) {
       doc.pointerLockElement = target;
-      host?.lockCursor?.(true);
       doc.dispatchEvent(ev("pointerlockchange"));
       globalThis.dispatchEvent(ev("pointerlockchange"));
     },
@@ -506,12 +506,6 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
       host.on(t, (e: any) => {
         const x = e.clientX, y = e.clientY;
         const finite = Number.isFinite(x) && Number.isFinite(y);
-        const locked = !!doc.pointerLockElement;
-        // While locked we warp the OS cursor back to the centre after every
-        // motion. Ignore the synthetic motion that warp generates, otherwise
-        // it cancels the real delta and the camera stops moving.
-        if (locked && finite && (t === "mousemove" || t === "pointermove") &&
-            Math.abs(x - host.width() / 2) < 1 && Math.abs(y - host.height() / 2) < 1) return;
         const dx = finite && havePos ? x - lastX : 0;
         const dy = finite && havePos ? y - lastY : 0;
         lastX = x; lastY = y; havePos = finite;
@@ -533,7 +527,6 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
         const c = cloneEvent(e, extra);
         trace(t, c);
         canvas.dispatchEvent(c);
-        if (locked && (t === "mousemove" || t === "pointermove")) host.recenterCursor?.();
         // In a browser a click on the canvas bubbles through body -> document
         // -> window. Roblox's UI (including the post-join retry/leave buttons)
         // listens on document/window in places, so deliver the same event up

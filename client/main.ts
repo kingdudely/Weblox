@@ -5,7 +5,6 @@
 // input, a title, and a place to put the page.
 import { install } from "./page/env.ts";
 import { resolveEngine, resolvePage, installFetch, canonical } from "./page/net.ts";
-import { lockCursor, recenterCursor } from "./page/x11.ts";
 
 const place = Number(Deno.args[0] ?? Deno.env.get("WC_PLACE") ?? 189707);
 const cookieFile = Deno.env.get("WC_COOKIE_FILE") ?? "/home/john/mizg.txt";
@@ -88,19 +87,13 @@ const host = {
     return () => win.removeEventListener(type, fn);
   },
   setTitle: (t: string) => win.setTitle(t),
-  lockCursor,
-  recenterCursor: () => {
-    const [x, y] = win.getPosition();
-    const [w, h] = win.getSize();
-    recenterCursor(x + w / 2, y + h / 2);
-  },
 };
 
 const page = install("main", host, { place, cookie });
 // The engine configures this context with its own device during bootstrap.
 page.canvas.getContext("webgpu");
 
-win.addEventListener("close", () => { lockCursor(false); Deno.exit(0); });
+win.addEventListener("close", () => Deno.exit(0));
 win.setTitle(`${place} - Alcohol`);
 
 // The start page's own globals.
