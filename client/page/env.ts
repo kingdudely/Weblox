@@ -522,7 +522,9 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
           const px = (v: number) => Math.abs(v) > 0 && Math.abs(v) < 20 ? v * 40 : v * scale;
           // Deno delivers raw wheel steps; the engine expects the direction
           // the OS/browser uses for natural scrolling (inverted from raw X11).
-          extra.deltaX = -px(e.deltaX ?? 0);
+          // Roblox maps any horizontal wheel delta to camera tilt instead of
+          // zoom (a long-standing engine bug). Send vertical zoom only.
+          extra.deltaX = 0;
           extra.deltaY = -px(e.deltaY ?? 0);
           extra.deltaMode = 0;
           // A wheel is not a look motion. Any stale movementX/Y would be read
