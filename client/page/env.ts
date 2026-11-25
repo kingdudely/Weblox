@@ -531,6 +531,10 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
           // by the camera handler as pitch/yaw, tilting the view on scroll.
           extra.movementX = 0;
           extra.movementY = 0;
+          // A stale "button held" state makes the camera treat the wheel as a
+          // drag and rotate the view instead of zooming.
+          extra.button = 0;
+          extra.buttons = 0;
         }
         const c = cloneEvent(e, extra);
         trace(t, c);
