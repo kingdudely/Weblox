@@ -82,8 +82,8 @@ pub async fn pump_mailbox<T: AsContextMut<Data = St>>(cx: &mut T) -> bool {
         }
         set_ready(cx, ptr);
     }
-    crate::imports::http::pump(cx).await;
-    crate::imports::rna::pump(cx).await;
+    crate::imports::http::pump(cx);
+    crate::imports::rna::pump(cx);
     if ptr.is_some() {
         check(cx).await;
     }
@@ -114,7 +114,7 @@ pub fn pump_now(c: &mut Caller<'_, St>) {
     if !pending(ptr) {
         return;
     }
-    let _ = crate::fibre::run_sync(pump_mailbox(c));
+    let _ = futures::executor::block_on(pump_mailbox(c));
 }
 
 /// `pump_mailbox` for the main thread only.
@@ -127,7 +127,7 @@ pub async fn drop_in<T: AsContextMut<Data = St>>(cx: &mut T) -> bool {
         let inst = cx.as_context().data().inst;
         if let Some(inst) = inst {
             if let Ok(f) = inst.get_typed_func::<(), (i32,)>(&mut *cx, "pthread_self") {
-                if let Ok((me,)) = f.call_async(&mut *cx, ()).await {
+                if let Ok((me,)) = f.call(&mut *cx, ()) {
                     if me != 0 {
                         let me = me as u32;
                         cx.as_context_mut().data_mut().main_ptr = Some(me);
@@ -194,7 +194,7 @@ async fn check<T: AsContextMut<Data = St>>(cx: &mut T) {
         }
     }
     cx.as_context_mut().data_mut().in_drain = true;
-    if let Err(e) = f.call_async(&mut *cx, &[], &mut []).await {
+    if let Err(e) = f.call(&mut *cx, &[], &mut []) {
         static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if n < 5 {

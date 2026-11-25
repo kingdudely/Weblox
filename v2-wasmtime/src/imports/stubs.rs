@@ -81,7 +81,7 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
                 eprintln!("[asyn] {} fire f={f} arg={arg}", std::thread::current().name().unwrap_or("?"));
             }
             let mut out = [];
-            if let Err(e) = func.call_async(&mut *st, &[wasmtime::Val::I32(arg)], &mut out).await {
+            if let Err(e) = func.call(&mut *st, &[wasmtime::Val::I32(arg)], &mut out) {
                 if std::env::var_os("WC_FX").is_some() {
                     eprintln!("[async] callback {f} threw: {e:#}");
                 }
@@ -119,12 +119,9 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
     // 16-byte pairs (an 8-byte tag, then either an int64 or a float64), and a
     // nonzero `func` names an ASM_CONSTS entry while `index` selects the glue's
     // `_emscripten_*` table.  A `done` callback turns the call into a promise.
-    l.func_wrap_async("env", "_emscripten_receive_on_main_thread_js",
-        |c: Caller<'_, St>, (index, func, _caller, buf, size, done, done_arg): (i32, i32, i32, i32, i32, i32, i32)| {
-          let sp = c.data().rt.as_ref().expect("rt").store;
-          let fut: Box<dyn std::future::Future<Output = f64> + Send> = Box::new(async move {
-            let mut c = c;
-            let mut c = &mut c;
+    l.func_wrap("env", "_emscripten_receive_on_main_thread_js",
+        |mut c: Caller<'_, St>, index: i32, func: i32, _caller: i32, buf: i32, size: i32,
+         done: i32, done_arg: i32| -> f64 {
             crate::trace::hit("recv_mt");
             eprintln!("[mt  ] recv idx={index} fn={func:#x} done={done:#x} t={}", std::thread::current().name().unwrap_or("?"));
             let n = ((size.max(0) as usize) / 16).min(32);
@@ -148,16 +145,13 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
                 crate::imports::boot::main_thread_call(index as u32, &vals)
             };
             if done != 0 {
-                let _ = sp;
                 if let Some(inst) = c.data().inst {
                     if let Ok(f) = inst.get_typed_func::<(i32, i32, f64), ()>(&mut c, "_emscripten_run_js_on_main_thread_done") {
-                        let _ = f.call_async(&mut c, (done, done_arg, r)).await;
+                        let _ = f.call(&mut c, (done, done_arg, r));
                     }
                 }
             }
             r
-          });
-          fut
         })?;
     l.func_wrap("env", "emscripten_check_blocking_allowed", |_c: Caller<'_, St>, | { crate::trace::hit("emscripten_check_blocking_allowed");  })?;
     l.func_wrap("env", "_emscripten_thread_cleanup", |_c: Caller<'_, St>, a0: i32, | { crate::trace::hit("_emscripten_thread_cleanup");  })?;

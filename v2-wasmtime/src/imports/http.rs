@@ -94,13 +94,13 @@ fn defer<T: wasmtime::AsContext<Data = St>>(cx: &T, idx: u32, fetch: u32) {
         .push((idx, fetch));
 }
 
-async fn deliver<T: wasmtime::AsContextMut<Data = St>>(cx: &mut T, r: Reply) {
+fn deliver<T: wasmtime::AsContextMut<Data = St>>(cx: &mut T, r: Reply) {
     let f = r.fetch;
     if r.retry {
         // The engine's XHR wrapper occasionally misses the first resolution;
         // a second onload after a beat gets the continuation moving.
         if cx.as_context().data().fetch_hdrs.contains_key(&f) {
-            defer(&*cx, r.onload, f);
+            defer(cx, r.onload, f);
         }
         return;
     }
@@ -115,7 +115,7 @@ async fn deliver<T: wasmtime::AsContextMut<Data = St>>(cx: &mut T, r: Reply) {
             } else {
                 let Some(inst) = cx.as_context().data().inst else { return };
                 let Ok(malloc) = inst.get_typed_func::<(i32,), i32>(&mut *cx, "malloc") else { return };
-                match malloc.call_async(&mut *cx, (n as i32,)).await {
+                match malloc.call(&mut *cx, (n as i32,)) {
                     Ok(p) => p as u32,
                     Err(_) => return,
                 }
@@ -148,9 +148,9 @@ async fn deliver<T: wasmtime::AsContextMut<Data = St>>(cx: &mut T, r: Reply) {
                 unsafe { *(d[(f + F_TEXT) as usize + i].get() as *mut u8) = *b };
             }
             cx.as_context_mut().data_mut().fetch_hdrs.insert(f, block.into_bytes());
-            defer(&*cx, r.onstate, f);
+            defer(cx, r.onstate, f);
             if status >= 200 && status < 300 {
-                defer(&*cx, r.onload, f);
+                defer(cx, r.onload, f);
                 let url = {
                     let d = cx.as_context().data();
                     let p = unsafe { *(d.mem.data()[f as usize + F_URL as usize].get() as *const u32) };
@@ -185,7 +185,7 @@ async fn deliver<T: wasmtime::AsContextMut<Data = St>>(cx: &mut T, r: Reply) {
                     });
                 }
             } else {
-                defer(&*cx, r.onerror, f);
+                defer(cx, r.onerror, f);
             }
         }
         Err(e) => {
@@ -196,13 +196,13 @@ async fn deliver<T: wasmtime::AsContextMut<Data = St>>(cx: &mut T, r: Reply) {
                 *(d[(f + 40) as usize].get() as *mut u16) = 4;
                 *(d[(f + F_STATUS) as usize].get() as *mut u16) = 0;
             }
-            defer(&*cx, r.onstate, f);
-            defer(&*cx, r.onerror, f);
+            defer(cx, r.onstate, f);
+            defer(cx, r.onerror, f);
         }
     }
 }
 
-pub async fn pump<T: wasmtime::AsContextMut<Data = St>>(cx: &mut T) {
+pub fn pump<T: wasmtime::AsContextMut<Data = St>>(cx: &mut T) {
     let d = cx.as_context().data();
     let me = if d.is_main { d.main_ptr } else { d.mbx_ptr }.unwrap_or(0);
     loop {
@@ -214,7 +214,7 @@ pub async fn pump<T: wasmtime::AsContextMut<Data = St>>(cx: &mut T) {
             }
         };
         let Some(r) = hit else { break };
-        deliver(&mut *cx, r).await;
+        deliver(cx, r);
     }
     let pending = PENDING.lock().unwrap().get_or_insert_with(Default::default).remove(&me);
     let Some(pending) = pending else { return };
@@ -223,7 +223,7 @@ pub async fn pump<T: wasmtime::AsContextMut<Data = St>>(cx: &mut T) {
         let Some(t) = inst.get_table(&mut *cx, "__indirect_function_table") else { return };
         let Some(wasmtime::Ref::Func(Some(f))) = t.get(&mut *cx, idx as u64) else { continue };
         let mut tries = 0;
-        while let Err(e) = f.call_async(&mut *cx, &[Val::I32(fetch as i32)], &mut []).await {
+        while let Err(e) = f.call(&mut *cx, &[Val::I32(fetch as i32)], &mut []) {
             tries += 1;
             eprintln!("[http] callback {idx} threw: {e:#}");
             if tries == 2 {
@@ -233,7 +233,7 @@ pub async fn pump<T: wasmtime::AsContextMut<Data = St>>(cx: &mut T) {
     }
 }
 
-async fn callback(c: &mut Caller<'_, St>, idx: u32, fetch: u32) -> Result<()> {
+fn callback(c: &mut Caller<'_, St>, idx: u32, fetch: u32) -> Result<()> {
     let Some(inst) = c.data().inst else { return Ok(()) };
     let t = inst.get_table(&mut *c, "__indirect_function_table");
     let Some(t) = t else { return Ok(()) };
@@ -241,7 +241,7 @@ async fn callback(c: &mut Caller<'_, St>, idx: u32, fetch: u32) -> Result<()> {
         return Ok(());
     };
     let mut out = [];
-    f.call_async(&mut *c, &[Val::I32(fetch as i32)], &mut out).await?;
+    f.call(&mut *c, &[Val::I32(fetch as i32)], &mut out)?;
     Ok(())
 }
 
@@ -700,13 +700,8 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
     if std::env::var_os("WC_HTTP").is_some() {
         eprintln!("[http] register");
     }
-    l.func_wrap_async("env", "emscripten_start_fetch",
-        |c: Caller<'_, St>, (fetch,): (i32,)| {
-          let p = c.data().rt.as_ref().expect("rt").store;
-          let mut c = c;
-          let fut: Box<dyn std::future::Future<Output = ()> + Send> = Box::new(async move {
-            let mut c = &mut c;
-            let _ = p;
+    l.func_wrap("env", "emscripten_start_fetch",
+        |mut c: Caller<'_, St>, fetch: i32| {
             crate::trace::hit("http_start");
             let f = fetch as u32;
             if std::env::var_os("WC_HTTP").is_some() {
@@ -731,7 +726,7 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
                 put_u16(&mut c, f + F_STATE, 4);
                 put_u16(&mut c, f + F_STATUS, 0);
                 defer(&c, onerror, f);
-                pump(&mut *c).await;
+                pump(&mut c);
                 return;
             };
             crate::diag::event(format!("http {} {}", req.method, req.url));
@@ -775,11 +770,9 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
                 eprintln!("[http*] sync {} ...", req.url);
                 let res = run(&req, COOKIE.get().map(String::as_str));
                 eprintln!("[http*] sync {} -> {:?}", req.url, res.as_ref().map(|x| x.0).map_err(|e| e.to_string()));
-                deliver(&mut *c, Reply { me, fetch: f, onload, onerror, onstate, res, retry: false }).await;
-                pump(&mut *c).await;
+                deliver(&mut c, Reply { me, fetch: f, onload, onerror, onstate, res, retry: false });
+                pump(&mut c);
             }
-          });
-          fut
         })?;
 
     l.func_wrap("env", "_emscripten_fetch_get_response_headers_length",
