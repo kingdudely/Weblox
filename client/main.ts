@@ -16,6 +16,10 @@ try { cookie = (await Deno.readTextFile(cookieFile)).trim().replace(/^\.ROBLOSEC
 // built-in implementation omits the sec-webtransport-http3-draft02 CONNECT
 // header and has no WebIDL key to inject it.
 if (Deno.env.get("WC_WT_DRAFT02") === "1") {
+  // The draft-02 module delivers streams through its own demultiplexer, so the
+  // wrapper's "server data seen" probe never fires. Don't let the watchdog
+  // kill a session that is actually in game.
+  if (!Deno.env.has("WC_WT_HANDSHAKE_MS")) Deno.env.set("WC_WT_HANDSHAKE_MS", "0");
   const m: any = await import("./page/draftwt.ts");
   (globalThis as any).WebTransport = m.DraftWebTransport;
   console.error("[wt ] using pure-TS draft-02 WebTransport (connectQuic)");

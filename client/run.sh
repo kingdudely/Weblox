@@ -4,4 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 export WC_COOKIE_FILE="${WC_COOKIE_FILE:-/home/john/mizg.txt}"
 export WC_WATCHDOG_MS="${WC_WATCHDOG_MS:-18000}"
+# Roblox/qdmux uses WebTransport draft-02; Deno's built-in implementation
+# cannot send the required CONNECT header. Default to the working path.
+export WC_WT_DRAFT02="${WC_WT_DRAFT02:-1}"
 exec ./client/client "${1:-${WC_PLACE:-189707}}"
