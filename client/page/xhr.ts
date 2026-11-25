@@ -31,14 +31,9 @@ export function patchJoin(raw) {
   // Match the Chrome extension: only derive a browser route when the server
   // did not provide gameFqdn. Never overwrite a value the server supplied.
   if (!js || typeof js !== "object" || js.gameFqdn) return null;
-  // Roblox intermittently returns status 2 with an empty network token and
-  // no endpoints. The engine then reports "no available transport" and stops.
-  // Treat that as a failed handshake so the watchdog rejoins onto a fresh job.
-  if (!js.NetStackTokenValue || !js.UdmuxEndpoints?.length) {
-    console.error("[join ] empty transport token - requesting rejoin");
-    (globalThis as any).__wcHandshakeFail?.("empty NetStackTokenValue/UdmuxEndpoints");
-    return null;
-  }
+  // Roblox intermittently returns status 2 with an empty network token. Do not
+  // fail the handshake here — the XHR layer retries the join request itself.
+  if (!js.NetStackTokenValue || !js.UdmuxEndpoints?.length) return null;
   if (Deno.env.get("WC_NO_FQDN") === "1") return null;
   if (Deno.env.get("WC_JOIN_DUMP") === "1") {
     try { Deno.writeTextFileSync("/tmp/opencode/our_joinscript.json", JSON.stringify(js, null, 1)); } catch {}
@@ -217,9 +212,11 @@ export class XHR {
           const buf = new Uint8Array(bytes);
           let at = 0;
           for (const c of this._chunks) { buf.set(c, at); at += c.length; }
-          if (this._join && r.ok && joinTokenMissing(buf) && n < 3) {
-            console.error("[xhr ] retrying gamejoin: empty network token (attempt", n + 1, ")");
+          const maxJoinRetries = Number(Deno.env.get("WC_JOIN_RETRIES") ?? 30);
+          if (this._join && r.ok && joinTokenMissing(buf) && n <= maxJoinRetries) {
+            console.error("[xhr ] empty network token, retrying gamejoin (attempt", n, "/", maxJoinRetries, ")");
             this._chunks = [];
+            await new Promise((r) => setTimeout(r, 250));
             return attempt(n + 1);
           }
           this._setResponse(true);
