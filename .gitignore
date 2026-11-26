@@ -33,3 +33,8 @@ v3-wasm2c/sliced.c
 *.o
 *.a
 *.so
+host/demo
+host/*.o
+# generated from the wasm element/data sections; regenerate with make
+host/table.cpp
+host/runtime_data.cpp

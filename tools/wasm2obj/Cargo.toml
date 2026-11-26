@@ -1,0 +1,24 @@
+[package]
+name = "wasm2obj"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Compile a WebAssembly core module straight to an ELF relocatable object using
+# the vendored wasmtime-internal-cranelift compiler. No wasmtime runtime/Engine
+# is created: only the compiler half of wasmtime-environ is used.
+
+[dependencies]
+anyhow = "1"
+cranelift-codegen = { version = "=0.137.2", default-features = false, features = ["std", "unwind", "host-arch"] }
+object = { version = "=0.40.0", default-features = false, features = ["elf", "write", "std"] }
+rayon = "1"
+target-lexicon = "0.13.5"
+wasmparser = { version = "=0.261.0", default-features = false, features = ["features", "validate", "simd"] }
+wasmtime-environ = { version = "=50.0.2", default-features = false, features = ["std", "compile", "threads", "component-model", "gc-drc", "gc-null", "gc-copying", "stack-switching"] }
+wasmtime-internal-core = { version = "=50.0.2", features = ["std", "anyhow"] }
+wasmtime-internal-cranelift = { path = "../../vendor/wasmtime-internal-cranelift" }
+
+[profile.release]
+opt-level = 1
+debug = false
