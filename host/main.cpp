@@ -2,11 +2,20 @@
 // export from a plain C++ process linked against wasm2obj's out.full.o.
 #include "vmctx.h"
 #include "imports.h"
+#include "rna_bridge.h"
+#include "route.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <chrono>
+#include <csignal>
+#include <fstream>
+#include <functional>
+#include <setjmp.h>
+#include <stdexcept>
+#include <thread>
 #include <dlfcn.h>
 
 // wasm function indices from the module export section (first defined
@@ -20,6 +29,10 @@ extern "C" {
 uint32_t _wasm_function_149599(void*, void*);
 uint32_t _wasm_function_149868(void*, void*);
 void wb_call_thread_init(void*, uint32_t);
+// Guest exports: __main_argc_argv (wasm index 488) and main_loop_iteration
+// (wasm index 517); defined function index = wasm index - 341.
+int32_t _wasm_function_147(void*, void*, int32_t, int32_t);
+void _wasm_function_176(void*, void*);
 }
 
 // Wasmtime's wasm-call ABI is callee-pops for stack arguments (`ret $16`),
@@ -83,11 +96,75 @@ static void thread_entry(uint32_t start, uint32_t arg, uint32_t pthread_ptr) {
   std::free(vm);
 }
 
+// The join path calls guest exports that may trap. vmctx.cpp's handler only
+// longjmps when its (internal) g_in_wasm flag is set, so install a temporary
+// handler here; a trapped export becomes a printed signal instead of a crash.
+namespace {
+sigjmp_buf g_export_jmp;
+volatile sig_atomic_t g_export_active = 0;
+volatile sig_atomic_t g_export_signal = 0;
+void export_trap(int sig, siginfo_t*, void*) {
+  if (!g_export_active) return;
+  g_export_signal = sig;
+  g_export_active = 0;
+  siglongjmp(g_export_jmp, sig);
+}
+
+class ExportTrapGuard {
+ public:
+  ExportTrapGuard() {
+    struct sigaction sa {};
+    sa.sa_sigaction = &export_trap;
+    sa.sa_flags = SA_SIGINFO | SA_NODEFER;
+    sigemptyset(&sa.sa_mask);
+    static const int kSignals[] = {SIGSEGV, SIGFPE, SIGILL, SIGBUS};
+    for (int i = 0; i < 4; ++i) {
+      sigaction(kSignals[i], &sa, &old_[i]);
+    }
+  }
+  ~ExportTrapGuard() {
+    static const int kSignals[] = {SIGSEGV, SIGFPE, SIGILL, SIGBUS};
+    for (int i = 0; i < 4; ++i) sigaction(kSignals[i], &old_[i], nullptr);
+  }
+  // Returns 0 on normal return, or the trapping signal number.
+  int call(const std::function<void()>& fn) {
+    g_export_signal = 0;
+    if (sigsetjmp(g_export_jmp, 1) != 0) return g_export_signal;
+    g_export_active = 1;
+    fn();
+    g_export_active = 0;
+    return 0;
+  }
+
+ private:
+  struct sigaction old_[4];
+};
+
+std::string read_cookie(const char* path) {
+  if (!path || !*path) return {};
+  std::ifstream f(path);
+  std::string line;
+  if (!std::getline(f, line)) return {};
+  while (!line.empty() && (line.back() == '\n' || line.back() == '\r' ||
+                           line.back() == ' ' || line.back() == '\t')) {
+    line.pop_back();
+  }
+  return line;
+}
+}  // namespace
+
 int main(int argc, char** argv) {
   // --skip-ctors is useful because __wasm_call_ctors runs Emscripten's full
   // startup with hundreds of host imports; the stub imports cannot satisfy it.
-  bool skip_ctors = argc > 1 && std::string(argv[1]) == "--skip-ctors";
-  bool test_trap = argc > 1 && std::string(argv[1]) == "--test-trap";
+  bool skip_ctors = false, test_trap = false, rna_selftest = false,
+       rna_probe = false;
+  for (int i = 1; i < argc; ++i) {
+    const std::string a = argv[i];
+    if (a == "--skip-ctors") skip_ctors = true;
+    if (a == "--test-trap") test_trap = true;
+    if (a == "--rna-selftest") rna_selftest = true;
+    if (a == "--rna-probe") rna_probe = true;
+  }
   host::HostState state;
   if (!host::setup(state)) {
     std::fprintf(stderr, "[wasm-host] RESULT=FAIL setup failed\n");
@@ -132,6 +209,184 @@ int main(int argc, char** argv) {
                   "(converted to controlled error)\n", ctor_trap);
     }
   }
+  // Optional RNA integration. WC_PLACE + WC_COOKIE_FILE switch on a bounded
+  // join attempt; --rna-selftest only checks the native CONNECT path.
+  const char* place_env = std::getenv("WC_PLACE");
+  const char* cookie_path = std::getenv("WC_COOKIE_FILE");
+  const bool join_mode = place_env && *place_env && cookie_path && *cookie_path;
+  if (rna_selftest || rna_probe || join_mode) {
+    try {
+      const std::string cookie = read_cookie(cookie_path);
+      const uint64_t place = (place_env && *place_env)
+                                 ? std::strtoull(place_env, nullptr, 10)
+                                 : 189707;
+      weblox::FetchOptions fo;
+      fo.max_attempts = 3;
+      fo.timeout_ms = 20000;
+      fo.connect_timeout_ms = 10000;
+      const weblox::JoinRoute route = weblox::fetch(place, cookie, fo);
+      std::printf("[rna-main] route: fqdn=%s host=%s port=%u caps=%s "
+                  "cert=%s place=%llu status=%ld\n",
+                  route.fqdn.c_str(), route.host.c_str(), route.port,
+                  route.caps.c_str(), route.cert_hash.c_str(),
+                  static_cast<unsigned long long>(route.place_id), route.status);
+      std::fflush(stdout);
+
+      weblox::RnaBridge bridge;
+      bridge.attach(state);
+      bridge.set_config(route);
+      if (rna_probe) {
+        // Bounded bridge-level probe: a synthetic connect_js with a real guest
+        // receive ring, then drive the guest-tick callback hook. No engine
+        // startup / game session is attempted.
+        constexpr uint32_t kSlotSize = 65536, kSlotCount = 4;
+        int mtrap = 0;
+        const uint32_t base = host::call_malloc(
+            state, kSlotSize * kSlotCount + 16, mtrap);
+        if (!base || mtrap) throw std::runtime_error("probe ring malloc failed");
+        char url[1024];
+        std::snprintf(url, sizeof(url),
+                      "https://%s:%u/wt?X%%2DRbx%%2DCapabilities=%s"
+                      "&X-Rbx-Close-Reason=utf8-v1",
+                      route.fqdn.c_str(), route.port, route.caps.c_str());
+        bridge.set_config([&] {
+          auto c = weblox::RnaBridge::Config{};
+          c.host = route.host;
+          c.port = route.port;
+          c.fqdn = route.fqdn;
+          c.caps = route.caps;
+          c.cert_hash = route.cert_hash;
+          c.connect_timeout_ms = 8000;
+          return c;
+        }());
+        weblox::RnaConnectArgs args;
+        args.id = 1;
+        args.url = url;
+        args.ring.data = base;
+        args.ring.head = base + kSlotSize * kSlotCount;
+        args.ring.tail = args.ring.head + 4;
+        args.ring.slot = kSlotSize;
+        args.ring.count = kSlotCount;
+        std::printf("[rna-main] probe url=%s ring=%u/%u/%u\n", url,
+                    args.ring.data, args.ring.head, args.ring.tail);
+        std::fflush(stdout);
+        bridge.connect(args);
+        ExportTrapGuard guard;
+        uint64_t ticks = 0;
+        unsigned probe_ms = 3000;
+        if (const char* s = std::getenv("WC_LOOP_MS")) {
+          probe_ms = static_cast<unsigned>(std::strtoul(s, nullptr, 10));
+          if (probe_ms > 10000) probe_ms = 10000;
+        }
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::milliseconds(probe_ms);
+        int tick_sig = 0;
+        while (std::chrono::steady_clock::now() < deadline && tick_sig == 0) {
+          tick_sig = guard.call([&] { bridge.guest_tick(); });
+          ++ticks;
+          std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        const auto s = bridge.stats();
+        std::printf("[rna-main] probe ticks=%llu trap=%d connects=%llu "
+                    "status=%lld callbacks=%llu/%llu ring=%llu/%llu\n",
+                    static_cast<unsigned long long>(ticks), tick_sig,
+                    static_cast<unsigned long long>(s.connects),
+                    static_cast<long long>(s.connect_status),
+                    static_cast<unsigned long long>(s.callbacks_delivered),
+                    static_cast<unsigned long long>(s.callbacks_failed),
+                    static_cast<unsigned long long>(s.ring_slots_written),
+                    static_cast<unsigned long long>(s.ring_drops));
+        std::fflush(stdout);
+        bridge.stop_all();
+        return tick_sig ? 4 : 0;
+      }
+      if (rna_selftest) {
+        unsigned secs = 5;
+        if (const char* s = std::getenv("WC_SELFTEST_SECS")) {
+          secs = static_cast<unsigned>(std::strtoul(s, nullptr, 10));
+          if (secs == 0 || secs > 30) secs = 5;
+        }
+        std::string report;
+        const bool connected = bridge.selftest(secs, &report);
+        std::printf("[rna-main] selftest connected=%d %s\n",
+                    connected ? 1 : 0, report.c_str());
+        std::fflush(stdout);
+        return connected ? 0 : 3;
+      }
+
+      ExportTrapGuard guard;
+      int malloc_trap_for_argv = 0;
+      const uint32_t argv = host::call_malloc(state, 16, malloc_trap_for_argv);
+      if (argv && argv + 16 <= state.memory_def_storage.current_length) {
+        static const char kArgv0[] = "/content/.keep";
+        std::memcpy(state.memory_base + argv, kArgv0, sizeof(kArgv0));
+        const uint32_t str = argv;
+        std::memcpy(state.memory_base + argv + 8, &str, 4);
+        const uint32_t zero = 0;
+        std::memcpy(state.memory_base + argv + 12, &zero, 4);
+      }
+      std::printf("[rna-main] __main_argc_argv argc=1 argv=%u "
+                  "(argv_malloc_trap=%d)\n", argv, malloc_trap_for_argv);
+      std::fflush(stdout);
+      const int main_sig = guard.call([&] {
+        _wasm_function_147(state.vmctx, state.vmctx, 1,
+                           static_cast<int32_t>(argv));
+      });
+      std::printf("[rna-main] __main_argc_argv: %s\n",
+                  main_sig ? ("trapped via signal " + std::to_string(main_sig)).c_str()
+                           : "returned normally");
+      std::fflush(stdout);
+      if (main_sig == 0) {
+        unsigned loop_ms = 3000;
+        if (const char* s = std::getenv("WC_LOOP_MS")) {
+          loop_ms = static_cast<unsigned>(std::strtoul(s, nullptr, 10));
+          if (loop_ms > 60000) loop_ms = 60000;
+        }
+        const auto deadline = std::chrono::steady_clock::now() +
+                              std::chrono::milliseconds(loop_ms);
+        uint64_t turns = 0;
+        int iter_sig = 0;
+        while (std::chrono::steady_clock::now() < deadline && iter_sig == 0) {
+          iter_sig = guard.call([&] { _wasm_function_176(state.vmctx, state.vmctx); });
+          ++turns;
+          if (turns % 100 == 0) {
+            const auto s = bridge.stats();
+            std::printf("[rna-main] turns=%llu connects=%llu dgrams=%llu/%llu "
+                        "ring=%llu drop=%llu cb=%llu/%llu status=%lld\n",
+                        static_cast<unsigned long long>(turns),
+                        static_cast<unsigned long long>(s.connects),
+                        static_cast<unsigned long long>(s.datagrams_sent),
+                        static_cast<unsigned long long>(s.datagrams_recv),
+                        static_cast<unsigned long long>(s.ring_slots_written),
+                        static_cast<unsigned long long>(s.ring_drops),
+                        static_cast<unsigned long long>(s.callbacks_delivered),
+                        static_cast<unsigned long long>(s.callbacks_failed),
+                        static_cast<long long>(s.connect_status));
+            std::fflush(stdout);
+          }
+          std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        std::printf("[rna-main] loop turns=%llu iter_trap=%d\n",
+                    static_cast<unsigned long long>(turns), iter_sig);
+      }
+      const auto s = bridge.stats();
+      std::printf("[rna-main] final: connects=%llu connect_errors=%llu "
+                  "callbacks=%llu/%llu status=%lld error=%s\n",
+                  static_cast<unsigned long long>(s.connects),
+                  static_cast<unsigned long long>(s.connect_errors),
+                  static_cast<unsigned long long>(s.callbacks_delivered),
+                  static_cast<unsigned long long>(s.callbacks_failed),
+                  static_cast<long long>(s.connect_status),
+                  s.last_error.c_str());
+      std::fflush(stdout);
+      bridge.stop_all();
+    } catch (const std::exception& e) {
+      std::printf("[rna-main] join attempt failed: %s\n", e.what());
+      std::fflush(stdout);
+      return 3;
+    }
+  }
+
   std::printf("[wasm-host] import calls=%llu controlled errors=%u\n",
               static_cast<unsigned long long>(state.import_call_count),
               static_cast<unsigned>(state.error_count));

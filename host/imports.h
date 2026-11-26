@@ -115,6 +115,13 @@ void imports_set_main_thread_init(MainThreadInit fn);
 // this so the ported __asyncjs__rbxFutexWaitMainJspi can be notified.
 std::uint32_t imports_futex_notify(std::uint32_t addr, std::uint32_t count);
 
+// Host tick installed by weblox::RnaBridge::attach().  Called from imports
+// that run on the guest thread (futex wait / performance clock) so native
+// WebTransport completions are re-entered into wasm on the owner thread,
+// one per turn, instead of from the bridge's pump thread.
+using GuestTick = void (*)(void* vmctx);
+void imports_set_guest_tick(GuestTick fn);
+
 // Feed the emscripten_fetch response-header table when the async fetch
 // path (slot 304, still a stub) is implemented by the host.
 void imports_store_headers(std::uint32_t fetch, const char* text);

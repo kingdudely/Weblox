@@ -1,8 +1,20 @@
-CXX = clang++
+CXX ?= clang++
 WASM_OBJ ?= /tmp/opencode/out.full.o
 WASM ?= /tmp/opencode/WebClient.raknet.wasm
-CXXFLAGS ?= -std=c++17 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -I.
-LDFLAGS ?= -rdynamic -lpthread -ldl -lm -lcurl
+
+# libquiche is built out of tree by ./build_quiche.sh; link.mk carries the
+# flags (see host/RNA.md and host/WT.md). Nothing binary is committed.
+QUICHE_PREFIX ?= /tmp/wl-qtry-prefix
+ifeq ($(wildcard $(QUICHE_PREFIX)/link.mk),)
+QUICHE_PREFIX := /tmp/weblox-quiche
+endif
+ifneq ($(wildcard $(QUICHE_PREFIX)/link.mk),)
+include $(QUICHE_PREFIX)/link.mk
+endif
+
+CXXFLAGS ?= -std=c++17 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -I. \
+            $(WEBLOX_QUICHE_CXXFLAGS)
+LDFLAGS ?= -rdynamic -lpthread -ldl -lm -lcurl $(WEBLOX_QUICHE_LDFLAGS)
 
 .PHONY: all run offsets table clean
 
@@ -19,8 +31,11 @@ table.cpp: gen_table.py $(WASM)
 runtime_data.cpp runtime_data.h: gen_runtime_data.py $(WASM)
 	python3 gen_runtime_data.py --wasm $(WASM) --out-dir .
 
-demo: main.cpp vmctx.cpp imports.cpp runtime_data.cpp table.cpp vmctx.h imports.h vmctx_offsets.h runtime_data.h table.h
-	$(CXX) $(CXXFLAGS) -o $@ main.cpp vmctx.cpp imports.cpp runtime_data.cpp table.cpp $(WASM_OBJ) $(LDFLAGS)
+demo: main.cpp vmctx.cpp imports.cpp rna_bridge.cpp wt.cpp route.cpp \
+      runtime_data.cpp table.cpp vmctx.h imports.h rna_bridge.h wt.h route.h \
+      vmctx_offsets.h runtime_data.h table.h
+	$(CXX) $(CXXFLAGS) -o $@ main.cpp vmctx.cpp imports.cpp rna_bridge.cpp \
+		wt.cpp route.cpp runtime_data.cpp table.cpp $(WASM_OBJ) $(LDFLAGS)
 
 # Regenerate the ABI header from wasmtime-environ 50.0.2 (needs the wasm file).
 offsets:
