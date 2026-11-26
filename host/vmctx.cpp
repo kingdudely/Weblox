@@ -4,6 +4,7 @@
 #include "vmctx.h"
 #include "imports.h"
 #include "runtime_data.h"
+#include "table.h"
 
 #include <csignal>
 #include <setjmp.h>
@@ -281,6 +282,12 @@ bool setup(HostState& state) {
   // but generated code may load the pointers unconditionally.
   static uint8_t gc_heap_dummy[4096];
   static uint32_t type_ids[65536];
+  // Cranelift resolves a call_indirect's expected signature by loading
+  // type_ids[module_type_index] from the VMContext, then comparing it with
+  // VMFuncRef.type_index.  Wasmtime's real instance stores a shared type id
+  // here; for this self-contained host identity is enough as long as both
+  // sides use the same numbering (see gen_table.py).
+  for (uint32_t i = 0; i < 65536; ++i) type_ids[i] = i;
   void* gc_ptr = gc_heap_dummy;
   void* types_ptr = type_ids;
   std::memcpy(at(state.vmctx, VMCTX_OFF_GC_HEAP_DATA), &gc_ptr, sizeof(gc_ptr));
@@ -298,21 +305,41 @@ bool setup(HostState& state) {
   wb::imports_install(imports, VMCTX_NUM_IMPORTED_FUNCTIONS, state.vmctx);
 
   // Defined table: entries are VMFuncRef pointers in Wasmtime's table layout.
-  constexpr size_t kTableEntries = 161491; // from the module's table limits
+  // The active element segment is baked into table.cpp by gen_table.py; index 0
+  // stays null (the segment starts at offset 1).  Imported functions use the
+  // wasm-call trampoline from the import array instead of a guest symbol.
+  const uint32_t kTableEntries = wb_table_size;
   state.table_storage = static_cast<uint8_t*>(
       std::calloc(kTableEntries, sizeof(void*)));
-  if (!state.table_storage) {
+  state.table_funcrefs = static_cast<VMFuncRef*>(
+      std::calloc(kTableEntries, sizeof(VMFuncRef)));
+  if (!state.table_storage || !state.table_funcrefs) {
     std::fprintf(stderr, "[wasm-host] table allocation failed\n");
     return false;
   }
-  static VMFuncRef table_funcref{};
-  table_funcref.vmctx = state.vmctx;
-  table_funcref.type_index = 1;
   auto** entries = reinterpret_cast<VMFuncRef**>(state.table_storage);
-  for (size_t i = 0; i < kTableEntries; ++i) entries[i] = &table_funcref;
+  uint32_t initialized = 0;
+  for (uint32_t i = 0; i < wb_table_init_count; ++i) {
+    const WBTableEntry& e = wb_table_init[i];
+    VMFuncRef& fr = state.table_funcrefs[e.table_index];
+    fr.array_call = nullptr;  // call_indirect uses wasm_call only
+    fr.wasm_call = e.wasm_call ? e.wasm_call
+                               : wb::import_wasm_call(e.func_index + 1);
+    fr.type_index = e.type_index;
+    fr.reserved = 0;
+    fr.vmctx = state.vmctx;
+    if (!fr.wasm_call) {
+      std::fprintf(stderr, "[wasm-host] unresolved table func %u\n", e.func_index);
+      return false;
+    }
+    entries[e.table_index] = &fr;
+    ++initialized;
+  }
   auto* table = reinterpret_cast<VMTableDefinition*>(at(state.vmctx, VMCTX_OFF_TABLES));
   table->base = state.table_storage;
   table->current_elements = kTableEntries;
+  std::fprintf(stderr, "[wasm-host] table: %u entries, %u initialized\n",
+               kTableEntries, initialized);
 
   return install_signal_handlers();
 }

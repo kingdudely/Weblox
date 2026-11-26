@@ -50,28 +50,53 @@ mailbox and never called the guest's own thread/TLS init.
    (including the thread-registry image containing the `0x8a13c4` sentinel).
    The original cleanup spin is gone.
 
-## Current blocker (ctors no longer spins, but still traps)
+## Blocker resolved: element-section table initialisation
 
-After the fixes, `HOST_TRACE=1 ./demo` progresses through slots 324, 341, 325,
-309, 310 and then traps with SIGILL at
-
-```
-_wasm_function_150264+2214  (called directly from _wasm_function_0+717)
-```
-
-`_wasm_function_150264+515` is a `call_indirect` type check: it reads a
+After the fixes above, `HOST_TRACE=1 ./demo` progressed through slots 324, 341,
+325, 309, 310 and then trapped with SIGILL at
+`_wasm_function_150264+2214` (called directly from `_wasm_function_0+717`).
+`_wasm_function_150264+515` is a `call_indirect` type check: it loads a
 `VMFuncRef` from `__indirect_function_table` (`vmctx+0x2ae8`) and compares its
 `type_index` (offset 16) with the expected value.  gdb at `+513` showed
 `edx = 1` (our placeholder funcref's type index) and `ecx = 0` (expected).
-The placeholder funcref also has `wasm_call == nullptr`, so even after fixing
-the type index the indirect call would jump to 0.
+The expected value is `type_ids[module_type_index]`, loaded from the VMContext
+at offset 40 — the host had zeroed that whole array, so *every* expected type
+was 0.  The placeholder also had `wasm_call == nullptr`.
 
-**Minimal next step:** initialise all 161491 table entries from the module's
-element section: for each table index, set `VMFuncRef.wasm_call` to the
-address of the corresponding `_wasm_function_N` (resolvable from the ELF
-symtab for global symbols, or by generating an extern-declaration table) and
-`VMFuncRef.type_index` to that function's wasm type index.  The table bounds
-check in the generated code is `index < 0x276d3 == 161491`, matching the
-current allocation.
+Fix (this branch):
 
-`./demo --skip-ctors` remains the working ABI/malloc smoke test.
+* `host/gen_table.py` parses the wasm table and element sections and generates
+  a small checked-in `table.h` plus a build-time-only `table.cpp` (16 MB,
+  gitignored).  `make` regenerates it from
+  `/tmp/opencode/WebClient.raknet.wasm`.  Guest symbols are resolved by direct
+  `extern "C"` references because Cranelift emits them as GLOBAL **HIDDEN** in
+  the object, so `dlsym(RTLD_DEFAULT, "_wasm_function_N")` cannot see them in
+  the linked executable (`nm`/`readelf` confirm `LOCAL`/`HIDDEN`).
+* `vmctx.cpp` builds one real `VMFuncRef` per active element: `wasm_call` =
+  guest function address, or `wb::import_wasm_call(func_index + 1)` for the 5
+  imported functions stored in the table; `type_index` = wasm type index;
+  `vmctx` = instance vmctx.  Table index 0 stays null (the segment's offset is
+  1).  `type_ids[i] = i` gives the generated code a consistent identity
+  mapping on both sides of the `call_indirect` check.
+
+Exact evidence for this build:
+
+```
+table section:  1 table, funcref, min=max=161491
+element section: 1 segment, flags=0 (active, implicit table 0), offset=1,
+                 count=161490 (func indices 51..151424; 5 imports, 161485 defined,
+                 94438 distinct defined functions)
+host log:       [wasm-host] table: 161491 entries, 161490 initialized
+```
+
+Bounded verification (`timeout 30s`, after `make`):
+
+* `./demo` — exit 0, `__wasm_call_ctors (_wasm_function_0): returned normally`,
+  `RESULT=OK`, no trap, `controlled errors=0`.
+* `./demo --skip-ctors` — exit 0, `RESULT=OK`.
+* `HOST_TRACE=1 ./demo` — exit 0; imports 49, 50, 40, 4, 317, 320, 7 are
+  exercised and ctors still returns normally.
+
+Generation is deterministic: regenerating `table.cpp`/`table.h` twice produces
+identical SHA-256 hashes.  Only the generator and the 590-byte `table.h` are
+committed.

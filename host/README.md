@@ -12,9 +12,10 @@ runtime library is used at runtime.
 | --- | --- |
 | `gen_vmctx.rs`, `Cargo.toml`, `Cargo.lock` | Rust generator: translates the wasm (parse only, no codegen) and prints exact `VMOffsets` from **wasmtime-environ 50.0.2** |
 | `vmctx_offsets.h` | Generated header (checked in so no Rust is needed to build) |
-| `vmctx.h`, `vmctx.cpp` | VMContext layout, 4 GiB guarded memory, 8 builtins, 341 import stubs, signal-to-error trap handling |
+| `vmctx.h`, `vmctx.cpp` | VMContext layout, 4 GiB guarded memory, 8 builtins, 341 import stubs, element-section funcref table, signal-to-error trap handling |
+| `gen_table.py`, `table.h` | Generator + checked-in header for the wasm element section; `table.cpp` is generated at build time (16 MB, gitignored) |
 | `main.cpp` | Smoke test: calls real exports |
-| `Makefile` | clang++ build / bounded run |
+| `Makefile` | clang++ build / bounded run; regenerates `table.cpp` from the wasm |
 
 Offsets are **never hand-guessed**. Sources of truth (all in
 `wasmtime-environ-50.0.2`): `src/vmctxtypes.rs` (`for_each_vmctx_type!`),
@@ -66,12 +67,28 @@ Cross-check against the object's disassembly: `_wasm_function_0` does
 
 ## Build
 
-Exact command (clang++ 21 on this image; `clang++` is forced in the Makefile):
+`make` first regenerates `table.cpp` from the module's element section:
 
 ```sh
 cd /tmp/opencode/wt-cpp-host/host
+python3 gen_table.py --wasm /tmp/opencode/WebClient.raknet.wasm --out-dir .
+make
+```
+
+Only `table.h` is checked in; `table.cpp` (161,490 entries, ~16 MB of C++)
+is a deterministic build artefact.  Cranelift's `_wasm_function_N` symbols are
+GLOBAL HIDDEN in the object and become LOCAL in the executable, so the
+generated source uses direct `extern "C"` references rather than `dlsym`.
+`type_ids[i] = i` makes the VMContext-side type indices match the wasm type
+indices stored in each funcref for `call_indirect`.
+
+Exact linker command (clang++ 21 on this image; `clang++` is forced in the
+Makefile):
+
+```sh
 clang++ -std=c++17 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -I. \
-  -o demo main.cpp vmctx.cpp /tmp/opencode/out.full.o -lpthread -ldl -lm
+  -o demo main.cpp vmctx.cpp imports.cpp runtime_data.cpp table.cpp \
+  /tmp/opencode/out.full.o -rdynamic -lpthread -ldl -lm -lcurl
 ```
 
 `make demo` produced:
@@ -80,7 +97,8 @@ clang++ -std=c++17 -O1 -g -fno-omit-frame-pointer -Wall -Wextra -I. \
   no .eh_frame_hdr table will be created` (non-fatal; exit status 0 — the
   object carries `.eh_frame` but no `.eh_frame_hdr`, so unwinding metadata is
   incomplete; none of the smoke tests need it).
-* `demo`: **342,284,240 bytes**; input object: **342,188,600 bytes**.
+* `demo`: **360,164,096 bytes** with the generated table; input object:
+  **342,188,600 bytes**.
 
 ## Evidence (all runs bounded with `timeout 30s`)
 
@@ -121,26 +139,12 @@ Signal 4 = SIGILL from the guest's `ud2`; execution continued afterwards.
 never initialised (no ctors) — but the call returns normally, which is the ABI
 fact under test.
 
-## Blocker: full `__wasm_call_ctors` does not finish with stub imports
+## Status of full `__wasm_call_ctors`
 
-`./demo` (no flag) was killed by `timeout 60s` (exit 124). A gdb attach showed
-the guest spinning in Emscripten startup:
-
-```text
-#0  _wasm_function_149852 ()
-#1  _wasm_function_149788 ()
-#2  _wasm_function_149957 ()
-#3  _wasm_function_0 ()
-#4  host::call_ctors (...) at vmctx.cpp:311
-```
-
-This is **not** a VMContext layout failure: the VMContext was already used
-successfully by the round-trip test, and no trap/segfault occurred. It is the
-expected consequence of filling all 341 import slots with a generic stub that
-returns 0 — Emscripten's ctors depend on real `env.*` imports (JS runtime,
-clock, TLS, filesystem) and loop waiting for state those calls would provide.
-Wiring the generated import table (the other worker's `host/imports.cpp`) into
-`setup()` is the next step; this host deliberately keeps the stub array so the
-two pieces stay independent.
+The historical failures (spinning cleanup list, then SIGILL in an indirect
+call) are described in `CTORS_FINDINGS.md`.  With the real import table,
+passive data segments and element-segment funcrefs installed, `timeout 30s
+./demo` now exits 0 with `__wasm_call_ctors: returned normally` and
+`RESULT=OK`.
 
 No game session was started.

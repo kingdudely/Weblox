@@ -95,6 +95,7 @@ struct HostState {
   uint8_t* memory_base = nullptr;
   size_t memory_reservation = 0;
   uint8_t* table_storage = nullptr;
+  VMFuncRef* table_funcrefs = nullptr;
   uint64_t epoch = 0;
   volatile uint32_t error_count = 0;
   uint64_t import_call_count = 0;
