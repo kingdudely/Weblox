@@ -120,16 +120,49 @@ The popup was not open during the run, so its literal
 appeared in CDP console because attachment happened after the join. The `.34`
 value is therefore derived from the patch rule, not directly observed.
 
-## Caveats / next step
+## Clean hands-off run — DECISIVE
 
-- Attachment was ~39 s after the join, so the early join handshake and join
-  response body were not captured; T0 is an attach-time proxy, not true join.
-- The 240 s wall-clock window continued after the game stopped logging. It is
-  not equivalent to 240 s of live session.
-- The navigation at 19:32:15 looks external. If it was a user/controller action,
-  it invalidates this run for the longevity question rather than proving a
-  transport failure.
-- To decide the open question, rerun with the collector attached **before**
-  clicking the globe button and do not touch the tab for 150 s; require
-  heartbeats (or a `Network` game endpoint) to continue past `T0+120 s` and
-  inspect the console tail for the patterns above.
+The first run was invalidated by an external tab navigation. A second run was
+made with the collector attached **before** navigation and the tab untouched:
+
+```
+/tmp/opencode/run-clean-oracle.sh
+  (kills Chrome, relaunches with Vulkan/WebGPU flags, starts collector,
+   injects the gate patch via CDP Page.addScriptToEvaluateOnNewDocument,
+   navigates to play.roblox.com/games/start?placeId=189707, waits)
+```
+
+Summary (`/tmp/opencode/chrome-oracle-summary.json`):
+
+| field | value |
+| --- | --- |
+| phase | `done` |
+| detected | `true` |
+| T0 (`Assigned peer id`) | 2026-11-26T19:38:26Z (9 s after attach) |
+| `#players = 21` | 21 s after attach |
+| observed after T0 | **240.6 s** |
+| `survived_120s` | **true** |
+| final URL | `https://play.roblox.com/games/start?placeId=189707` (never redirected) |
+| final title | Natural Disaster Survival |
+| last heartbeat | #490 |
+| `conn.closed` / `timed out` / `Disconnect` / `connectError` | **zero** |
+
+**Verdict:** real Chrome's WebTransport session stays alive well past 120 s.
+Our raw Deno shim's `conn.closed REJECTED Error: timed out` at ~110 s is a bug
+in our QUIC/WebTransport implementation, not a Roblox server limit. WebTransport
+is viable; RakNet is not mandatory.
+
+## Interpretation for the native host
+
+- The C++ AOT host work (`feat/cpp-host`, Cranelift-object) remains valid — it
+  gives native execution with no engine. But the transport choice now favours
+  implementing WebTransport natively (quiche/ngtcp2) rather than RakNet patching,
+  since Chrome proves the protocol path works indefinitely.
+- The previously documented RakNet/native-UDP seam stays as a fallback on
+  `feat/cpp-host` (`host/raknet.*`).
+
+## Earlier run caveats (kept for history)
+
+The first run's attachment was ~39 s after the join and its 240 s window was
+mostly after an external tab navigation, so it could not answer the question.
+It is superseded by the clean run above.
