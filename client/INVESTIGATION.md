@@ -1,3 +1,11 @@
+> **OUTDATED — 2026-11-25.** The "session gate" conclusion below was caused by
+> the gamejoin request identity, not a protocol limitation. The engine was
+> sending `rbx-user-agent: ...Browser/Chromium/...`, which gamejoin answers with
+> **status 12 (playtesters only)**; after correcting the join identity, the
+> WebTransport path reaches CONNECT 200, opens 12 streams, initializes the
+> schema, and assigns a peer id. Keep this file only as historical evidence.
+> See `client/README.md` for the current join identity and `WC_NATIVE_JOIN_UA`.
+
 # Why Deno is stuck on "Joining server" — investigation record
 
 ## Symptom

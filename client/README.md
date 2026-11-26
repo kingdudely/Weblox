@@ -16,8 +16,13 @@ no wrapper script and no environment flags are needed for a normal run. Only
 one client should be joined at a time.
 
 **Working join looks like:** `[draft02] CONNECT {":status":"200"}`,
-`INCOMING STREAM ACCEPTED`, `Connection accepted`,
-`Time taken to initialize schema`, `Assigned peer id`.
+12x `INCOMING STREAM ACCEPTED`, `Connection accepted`,
+`Time taken to initialize schema`, `Assigned peer id`, `#players = N`.
+
+Occasionally the engine stalls before gamejoin at `[pthread] thread #1
+created` (the main thread keeps heartbeating); this is a flaky early-init
+symptom unrelated to the transport. Retry the same command — the WebTransport
+path itself reaches a full in-game join on place 1818.
 
 If Roblox returns an empty `NetStackTokenValue`, the same gamejoin POST is
 retried in place (30 times, 250 ms apart). The window is never closed or
@@ -64,6 +69,12 @@ where `browserVip = UdmuxEndpoints[0].Address` with the last octet **+1**.
 `WC_COOKIE_FILE`, `WC_PLACE`, `WC_REFRESH`, `WC_ENGINE`, `WC_PAGE_ASSETS`,
 `WC_MIRROR`, `WC_BUILD_VERSION` (engine/page pins), `WC_INPUT=1` (input trace),
 `WC_DUMP=1`/`WC_DUMP_FILE`/`WC_DUMP_MS` (self-capture).
+
+`WC_NATIVE_JOIN_UA=1` sends the native `Roblox/WinInet` identity on the gamejoin
+POST but leaves the WebTransport transport path and `gameFqdn` derivation in
+place. It is an A/B experiment, not the default. `WC_RAKNET=1` is the separate
+native-RakNet experiment: it also disables `gameFqdn` rewriting and flips the
+engine's transport flags; it does not affect the default WebTransport path.
 
 Historical evidence for the ruled-out hypotheses is in
 [INVESTIGATION.md](INVESTIGATION.md).
