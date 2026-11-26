@@ -4,6 +4,8 @@
 #include "imports.h"
 #include "rna_bridge.h"
 #include "route.h"
+#include "prepare.h"
+#include "table.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -157,13 +159,14 @@ int main(int argc, char** argv) {
   // --skip-ctors is useful because __wasm_call_ctors runs Emscripten's full
   // startup with hundreds of host imports; the stub imports cannot satisfy it.
   bool skip_ctors = false, test_trap = false, rna_selftest = false,
-       rna_probe = false;
+       rna_probe = false, list_bindings = false;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     if (a == "--skip-ctors") skip_ctors = true;
     if (a == "--test-trap") test_trap = true;
     if (a == "--rna-selftest") rna_selftest = true;
     if (a == "--rna-probe") rna_probe = true;
+    if (a == "--bindings") list_bindings = true;
   }
   host::HostState state;
   if (!host::setup(state)) {
@@ -208,6 +211,31 @@ int main(int argc, char** argv) {
       std::printf("[wasm-host] __wasm_call_ctors (_wasm_function_0): trapped via signal %d "
                   "(converted to controlled error)\n", ctor_trap);
     }
+  }
+  if (list_bindings) {
+    // Diagnostic only: show what ctors actually registered, without invoking
+    // any binding. Used to verify the prepare() port's ABI assumptions.
+    static const char* kNames[] = {
+        "set_pretend_platform", "set_roblox_base_url", "set_channel",
+        "set_browser_tracker_id", "set_account_locales",
+        "set_preloaded_flags", "set_place_id",
+    };
+    for (const char* name : kNames) {
+      const wb::Binding* b = wb::embind_find(name);
+      if (!b) {
+        std::printf("[bindings] %-26s MISSING\n", name);
+        continue;
+      }
+      const bool live = b->invoker < wb_table_size && state.table_funcrefs &&
+                        state.table_funcrefs[b->invoker].wasm_call;
+      std::printf("[bindings] %-26s sig=%-8s argc=%u invoker=%u id=%u table=%d\n",
+                  name, b->sig, b->argc, b->invoker, b->id, live ? 1 : 0);
+    }
+    std::printf("[wasm-host] import calls=%llu controlled errors=%u\n",
+                static_cast<unsigned long long>(state.import_call_count),
+                static_cast<unsigned>(state.error_count));
+    std::fflush(stdout);
+    return 0;
   }
   // Optional RNA integration. WC_PLACE + WC_COOKIE_FILE switch on a bounded
   // join attempt; --rna-selftest only checks the native CONNECT path.
@@ -315,18 +343,34 @@ int main(int argc, char** argv) {
       }
 
       ExportTrapGuard guard;
-      int malloc_trap_for_argv = 0;
-      const uint32_t argv = host::call_malloc(state, 16, malloc_trap_for_argv);
-      if (argv && argv + 16 <= state.memory_def_storage.current_length) {
-        static const char kArgv0[] = "/content/.keep";
-        std::memcpy(state.memory_base + argv, kArgv0, sizeof(kArgv0));
-        const uint32_t str = argv;
-        std::memcpy(state.memory_base + argv + 8, &str, 4);
-        const uint32_t zero = 0;
-        std::memcpy(state.memory_base + argv + 12, &zero, 4);
+      // Engine bootstrap: the browser host calls prepare() before entering
+      // __main_argc_argv. Without it initialize() throws before any RNA import
+      // can run. --skip-ctors has no embind table, so there is nothing to set.
+      bool prep_ok = false;
+      int prep_sig = 0;
+      if (skip_ctors) {
+        std::printf("[rna-main] prepare: skipped (--skip-ctors)\n");
+      } else {
+        std::string meta_path = "data/meta.json";
+        if (const char* e = std::getenv("WC_META"); e && *e) meta_path = e;
+        std::string content_base = "data/content";
+        if (const char* e = std::getenv("WC_CONTENT"); e && *e) content_base = e;
+        prep_sig = guard.call([&] {
+          prep_ok = weblox::prepare(state, place, cookie, meta_path, content_base);
+        });
+        std::printf("[rna-main] prepare ok=%d trap=%d meta=%s content=%s\n",
+                    prep_ok ? 1 : 0, prep_sig, meta_path.c_str(),
+                    content_base.c_str());
+        std::fflush(stdout);
+      }
+
+      int argv_sig = 0;
+      uint32_t argv = 0;
+      if (prep_sig == 0 || skip_ctors) {
+        argv_sig = guard.call([&] { argv = weblox::guest_argv(state); });
       }
       std::printf("[rna-main] __main_argc_argv argc=1 argv=%u "
-                  "(argv_malloc_trap=%d)\n", argv, malloc_trap_for_argv);
+                  "(argv_trap=%d)\n", argv, argv_sig);
       std::fflush(stdout);
       const int main_sig = guard.call([&] {
         _wasm_function_147(state.vmctx, state.vmctx, 1,
