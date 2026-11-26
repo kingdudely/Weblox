@@ -56,17 +56,17 @@ runtime_data: runtime_data.cpp
 runtime_data.cpp runtime_data.h: gen_runtime_data.py $(WC_WASM)
 	python3 gen_runtime_data.py --wasm $(WC_WASM) --out-dir .
 
-demo: main.cpp vmctx.cpp unwind.cpp imports.cpp rna_bridge.cpp wt.cpp route.cpp \
-      prepare.cpp runtime_data.cpp table.cpp \
-      vmctx.h unwind.h imports.h rna_bridge.h wt.h route.h prepare.h \
+demo: main.cpp vmctx.cpp unwind.cpp imports.cpp pthread_start.cpp rna_bridge.cpp \
+      wt.cpp route.cpp prepare.cpp runtime_data.cpp table.cpp \
+      vmctx.h unwind.h imports.h pthread_start.h rna_bridge.h wt.h route.h prepare.h \
       vmctx_offsets.h runtime_data.h table.h
 	@if [ ! -f "$(WC_OBJ)" ]; then \
 	  echo "Makefile: $(WC_OBJ) missing; run 'make obj' or host/build_all.sh" >&2; \
 	  exit 1; \
 	fi
 	$(CXX) $(CXXFLAGS) -o $@ main.cpp vmctx.cpp unwind.cpp imports.cpp \
-		rna_bridge.cpp wt.cpp route.cpp prepare.cpp runtime_data.cpp table.cpp \
-		$(WC_OBJ) $(LDFLAGS)
+		pthread_start.cpp rna_bridge.cpp wt.cpp route.cpp prepare.cpp \
+		runtime_data.cpp table.cpp $(WC_OBJ) $(LDFLAGS)
 
 # Build the Cranelift compiler tool and emit the object from $(WC_WASM).
 # Codegen of all 154,552 functions takes ~260 s; see host/BUILD.md.
