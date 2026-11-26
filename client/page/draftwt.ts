@@ -221,6 +221,35 @@ function wrapWritable(stream) {
   });
 }
 
+// Diagnostics for the transport-only disconnect seen after ~2 min of play.
+// Verbose traces are opt-in with WC_WT_DBG=1; the QUIC close reason is always
+// logged once when conn.closed settles.
+const wtDbg = (() => {
+  try { return Deno.env.get("WC_WT_DBG") === "1"; } catch { return false; }
+})();
+const wtEnvNum = (name, fallback) => {
+  try {
+    const v = Number(Deno.env.get(name));
+    return Number.isFinite(v) && v > 0 ? v : fallback;
+  } catch { return fallback; }
+};
+const wtLog = (...args) => { if (wtDbg) console.error("[draft02:dbg]", ...args); };
+function wtDescribe(v) {
+  if (v === undefined) return "undefined";
+  if (v === null) return "null";
+  if (typeof v !== "object") return String(v);
+  const bits = [];
+  for (const k of ["closeCode", "reason", "reasonPhrase", "code", "message", "name"]) {
+    if (v[k] !== undefined) bits.push(`${k}=${String(v[k])}`);
+  }
+  if (!bits.length) {
+    try { bits.push(JSON.stringify(v, (_, x) => typeof x === "bigint" ? String(x) : x)); }
+    catch { bits.push(String(v)); }
+  }
+  if (v.stack) bits.push("stack=" + String(v.stack).slice(0, 400));
+  return bits.join(" ");
+}
+
 export class DraftWebTransport {
   ready; closed;
   #conn; #sessionId = 0n; #readyResolve; #closedResolve; #reject;
@@ -232,19 +261,33 @@ export class DraftWebTransport {
 
   constructor(url, options = {}) {
     console.error("[draft02] constructed", String(url).slice(0, 100));
+    const t0 = Date.now();
+    const elapsed = () => ((Date.now() - t0) / 1000).toFixed(1) + "s";
+    // Defaults unchanged; env overrides let us A/B test keepalive without a rebuild.
+    const keepAliveInterval = wtEnvNum("WC_WT_KEEPALIVE_MS", 4e3);
+    const maxIdleTimeout = wtEnvNum("WC_WT_IDLE_MS", 10e3);
+    wtLog("connect options", { keepAliveInterval, maxIdleTimeout, congestionControl: options.congestionControl ?? "default" });
     this.ready = new Promise((r, x) => { this.#readyResolve = r; this.#reject = x; });
     this.closed = new Promise((r) => { this.#closedResolve = r; });
     const u = new URL(url);
+    const pumpExit = (name, why, detail) => {
+      console.error(`[draft02] ${name} pump EXIT`, "elapsed", elapsed(), "why", why,
+        detail === undefined ? "" : wtDescribe(detail));
+    };
     const doConnect = async () => {
       const conn = await (Deno as any).connectQuic({
         hostname: u.hostname, port: Number(u.port) || 443,
         alpnProtocols: ["h3"],
         serverCertificateHashes: options.serverCertificateHashes,
-        keepAliveInterval: 4e3, maxIdleTimeout: 10e3,
+        keepAliveInterval, maxIdleTimeout,
         congestionControl: options.congestionControl ?? "default",
       });
+      wtLog("connectQuic returned", elapsed());
       this.#conn = conn;
-      conn.closed.then((v) => this.#closedResolve(v), () => this.#closedResolve(null));
+      conn.closed.then(
+        (v) => { console.error("[draft02] conn.closed RESOLVED", "elapsed", elapsed(), "value", wtDescribe(v)); this.#closedResolve(v); },
+        (e) => { console.error("[draft02] conn.closed REJECTED", "elapsed", elapsed(), "reason", wtDescribe(e)); this.#closedResolve(null); },
+      );
 
       // control stream: SETTINGS
       const ctrl = await conn.createUnidirectionalStream();
@@ -277,51 +320,61 @@ export class DraftWebTransport {
 
       // ONE reader for all incoming uni streams: control / QPACK / WT.
       (async () => {
-        const r = conn.incomingUnidirectionalStreams.getReader();
-        while (true) {
-          const { value: stream, done } = await r.read();
-          if (done) break;
-          try {
-            const br = new BufReader(stream);
-            const type = await readVarintBuf(br);
-            if (type === STREAM_CONTROL) {
-              const f = await readFrame(br);
-              console.error("[draft02] server settings frame", String(f.type));
-              br.releaseLock();
-            } else if (type === STREAM_QPACK_ENC || type === STREAM_QPACK_DEC) {
-              br.releaseLock(); // hold; engine never uses them
-            } else if (type === WT_UNI) {
-              const sid = await readVarintBuf(br);
-              console.error("[draft02] uni stream", String(type), String(sid), "ours", String(this.#sessionId));
-              if (sid === this.#sessionId) {
-                console.error("[draft02] INCOMING STREAM ACCEPTED");
-                this.#incomingUni.push(br.asReadable()); this.#uniWake?.();
-              } else br.releaseLock();
-            } else {
-              console.error("[draft02] uni unknown type", String(type));
-              br.releaseLock();
-            }
-          } catch (e) { console.error("[draft02] uni stream err", e?.stack?.slice?.(0, 300) ?? String(e)); }
+        try {
+          const r = conn.incomingUnidirectionalStreams.getReader();
+          wtLog("uni pump start", elapsed());
+          while (true) {
+            const { value: stream, done } = await r.read();
+            if (done) { pumpExit("uni", "reader done"); return; }
+            try {
+              const br = new BufReader(stream);
+              const type = await readVarintBuf(br);
+              if (type === STREAM_CONTROL) {
+                const f = await readFrame(br);
+                console.error("[draft02] server settings frame", String(f.type));
+                br.releaseLock();
+              } else if (type === STREAM_QPACK_ENC || type === STREAM_QPACK_DEC) {
+                br.releaseLock(); // hold; engine never uses them
+              } else if (type === WT_UNI) {
+                const sid = await readVarintBuf(br);
+                console.error("[draft02] uni stream", String(type), String(sid), "ours", String(this.#sessionId));
+                if (sid === this.#sessionId) {
+                  console.error("[draft02] INCOMING STREAM ACCEPTED");
+                  this.#incomingUni.push(br.asReadable()); this.#uniWake?.();
+                } else br.releaseLock();
+              } else {
+                console.error("[draft02] uni unknown type", String(type));
+                br.releaseLock();
+              }
+            } catch (e) { console.error("[draft02] uni stream err", e?.stack?.slice?.(0, 300) ?? String(e)); }
+          }
+        } catch (e) {
+          pumpExit("uni", "read rejected", e);
         }
-      })().catch((e) => console.error("[draft02] uni pump failed", String(e)));
+      })().catch((e) => console.error("[draft02] uni pump failed", "elapsed", elapsed(), wtDescribe(e)));
 
       (async () => {
-        const r = conn.incomingBidirectionalStreams.getReader();
-        while (true) {
-          const { value: stream, done } = await r.read();
-          if (done) break;
-          try {
-            const br = new BufReader(stream.readable);
-            const type = await readVarintBuf(br);
-            const sid = await readVarintBuf(br);
-            console.error("[draft02] bi stream", String(type), String(sid));
-            if (type === WT_BI && sid === this.#sessionId) {
-              this.#incomingBi.push({ readable: br.asReadable(), writable: stream.writable });
-              this.#biWake?.();
-            }
-          } catch (e) { console.error("[draft02] bi stream err", String(e).slice(0, 200)); }
+        try {
+          const r = conn.incomingBidirectionalStreams.getReader();
+          wtLog("bi pump start", elapsed());
+          while (true) {
+            const { value: stream, done } = await r.read();
+            if (done) { pumpExit("bi", "reader done"); return; }
+            try {
+              const br = new BufReader(stream.readable);
+              const type = await readVarintBuf(br);
+              const sid = await readVarintBuf(br);
+              console.error("[draft02] bi stream", String(type), String(sid));
+              if (type === WT_BI && sid === this.#sessionId) {
+                this.#incomingBi.push({ readable: br.asReadable(), writable: stream.writable });
+                this.#biWake?.();
+              }
+            } catch (e) { console.error("[draft02] bi stream err", String(e).slice(0, 200)); }
+          }
+        } catch (e) {
+          pumpExit("bi", "read rejected", e);
         }
-      })().catch(() => {});
+      })().catch((e) => console.error("[draft02] bi pump failed", "elapsed", elapsed(), wtDescribe(e)));
 
       // datagrams
       (async () => {
