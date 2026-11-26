@@ -15,6 +15,7 @@
 #include <string>
 #include <sys/stat.h>
 #include <thread>
+#include <unistd.h>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -3786,6 +3787,54 @@ std::shared_ptr<Mailbox> mailbox_for(uint32_t ptr) {
   return b;
 }
 
+// A notify is a counted ring, not an edge: v2-wasmtime/src/imports/mailbox.rs
+// keeps one count per target and drains it at the receiver's next safe point.
+// The ring count is bounded here so a stuck guest cannot grow state forever.
+std::atomic<uint32_t> g_mailbox_trace_count{0};
+std::atomic<uint32_t> g_mailbox_rings{0};
+void mailbox_ring(uint32_t target) {
+  note_once("[mbx] first notify accepted for thread " + std::to_string(target));
+  if (g_mailbox_rings.load(std::memory_order_relaxed) < 1024) {
+    g_mailbox_rings.fetch_add(1, std::memory_order_relaxed);
+  }
+  // `Atomics.waitAsync(target, target)` is what the JS glue arms in await();
+  // wake it through the same futex table the host's memory.notify uses.
+  imports_futex_notify(target, 1);
+  const auto box = mailbox_for(target);
+  {
+    std::lock_guard<std::mutex> lock(box->m);
+    box->signaled = true;
+  }
+  box->cv.notify_all();
+}
+
+// Bounded HOST_TRACE diagnostics for the mailbox ring protocol.  Purely
+// observational: no guest memory is written and no signal handler is touched.
+void trace_mailbox(const char* where, uint32_t target, uint32_t self,
+                   const void* vmctx, const void* caller_vmctx) {
+  if (!trace_enabled() || g_mailbox_trace_count.fetch_add(1) >= 16) return;
+  const uint8_t* base = g_mem.load(std::memory_order_acquire);
+  const std::size_t len = g_mem_len.load(std::memory_order_acquire);
+  auto w = [&](uint32_t p, uint32_t& out) {
+    out = 0;
+    if (mem_ok(p, 4)) std::memcpy(&out, base + p, 4);
+  };
+  uint32_t word0 = 0, self_word = 0, mbx = 0, q44 = 0, q48 = 0, ready = 0;
+  w(target, word0);
+  w(target + 104, mbx);
+  w(target + 112, ready);
+  w(self, self_word);
+  if (mbx && mem_ok(mbx, 52)) { w(mbx + 44, q44); w(mbx + 48, q48); }
+  std::fprintf(stderr,
+               "[mbx ] %s target=%#x self=%#x target_ok=%d self_ok=%d "
+               "vmctx=%p caller=%p base=%p len=%zu word=%#x mbx=%#x "
+               "q(44,48)=%#x/%#x ready=%#x self_word=%#x\n",
+               where, target, self, mem_ok(target, 116) ? 1 : 0,
+               mem_ok(self, 4) ? 1 : 0, vmctx, caller_vmctx,
+               static_cast<const void*>(base), len, word0, mbx, q44, q48,
+               ready, self_word);
+}
+
 ThreadEntry g_thread_entry = nullptr;
 GuestTick g_guest_tick = nullptr;
 WasmCallback g_wasm_cb = nullptr;
@@ -3949,6 +3998,9 @@ double eval_asm(uint32_t key, uint32_t sigp, uint32_t buf) {
 }
 
 }  // namespace
+
+// Defined below, after the futex helpers; used by the mailbox ring wake-up.
+uint32_t imports_futex_notify(uint32_t addr, uint32_t count);
 
 // --- public integration API ------------------------------------------------
 void imports_set_memory(void* base, std::size_t length) {
@@ -4554,14 +4606,27 @@ extern "C" void wasm_import_334__emscripten_thread_cleanup(void* vmctx, void* ca
 extern "C" void wasm_import_340__emscripten_notify_mailbox_postmessage(
     void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2) {
   WB_TRACE_IMPORT(340);
-  (void)caller_vmctx;
-  (void)vmctx; (void)a2;
-  const auto box = wb::mailbox_for(static_cast<uint32_t>(a1));
-  {
-    std::lock_guard<std::mutex> lock(box->m);
-    box->signaled = true;
+  const uint32_t target = static_cast<uint32_t>(a1);
+  const uint32_t self = static_cast<uint32_t>(a2);
+  wb::trace_mailbox("notify", target, self, vmctx, caller_vmctx);
+
+  // The pthread struct lives in linear memory.  v2-wasmtime's mailbox.rs
+  // reads the receiver's ring pointer at +104 and its ready word at +112.
+  // Reject a target (or a ring pointer) that is not a real guest address
+  // before reading or writing anything through it.
+  if (!wb::mem_ok(target, 116)) {
+    wb::note_once("[mbx] notify: target outside linear memory, ignored");
+    return;
   }
-  box->cv.notify_all();
+  const uint32_t mbx = wb::mem_ld32(target + 104);
+  if (mbx && !wb::mem_ok(mbx, 52)) {
+    wb::note_once("[mbx] notify: mailbox ring pointer outside linear memory");
+  }
+
+  // Post a counted ring and wake the receiver.  Do NOT re-enter wasm here:
+  // this import can run on a worker thread; the guest drains its own mailbox
+  // at a safe point on the target thread (see MAILBOX.md).
+  wb::mailbox_ring(target);
 }
 
 // slots 319 / 321 / 322 / 323: uid/gid shims --------------------------------
