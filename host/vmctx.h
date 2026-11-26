@@ -105,9 +105,17 @@ struct HostState {
 bool setup(HostState& state);
 
 // Signal-handler plumbing. Returns 0 on normal return, or the signal number
-// when a wasm trap was converted into a longjmp.
+// when a wasm trap was converted into a longjmp. The jmp_buf and its
+// in-wasm flag are thread-local: only the thread that armed the guard may
+// be longjmp'd to (see host/TRAPGUARD.md).
 int call_ctors(HostState& state);
 uint32_t call_malloc(HostState& state, uint32_t size, int& trap_signal);
+
+// Clear the unwinder's exit PC/FP and handler chain in a VMStoreContext.
+// A worker vmctx that copies the main store MUST call this before running
+// guest code, otherwise stale PC/FP values from the main thread's stack are
+// dereferenced by unwind_throw() on the worker (see host/TRAPGUARD.md).
+void reset_wasm_exit_state(void* vmctx);
 
 // Real-export round trip: emscripten_stack_set_limits -> get_stack_base/end.
 // Returns 0 on success, or the signal number of a converted wasm trap.

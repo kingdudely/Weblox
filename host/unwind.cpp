@@ -20,10 +20,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 #include <fcntl.h>
 #include <link.h>
+#include <pthread.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 namespace host {
@@ -50,6 +53,34 @@ void trace(const char* fmt, ...) {
   va_start(ap, fmt);
   std::vfprintf(stderr, fmt, ap);
   va_end(ap);
+}
+
+long current_tid() { return static_cast<long>(::syscall(SYS_gettid)); }
+
+// A VMStoreContext copied into a worker vmctx inherits the main thread's exit
+// PC/FP.  Those values point into a stack owned by another pthread: walking
+// them faults.  Cache this thread's native stack range and refuse to
+// dereference a frame pointer that belongs elsewhere.
+struct StackRange {
+  uintptr_t lo = 0, hi = 0;
+  bool ready = false;
+};
+thread_local StackRange tl_stack;
+
+bool in_current_stack(uintptr_t p) {
+  if (!tl_stack.ready) {
+    pthread_attr_t attr;
+    if (::pthread_getattr_np(::pthread_self(), &attr) != 0) return false;
+    void* base = nullptr;
+    size_t size = 0;
+    const bool ok = ::pthread_attr_getstack(&attr, &base, &size) == 0 && size > 16;
+    ::pthread_attr_destroy(&attr);
+    if (!ok) return false;
+    tl_stack.lo = reinterpret_cast<uintptr_t>(base);
+    tl_stack.hi = tl_stack.lo + size;
+    tl_stack.ready = true;
+  }
+  return p > tl_stack.lo && p + 16 < tl_stack.hi;
 }
 
 // ---- exception table -------------------------------------------------------
@@ -241,27 +272,48 @@ bool unwind_throw(void* vmctx, uint32_t exnref) {
   if (!store_ptr) return false;
   auto* store = static_cast<VMStoreContext*>(store_ptr);
 
+  // The object's .text begins with _wasm_function_0 (symbol value 0), so the
+  // linked address of that export is the code-segment base for table offsets.
+  const uintptr_t code_base = reinterpret_cast<uintptr_t>(&_wasm_function_0);
+
   // These two fields are written by wasmtime_builtin_throw_ref's trampoline
   // before it calls the host builtin (objdump: +0x10 .. +0x38).  They point
   // at the guest try_call return address and that guest frame's FP.
   const uintptr_t exit_pc = store->last_wasm_exit_pc;
   const uintptr_t trampoline_fp = store->last_wasm_exit_trampoline_fp;
   if (!exit_pc || !trampoline_fp) {
-    unwind_trace("no exit state (pc=%#lx fp=%#lx)\n", static_cast<unsigned long>(exit_pc),
-                 static_cast<unsigned long>(trampoline_fp));
+    unwind_trace("tid=%ld no exit state (pc=%#lx fp=%#lx)\n", current_tid(),
+                 static_cast<unsigned long>(exit_pc), static_cast<unsigned long>(trampoline_fp));
     return false;
   }
+  const uint64_t rel_pc = exit_pc > code_base ? exit_pc - code_base : 0;
+  const uint64_t code_span = g_text_end > code_base
+                                 ? g_text_end - code_base
+                                 : (uint64_t{1} << 30);
+  if (rel_pc == 0 || rel_pc > std::numeric_limits<uint32_t>::max() || rel_pc >= code_span) {
+    unwind_trace("tid=%ld invalid exit_pc=%#lx (rel=%#llx span=%#llx); clearing\n",
+                 current_tid(), static_cast<unsigned long>(exit_pc),
+                 static_cast<unsigned long long>(rel_pc),
+                 static_cast<unsigned long long>(code_span));
+    reset_wasm_exit_state(vmctx);
+    return false;
+  }
+  // A copied store inherits the main thread's FP.  Never dereference a frame
+  // pointer that is not on the current pthread's native stack.
+  if (!in_current_stack(trampoline_fp)) {
+    unwind_trace("tid=%ld exit fp=%#lx is not on this thread's stack (stale copy); clearing\n",
+                 current_tid(), static_cast<unsigned long>(trampoline_fp));
+    reset_wasm_exit_state(vmctx);
+    return false;
+  }
+
   uintptr_t fp = *reinterpret_cast<uintptr_t*>(trampoline_fp);  // last_wasm_exit_fp()
   uintptr_t pc = exit_pc;
-  // The object's .text begins with _wasm_function_0 (symbol value 0), so the
-  // linked address of that export is the code-segment base for table offsets.
-  const uintptr_t code_base = reinterpret_cast<uintptr_t>(&_wasm_function_0);
 
-  unwind_trace("throw exnref=%#x exit_pc=%#lx (rel %#lx) xfp=%#lx fp=%#lx code=%#lx\n", exnref,
-               static_cast<unsigned long>(exit_pc),
-               static_cast<unsigned long>(exit_pc - code_base),
-               static_cast<unsigned long>(trampoline_fp), static_cast<unsigned long>(fp),
-               static_cast<unsigned long>(code_base));
+  unwind_trace("throw tid=%ld exnref=%#x exit_pc=%#lx (rel %#lx) xfp=%#lx fp=%#lx code=%#lx\n",
+               current_tid(), exnref, static_cast<unsigned long>(exit_pc),
+               static_cast<unsigned long>(rel_pc), static_cast<unsigned long>(trampoline_fp),
+               static_cast<unsigned long>(fp), static_cast<unsigned long>(code_base));
 
   // DRC exception object layout: VMGcHeader (kind/ty) at +0/+4, VMDrcHeader
   // at +8..+23, then the tag's instance id and defined-tag index at +24/+28
@@ -280,6 +332,11 @@ bool unwind_throw(void* vmctx, uint32_t exnref) {
   UnwindHandler chosen{};
   for (unsigned frame = 0; frame < kMaxFrames; ++frame) {
     HandlerRange range{};
+    if (!in_current_stack(fp)) {
+      unwind_trace("frame %u fp=%#lx (tid=%ld) outside this thread's stack\n", frame,
+                   static_cast<unsigned long>(fp), current_tid());
+      break;
+    }
     if (pc > code_base && lookup_pc(static_cast<uint32_t>(pc - code_base), range)) {
       const uint32_t frame_offset = range.frame_offset;
       // FP points near the top of the stack (e.g. 0x7ffe...); only the
@@ -288,37 +345,41 @@ bool unwind_throw(void* vmctx, uint32_t exnref) {
                             fp > frame_offset;
       if (frame_ok) {
         const uintptr_t sp = fp - frame_offset;
-        for (uint32_t i = range.begin; i < range.end; ++i) {
-          const uint32_t tag = g_table.tags[i];
-          const uint32_t ctx = g_table.contexts[i];
-          const uint32_t target = g_table.handlers[i];
-          unwind_trace("frame %u pc=%#lx fp=%#lx sp=%#lx callsite=%u handler[%u] "
-                       "tag=%#x ctx=%#x target=%#lx\n",
-                       frame, static_cast<unsigned long>(pc), static_cast<unsigned long>(fp),
-                       static_cast<unsigned long>(sp), range.index, i, tag, ctx,
-                       static_cast<unsigned long>(target));
-          if (target == 0 || (g_text_end && code_base + target >= g_text_end)) continue;
-          bool matches = (tag == kNoTag);
-          if (!matches && exn_instance != 0 && ctx != kNoTag &&
-              sp + ctx + sizeof(uintptr_t) > sp) {
-            // Wasmtime resolves a tag handler's module-local index through
-            // the vmctx saved in the frame's dynamic context slot.  With one
-            // instance, its defined-tag index equals the module-local tag.
-            const uintptr_t frame_vmctx = *reinterpret_cast<const uintptr_t*>(sp + ctx);
-            if (frame_vmctx == reinterpret_cast<uintptr_t>(vmctx) && tag == exn_defined_tag) {
-              matches = true;
+        if (in_current_stack(sp)) {
+          for (uint32_t i = range.begin; i < range.end; ++i) {
+            const uint32_t tag = g_table.tags[i];
+            const uint32_t ctx = g_table.contexts[i];
+            const uint32_t target = g_table.handlers[i];
+            unwind_trace("frame %u pc=%#lx fp=%#lx sp=%#lx callsite=%u handler[%u] "
+                         "tag=%#x ctx=%#x target=%#lx\n",
+                         frame, static_cast<unsigned long>(pc), static_cast<unsigned long>(fp),
+                         static_cast<unsigned long>(sp), range.index, i, tag, ctx,
+                         static_cast<unsigned long>(target));
+            if (target == 0 || (g_text_end && code_base + target >= g_text_end)) continue;
+            bool matches = (tag == kNoTag);
+            if (!matches && exn_instance != 0 && ctx != kNoTag && in_current_stack(sp + ctx)) {
+              // Wasmtime resolves a tag handler's module-local index through
+              // the vmctx saved in the frame's dynamic context slot.  With one
+              // instance, its defined-tag index equals the module-local tag.
+              const uintptr_t frame_vmctx = *reinterpret_cast<const uintptr_t*>(sp + ctx);
+              if (frame_vmctx == reinterpret_cast<uintptr_t>(vmctx) && tag == exn_defined_tag) {
+                matches = true;
+              }
             }
+            if (!matches) continue;
+            chosen.pc = code_base + target;
+            chosen.sp = sp;
+            chosen.fp = fp;
+            chosen.tag = tag;
+            unwind_trace("FOUND handler pc=%#lx sp=%#lx fp=%#lx\n",
+                         static_cast<unsigned long>(chosen.pc),
+                         static_cast<unsigned long>(chosen.sp),
+                         static_cast<unsigned long>(chosen.fp));
+            resume_to_handler(chosen, exnref);
           }
-          if (!matches) continue;
-          chosen.pc = code_base + target;
-          chosen.sp = sp;
-          chosen.fp = fp;
-          chosen.tag = tag;
-          unwind_trace("FOUND handler pc=%#lx sp=%#lx fp=%#lx\n",
-                       static_cast<unsigned long>(chosen.pc),
-                       static_cast<unsigned long>(chosen.sp),
-                       static_cast<unsigned long>(chosen.fp));
-          resume_to_handler(chosen, exnref);
+        } else {
+          unwind_trace("frame %u sp=%#lx outside this thread's stack\n", frame,
+                       static_cast<unsigned long>(sp));
         }
       } else {
         unwind_trace("frame %u pc=%#lx fp=%#lx: bad frame_offset=%#x\n", frame,
