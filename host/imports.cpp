@@ -808,14 +808,7 @@ extern "C" int32_t wasm_import_011_emscripten_exit_pointerlock(void* vmctx, void
   return 0;
 }
 
-extern "C" int32_t wasm_import_012_is_mouse_sourced_event(void* vmctx, void* caller_vmctx) {
-  (void)vmctx;
-  (void)caller_vmctx;
-  WB_TRACE_IMPORT(12);
-  wb::import_log_first(12);
-  return 0;
-}
-
+// slot  12: is_mouse_sourced_event -- hand-written below
 // slot  13: emscripten_asm_const_double -- hand-written below
 extern "C" void wasm_import_014_preallocate_emscripten_key_event_buffer(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
@@ -825,17 +818,7 @@ extern "C" void wasm_import_014_preallocate_emscripten_key_event_buffer(void* vm
   wb::import_log_first(14);
 }
 
-extern "C" int32_t wasm_import_015_emscripten_get_element_css_size(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
-  (void)vmctx;
-  (void)caller_vmctx;
-  (void)a0;
-  (void)a1;
-  (void)a2;
-  WB_TRACE_IMPORT(15);
-  wb::import_log_first(15);
-  return 0;
-}
-
+// slot  15: emscripten_get_element_css_size -- hand-written below
 // slot  16: get_effective_device_pixel_ratio -- hand-written below
 // slot  17: emscripten_set_canvas_element_size -- hand-written below
 // slot  18: emscripten_get_device_pixel_ratio -- hand-written below
@@ -1061,22 +1044,8 @@ extern "C" int32_t wasm_import_035_emscripten_set_focus_callback_on_thread(void*
 // slot  52: emscripten_console_error -- hand-written below
 // slot  53: emscripten_asm_const_int_sync_on_main_thread -- hand-written below
 // slot  54: js_web_client_page_visible -- hand-written below
-extern "C" double wasm_import_055_js_web_client_ms_since_navigation(void* vmctx, void* caller_vmctx) {
-  (void)vmctx;
-  (void)caller_vmctx;
-  WB_TRACE_IMPORT(55);
-  wb::import_log_first(55);
-  return 0.0;
-}
-
-extern "C" int32_t wasm_import_056_js_web_client_wasm_cache_state(void* vmctx, void* caller_vmctx) {
-  (void)vmctx;
-  (void)caller_vmctx;
-  WB_TRACE_IMPORT(56);
-  wb::import_log_first(56);
-  return 0;
-}
-
+// slot  55: js_web_client_ms_since_navigation -- hand-written below
+// slot  56: js_web_client_wasm_cache_state -- hand-written below
 extern "C" void wasm_import_057_sync_text_and_pos(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
   (void)caller_vmctx;
@@ -1193,24 +1162,8 @@ extern "C" void wasm_import_069_shift_canvas(void* vmctx, void* caller_vmctx, fl
   wb::import_log_first(69);
 }
 
-extern "C" int32_t wasm_import_070_emscripten_sample_gamepad_data(void* vmctx, void* caller_vmctx) {
-  (void)vmctx;
-  (void)caller_vmctx;
-  WB_TRACE_IMPORT(70);
-  wb::import_log_first(70);
-  return 0;
-}
-
-extern "C" int32_t wasm_import_071_emscripten_get_gamepad_status(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
-  (void)vmctx;
-  (void)caller_vmctx;
-  (void)a0;
-  (void)a1;
-  WB_TRACE_IMPORT(71);
-  wb::import_log_first(71);
-  return 0;
-}
-
+// slot  70: emscripten_sample_gamepad_data -- hand-written below
+// slot  71: emscripten_get_gamepad_status -- hand-written below
 extern "C" int32_t wasm_import_072_emscripten_set_gamepadconnected_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
   (void)vmctx;
   (void)caller_vmctx;
@@ -1235,14 +1188,7 @@ extern "C" int32_t wasm_import_073_emscripten_set_gamepaddisconnected_callback_o
   return 0;
 }
 
-extern "C" int32_t wasm_import_074_emscripten_get_num_gamepads(void* vmctx, void* caller_vmctx) {
-  (void)vmctx;
-  (void)caller_vmctx;
-  WB_TRACE_IMPORT(74);
-  wb::import_log_first(74);
-  return 0;
-}
-
+// slot  74: emscripten_get_num_gamepads -- hand-written below
 extern "C" void wasm_import_075_js_external_content_sharing_deliver(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
   (void)caller_vmctx;
@@ -3520,33 +3466,8 @@ extern "C" void wasm_import_304_emscripten_start_fetch(void* vmctx, void* caller
 // slot 326: _mktime_js -- hand-written below
 // slot 327: _localtime_js -- hand-written below
 // slot 328: _gmtime_js -- hand-written below
-extern "C" int32_t wasm_import_329__msync_js(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int64_t a5) {
-  (void)vmctx;
-  (void)caller_vmctx;
-  (void)a0;
-  (void)a1;
-  (void)a2;
-  (void)a3;
-  (void)a4;
-  (void)a5;
-  WB_TRACE_IMPORT(329);
-  wb::import_log_first(329);
-  return 0;
-}
-
-extern "C" int32_t wasm_import_330_fd_pread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int64_t a3, int32_t a4) {
-  (void)vmctx;
-  (void)caller_vmctx;
-  (void)a0;
-  (void)a1;
-  (void)a2;
-  (void)a3;
-  (void)a4;
-  WB_TRACE_IMPORT(330);
-  wb::import_log_first(330);
-  return 0;
-}
-
+// slot 329: _msync_js -- hand-written below
+// slot 330: fd_pread -- hand-written below
 // slot 331: _emscripten_receive_on_main_thread_js -- hand-written below
 // slot 332: emscripten_check_blocking_allowed -- hand-written below
 // slot 333: __pthread_create_js -- hand-written below
@@ -4773,5 +4694,117 @@ extern "C" int32_t wasm_import_341_emscripten_resize_heap(void* vmctx, void* cal
   // into its abort path (which jumps through an uninitialised table entry).
   wb::note_once("[heap] resize acknowledged: memory is already 4 GiB");
   return 1;
+}
+
+// --- promoted stubs: honest getters / no-op host hooks ---------------------
+// Each of these was a zero-returning generated stub.  They are promoted in
+// gen_imports.py::REALIZED so regeneration keeps these bodies.  See
+// host/IMPORTS_AUDIT.md for the reference (v2-wasmtime / v3-wasm2c) each one
+// was ported from.  None needs a call back into wasm.
+
+// slot 12: pointer source type.  The native host installs no touch or pen
+// source, so the default pointer type is mouse (v2 stubs.rs: PTR_TOUCH=0,
+// PTR_PEN=2, default 1 => mousedown/mouseup are not touch-synthesised).
+extern "C" int32_t wasm_import_012_is_mouse_sourced_event(void* vmctx, void* caller_vmctx) {
+  WB_TRACE_IMPORT(12);
+  (void)vmctx;
+  (void)caller_vmctx;
+  return 1;
+}
+
+// slot 15: CSS size of an element, written as f32 into (w, h).  The host owns
+// a fixed 1280x720 canvas (the same value slot 206 reports); a0 is the target
+// id and is ignored, as in the reference host.
+extern "C" int32_t wasm_import_015_emscripten_get_element_css_size(
+    void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
+  WB_TRACE_IMPORT(15);
+  (void)vmctx;
+  (void)caller_vmctx;
+  (void)a0;
+  const float w = 1280.0f, h = 720.0f;
+  wb::mem_write(static_cast<uint32_t>(a1), &w, sizeof w);
+  wb::mem_write(static_cast<uint32_t>(a2), &h, sizeof h);
+  return 0;
+}
+
+// slot 55: performance.now() equivalent for the page clock.  Same origin as
+// slot 4 (emscripten_get_now) and the v2 boot::perf_ms() helper: 1000 ms at
+// startup, monotonic thereafter.
+extern "C" double wasm_import_055_js_web_client_ms_since_navigation(void* vmctx, void* caller_vmctx) {
+  WB_TRACE_IMPORT(55);
+  (void)vmctx;
+  (void)caller_vmctx;
+  return wb::steady_ms();
+}
+
+// slot 56: wasm cache state.  This host does not cache compiled modules; 2 is
+// the value the working Rust host reports on every successful boot, so no
+// cache-hit path is claimed.
+extern "C" int32_t wasm_import_056_js_web_client_wasm_cache_state(void* vmctx, void* caller_vmctx) {
+  WB_TRACE_IMPORT(56);
+  (void)vmctx;
+  (void)caller_vmctx;
+  return 2;
+}
+
+// slots 70/71/74: no gamepads are attached to a headless host.  Report an
+// empty device list and the reference "no such device" status (-5) rather
+// than pretending a connected controller exists.
+extern "C" int32_t wasm_import_070_emscripten_sample_gamepad_data(void* vmctx, void* caller_vmctx) {
+  WB_TRACE_IMPORT(70);
+  (void)vmctx;
+  (void)caller_vmctx;
+  return 0;
+}
+extern "C" int32_t wasm_import_071_emscripten_get_gamepad_status(
+    void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
+  WB_TRACE_IMPORT(71);
+  (void)vmctx;
+  (void)caller_vmctx;
+  (void)a0;
+  (void)a1;
+  return -5;
+}
+extern "C" int32_t wasm_import_074_emscripten_get_num_gamepads(void* vmctx, void* caller_vmctx) {
+  WB_TRACE_IMPORT(74);
+  (void)vmctx;
+  (void)caller_vmctx;
+  return 0;
+}
+
+// slot 329: msync on the shared WASM linear memory.  The host maps that memory
+// directly, so there is nothing to flush; only the JS-side offset sanity
+// bound (±2^53, from v2 stubs.rs) is enforced.
+extern "C" int32_t wasm_import_329__msync_js(
+    void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2,
+    int32_t a3, int32_t a4, int64_t a5) {
+  WB_TRACE_IMPORT(329);
+  (void)vmctx;
+  (void)caller_vmctx;
+  (void)a0;
+  (void)a1;
+  (void)a2;
+  (void)a3;
+  (void)a4;
+  constexpr int64_t kQeLimit = int64_t{1} << 53;
+  return (a5 < -kQeLimit || a5 > kQeLimit) ? -22 : 0;  // EINVAL / OK
+}
+
+// slot 330: WASI fd_pread.  The native host exposes no WASI fd table (assets
+// come through js_fetch_file/libcurl), so report zero bytes read and clear
+// the nread out-param, exactly as the working Rust host does.  This is an
+// honest "no data available", not a claim that a file was read.
+extern "C" int32_t wasm_import_330_fd_pread(
+    void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2,
+    int64_t a3, int32_t a4) {
+  WB_TRACE_IMPORT(330);
+  (void)vmctx;
+  (void)caller_vmctx;
+  (void)a0;
+  (void)a1;
+  (void)a2;
+  (void)a3;
+  wb::mem_st32(static_cast<uint32_t>(a4), 0);
+  return 0;
 }
 // === END HANDWRITTEN IMPLEMENTATIONS ===
