@@ -848,16 +848,34 @@ extern "C" void wasm_import_020_install_pointer_source_tracking(void* vmctx, voi
   wb::import_log_first(20);
 }
 
+// slot 21: Emscripten callback registration.
+// `emscripten_set_mousedown_callback_on_thread(target, userData, capture,
+// callbackfunc, thread)` records a __indirect_function_table index plus an
+// opaque user pointer.  The reference host (v2-wasmtime/src/imports/input.rs)
+// only stores CB[id]/USER[id] and returns 0; it never re-enters wasm here.
+// Do the same: remember the registration honestly, but deliver no synthetic
+// event (there is no input source and no wasm re-entry from host threads).
+namespace {
+struct MouseDownBinding {
+  std::atomic<uint32_t> target{0};
+  std::atomic<uint32_t> user{0};
+  std::atomic<uint32_t> capture{0};
+  std::atomic<uint32_t> callback{0};
+  std::atomic<uint32_t> thread{0};
+};
+MouseDownBinding g_mousedown_binding{};
+}  // namespace
+
 extern "C" int32_t wasm_import_021_emscripten_set_mousedown_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
   (void)caller_vmctx;
-  (void)a0;
-  (void)a1;
-  (void)a2;
-  (void)a3;
-  (void)a4;
   WB_TRACE_IMPORT(21);
   wb::import_log_first(21);
+  g_mousedown_binding.target.store(static_cast<uint32_t>(a0), std::memory_order_relaxed);
+  g_mousedown_binding.user.store(static_cast<uint32_t>(a1), std::memory_order_relaxed);
+  g_mousedown_binding.capture.store(static_cast<uint32_t>(a2), std::memory_order_relaxed);
+  g_mousedown_binding.callback.store(static_cast<uint32_t>(a3), std::memory_order_relaxed);
+  g_mousedown_binding.thread.store(static_cast<uint32_t>(a4), std::memory_order_relaxed);
   return 0;
 }
 
@@ -4972,16 +4990,19 @@ extern "C" int32_t wasm_import_012_is_mouse_sourced_event(void* vmctx, void* cal
   return 1;
 }
 
-// slot 15: CSS size of an element, written as f32 into (w, h).  The host owns
-// a fixed 1280x720 canvas (the same value slot 206 reports); a0 is the target
-// id and is ignored, as in the reference host.
+// slot 15: CSS size of an element.  Emscripten's C signature is
+// `emscripten_get_element_css_size(const char*, double*, double*)`: the two
+// out-params are f64 pointers.  The host owns a fixed 1280x720 canvas (the
+// value client/page/env.ts reports), so write both sizes as doubles.  Writing
+// f32 here (as the v2 stub did) leaves the guest reading a ~0 f64 and is why
+// bootstrap logged "Canvas: 0x0 CSS, 0x0 backing".
 extern "C" int32_t wasm_import_015_emscripten_get_element_css_size(
     void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   WB_TRACE_IMPORT(15);
   (void)vmctx;
   (void)caller_vmctx;
   (void)a0;
-  const float w = 1280.0f, h = 720.0f;
+  const double w = 1280.0, h = 720.0;
   wb::mem_write(static_cast<uint32_t>(a1), &w, sizeof w);
   wb::mem_write(static_cast<uint32_t>(a2), &h, sizeof h);
   return 0;
