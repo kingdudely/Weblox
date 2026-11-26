@@ -172,6 +172,106 @@ export class El extends EventTarget {
 }
 
 /**
+ * A browser-shaped <input>/<textarea>. The engine's text-input glue reads
+ * `.value` and `.selectionStart/.selectionEnd`, installs `input`/`click`/
+ * `keydown` listeners, and calls `.focus()`/`.blur()`; the generic El shim
+ * exposed none of that, so the on-screen keyboard could never type anything.
+ */
+export class InputEl extends El {
+  value = "";
+  selectionStart = 0;
+  selectionEnd = 0;
+  type = "text";
+  /** Emscripten copies this into its key/focus events; the engine uses it to
+   *  tell a text field from the canvas. */
+  get nodeName() { return this.tagName; }
+  /** The element host keystrokes are routed into while the engine has focus. */
+  static focused: InputEl | null = null;
+
+  override focus() {
+    if (InputEl.focused && InputEl.focused !== this) InputEl.focused.blur();
+    InputEl.focused = this;
+    try { (globalThis as any).document.activeElement = this; } catch { /* no document yet */ }
+    if (traceInput()) log("input focus", this.id);
+  }
+  override blur() {
+    if (InputEl.focused === this) {
+      InputEl.focused = null;
+      try { (globalThis as any).document.activeElement = (globalThis as any).document.body; } catch { /* no document yet */ }
+    }
+  }
+  select() { this.selectionStart = 0; this.selectionEnd = this.value.length; }
+  setSelectionRange(start: number, end: number) {
+    const n = this.value.length;
+    this.selectionStart = Math.max(0, Math.min(n, start));
+    this.selectionEnd = Math.max(this.selectionStart, Math.min(n, end));
+  }
+  /** Notify the glue the way a real input does after an edit/caret move. */
+  private changed() {
+    try {
+      const M: any = (globalThis as any).Module;
+      if (M?.encoder) M.pendingBytes = M.encoder.encode(this.value);
+    } catch { /* Module may not be ready yet */ }
+    if (traceInput()) log("input changed", this.id, JSON.stringify(this.value), this.selectionStart, this.selectionEnd);
+    this.dispatchEvent(ev("input", { target: this }));
+  }
+  /** Apply a host keydown as a browser input would. Returns true if used. */
+  key(e: any): boolean {
+    const k = e.key ?? "";
+    const mod = !!(e.ctrlKey || e.metaKey);
+    if (k === "Enter") {
+      // WasmPlayer listens for Enter on input-input only; textarea needs the
+      // same notification. Dispatch first so the glue can consume it, then
+      // fall back to the import directly (never call it twice).
+      const down = ev("keydown", {
+        key: "Enter", code: e.code ?? "Enter", target: this,
+        ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey, metaKey: e.metaKey,
+      });
+      this.dispatchEvent(down);
+      if (!down.defaultPrevented) {
+        try { (globalThis as any).Module?._on_return_pressed?.(); } catch (err) { log("return failed", err); }
+      }
+      return true;
+    }
+    // Escape is left to the engine: it decides whether to close/blur the
+    // text input, and calls blur_text_input when it does.
+    if (k === "Escape") return false;
+    if (mod || e.altKey) {
+      if (mod && (k === "a" || k === "A")) { this.select(); this.changed(); return true; }
+      return false;
+    }
+    if (k === "Backspace" || k === "Delete") {
+      let s = this.selectionStart, t = this.selectionEnd;
+      if (s === t) {
+        if (k === "Backspace") { if (s <= 0) return true; s--; }
+        else { if (t >= this.value.length) return true; t++; }
+      }
+      this.value = this.value.slice(0, s) + this.value.slice(t);
+      this.setSelectionRange(s, s);
+      this.changed();
+      return true;
+    }
+    if (k === "ArrowLeft" || k === "ArrowRight" || k === "Home" || k === "End") {
+      const p = k === "Home" ? 0 : k === "End" ? this.value.length
+        : k === "ArrowLeft" ? Math.max(0, this.selectionEnd - 1)
+        : Math.min(this.value.length, this.selectionEnd + 1);
+      this.setSelectionRange(e.shiftKey ? this.selectionStart : p, p);
+      this.changed();
+      return true;
+    }
+    if (typeof k === "string" && k.length === 1) {
+      const s = Math.min(this.selectionStart, this.selectionEnd);
+      const t = Math.max(this.selectionStart, this.selectionEnd);
+      this.value = this.value.slice(0, s) + k + this.value.slice(t);
+      this.setSelectionRange(s + k.length, s + k.length);
+      this.changed();
+      return true;
+    }
+    return false;
+  }
+}
+
+/**
  * The presentation canvas. With a `Host` it *is* the window surface: sizing it
  * sizes the surface, and every frame is presented when the engine's
  * `presentBrowserFrame` has submitted its copy.
@@ -301,6 +401,8 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
   const canvas = new Canvas(host);
   (globalThis as any).HTMLElement = El;
   (globalThis as any).HTMLCanvasElement = Canvas;
+  (globalThis as any).HTMLInputElement = InputEl;
+  (globalThis as any).HTMLTextAreaElement = InputEl;
   (globalThis as any).HTMLVideoElement = class extends El {};
   (globalThis as any).HTMLAudioElement = class extends El {};
   (globalThis as any).HTMLScriptElement = class extends El { src = ""; onload: any = null; onerror: any = null; };
@@ -452,6 +554,31 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
 
   class Doc extends EventTarget {}
   const doc: any = new Doc();
+  // Pointer lock is emulated: Deno's raw window backend has no OS lock API.
+  // These helpers keep `document.pointerLockElement` and the change events in
+  // sync, and share the motion state with the host event loop below.
+  let lastX = 0, lastY = 0, havePos = false, buttons = 0;
+  const lockCenter = () => ({ x: host ? (host.width() / 2) | 0 : 640, y: host ? (host.height() / 2) | 0 : 360 });
+  const fireLockChange = () => {
+    doc.dispatchEvent(ev("pointerlockchange"));
+    globalThis.dispatchEvent(ev("pointerlockchange"));
+  };
+  const acquireLock = (target: any) => {
+    if (!target) return;
+    doc.pointerLockElement = target;
+    // The first event after locking is not a real look delta.
+    havePos = false;
+    lastX = 0;
+    lastY = 0;
+    if (traceInput()) log("pointerlock acquired", target?.id ?? target?.tagName);
+    fireLockChange();
+  };
+  const releaseLock = () => {
+    if (!doc.pointerLockElement) return;
+    doc.pointerLockElement = null;
+    if (traceInput()) log("pointerlock released");
+    fireLockChange();
+  };
   Object.assign(doc, {
     documentElement: new El("html"),
     head: new El("head"),
@@ -464,8 +591,8 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
     fullscreenElement: null,
     currentScript: { src: "" },
     _ids: new Map<string, any>([["canvas", canvas]]),
-    createElement: (tag: string) => (tag === "canvas" ? new Canvas(host) : new El(tag)),
-    createElementNS: (_ns: string, tag: string) => (tag === "canvas" ? new Canvas(host) : new El(tag)),
+    createElement: (tag: string) => (tag === "canvas" ? new Canvas(host) : tag === "input" || tag === "textarea" ? new InputEl(tag) : new El(tag)),
+    createElementNS: (_ns: string, tag: string) => (tag === "canvas" ? new Canvas(host) : tag === "input" || tag === "textarea" ? new InputEl(tag) : new El(tag)),
     getElementById: (id: string) => doc._ids.get(id) ?? null,
     querySelector: (s: string) => doc._ids.get(s.replace(/^#/, "")) ?? null,
     querySelectorAll: () => [],
@@ -475,20 +602,18 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
     fullscreenEnabled: true,
     fonts: { ready: Promise.resolve(), add() {}, check: () => true, load: async () => [] },
     exitFullscreen: async () => {},
-    exitPointerLock() {
-      if (!doc.pointerLockElement) return;
-      doc.pointerLockElement = null;
-      doc.dispatchEvent(ev("pointerlockchange"));
-      globalThis.dispatchEvent(ev("pointerlockchange"));
-    },
-    __lock(target: any) {
-      doc.pointerLockElement = target;
-      doc.dispatchEvent(ev("pointerlockchange"));
-      globalThis.dispatchEvent(ev("pointerlockchange"));
-    },
+    exitPointerLock() { releaseLock(); },
+    __lock(target: any) { acquireLock(target); },
   });
+  doc.activeElement = doc.body;
   doc.body.appendChild(canvas);
-  for (const id of ["status", "server", "proxyenabled", "loading-overlay", "input-container", "input-textarea", "input-input"]) doc._ids.set(id, new El("div"));
+  for (const id of ["status", "server", "proxyenabled", "loading-overlay", "input-container"]) doc._ids.set(id, new El("div"));
+  const textarea = new InputEl("textarea");
+  textarea.id = "input-textarea";
+  const input = new InputEl("input");
+  input.id = "input-input";
+  doc._ids.set("input-textarea", textarea);
+  doc._ids.set("input-input", input);
   Object.defineProperty(doc, "cookie", { get: cookie.get, set: cookie.set });
   (globalThis as any).document = doc;
 
@@ -501,7 +626,6 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
         "mov=", e.movementX, e.movementY, "delta=", e.deltaX, e.deltaY,
         "mode=", e.deltaMode, "lock=", !!doc.pointerLockElement);
     };
-    let lastX = 0, lastY = 0, havePos = false, buttons = 0;
     // A native context menu grabs the pointer on some window backends, after
     // which mousemove stops being delivered at all. Suppress it.
     host.on("contextmenu", (e: any) => { try { e.preventDefault(); } catch { /* not cancelable */ } });
@@ -509,10 +633,21 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
     for (const t of ["keydown", "keyup", "focus", "blur", "mouseleave", "mouseenter"]) {
       host.on(t, (e) => {
         if (t === "blur" || t === "mouseleave") buttons = 0;
-        const c = cloneEvent(e);
+        // A browser targets keys at the focused input before they bubble to
+        // document/window; the engine uses that target to ignore game keys.
+        const keyExtra = t.startsWith("key") && InputEl.focused ? { target: InputEl.focused } : {};
+        const c: any = cloneEvent(e, keyExtra);
         trace(t, c);
+        if (t === "keydown" && InputEl.focused) {
+          const used = InputEl.focused.key(c);
+          if (used && traceInput()) log("input consumed", c.key, c.ctrlKey);
+        }
         globalThis.dispatchEvent(c);
-        doc.dispatchEvent(cloneEvent(e));
+        doc.dispatchEvent(cloneEvent(e, keyExtra));
+        // The browser leaves pointer lock when Escape is pressed or the window
+        // loses focus. Deno has no OS lock, so release our emulated one.
+        if (t === "keydown" && c.key === "Escape") releaseLock();
+        if (t === "blur") releaseLock();
       });
     }
     // DOM `button` indices 0,1,2 are left,middle,right but `buttons` bits
@@ -521,6 +656,7 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
     const BUTTON_BITS = [1, 4, 2, 8, 16];
     for (const t of canvasTypes) {
       host.on(t, (e: any) => {
+        const locked = !!doc.pointerLockElement;
         const x = e.clientX, y = e.clientY;
         const finite = Number.isFinite(x) && Number.isFinite(y);
         const prevX = lastX, prevY = lastY;
@@ -530,9 +666,30 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
         const bit = BUTTON_BITS[e.button ?? 0] ?? 1;
         if (t === "mousedown" || t === "pointerdown") buttons |= bit;
         if (t === "mouseup" || t === "pointerup") buttons &= ~bit;
-        if (t === "mouseleave") buttons = 0;
+        if (t === "mouseleave" && !locked) buttons = 0;
         const held = Number.isInteger(e.buttons) ? e.buttons : buttons;
-        const extra: Record<string, any> = { movementX: dx, movementY: dy, buttons: held, target: canvas };
+        // While locked, the OS cursor is really still moving, so Deno's raw
+        // relative deltas (when supplied) are the truth. Fall back to the
+        // absolute-coordinate difference, which is what unlocked motion uses.
+        const rawDX = Number.isFinite(e.movementX) ? e.movementX : dx;
+        const rawDY = Number.isFinite(e.movementY) ? e.movementY : dy;
+        const extra: Record<string, any> = {
+          movementX: locked ? (rawDX !== 0 ? rawDX : dx) : dx,
+          movementY: locked ? (rawDY !== 0 ? rawDY : dy) : dy,
+          buttons: held,
+          target: canvas,
+        };
+        if (locked) {
+          // A locked cursor does not move in the browser: clientX/clientY stay
+          // at the centre of the viewport and only movementX/Y change.
+          const c = lockCenter();
+          extra.clientX = c.x;
+          extra.clientY = c.y;
+          extra.screenX = c.x;
+          extra.screenY = c.y;
+          extra.offsetX = c.x;
+          extra.offsetY = c.y;
+        }
         // Deno/CEF can report wheel deltas in lines (deltaMode 1) or tiny pixel
         // values; the engine reads raw pixels. Normalise to ~120px per notch.
         if (t === "wheel") {
@@ -555,8 +712,8 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
           extra.buttons = 0;
           // Roblox also copies clientX/Y into every wheel event; a position
           // different from the last mousemove can be read as a look delta.
-          extra.clientX = prevX;
-          extra.clientY = prevY;
+          extra.clientX = locked ? extra.clientX : prevX;
+          extra.clientY = locked ? extra.clientY : prevY;
           // The engine copies deltaZ too; some camera paths zoom off that
           // field rather than deltaY.
           extra.deltaZ = extra.deltaY;
@@ -566,7 +723,14 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
         // The camera registers its wheel handler on the canvas; GUI scrolling
         // is handled on document/window. Deliver wheel only to the latter so
         // scrolling never reaches the camera.
-        if (t !== "wheel") canvas.dispatchEvent(c);
+        if (locked && t === "mouseleave") {
+          // The physical cursor can leave the window while a drag is held.
+          // A browser under pointer lock keeps reporting motion; do the same
+          // instead of silently dropping the last frame of look input.
+          const move = ev("mousemove", { ...extra, button: 0 });
+          trace("mousemove (lock leave)", move);
+          canvas.dispatchEvent(move);
+        } else if (t !== "wheel") canvas.dispatchEvent(c);
         // In a browser a click on the canvas bubbles through body -> document
         // -> window. Roblox's UI (including the post-join retry/leave buttons)
         // listens on document/window in places, so deliver the same event up
