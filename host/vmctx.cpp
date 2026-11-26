@@ -17,7 +17,9 @@
 #include <limits>
 #include <utility>
 
+#include <pthread.h>
 #include <sys/mman.h>
+#include <sys/syscall.h>
 #include <ucontext.h>
 #include <unistd.h>
 
@@ -26,9 +28,20 @@ namespace host {
 namespace {
 
 HostState* g_state = nullptr;
-volatile sig_atomic_t g_in_wasm = 0;
-volatile sig_atomic_t g_trap_signal = 0;
-sigjmp_buf g_trap_jmp;
+
+// A trap guard is a *thread* property: the jmp_buf, the "in wasm" flag and the
+// recorded signal must all live on the thread that executed sigsetjmp.  A
+// signal delivered to a pthread worker must never longjmp into the main
+// thread's frame (see host/TRAPGUARD.md).
+thread_local sigjmp_buf tl_trap_jmp;
+thread_local volatile sig_atomic_t tl_in_wasm = 0;
+thread_local volatile sig_atomic_t tl_trap_signal = 0;
+
+// Cached so the signal handler never has to call getenv()/static-init code.
+volatile sig_atomic_t g_trace_enabled = 0;
+thread_local volatile sig_atomic_t tl_trap_log_count = 0;
+
+long current_tid() { return static_cast<long>(::syscall(SYS_gettid)); }
 
 // ---- bounded HOST_TRACE plumbing -------------------------------------------
 // Generated code calls builtins in hot loops; trace output is capped per
@@ -42,7 +55,8 @@ bool host_trace_enabled() {
 }
 
 bool trace_budget(const char* key, int cap) {
-  static struct { const char* key; int n; } slots[64];
+  // Per-thread budget: builtins can run concurrently in pthread workers.
+  static thread_local struct { const char* key; int n; } slots[64];
   for (auto& s : slots) {
     if (s.key && std::strcmp(s.key, key) == 0) {
       if (s.n >= cap) return false;
@@ -101,6 +115,16 @@ void safe_hex(uintptr_t v) {
   }
   safe_write(buf, sizeof(buf));
 }
+void safe_dec(unsigned long v) {
+  char buf[20];
+  int n = 0;
+  if (v == 0) buf[n++] = '0';
+  while (v > 0) {
+    buf[n++] = static_cast<char>('0' + v % 10);
+    v /= 10;
+  }
+  while (n > 0) safe_write(buf + --n, 1);
+}
 
 void trap_handler(int sig, siginfo_t* info, void* uctx) {
   uintptr_t pc = 0;
@@ -111,28 +135,33 @@ void trap_handler(int sig, siginfo_t* info, void* uctx) {
     pc = static_cast<uintptr_t>(uc->uc_mcontext.pc);
 #endif
   }
-  safe_puts("[wasm-host] TRAP signal=");
-  char num[8];
-  int n = 0;
-  int v = sig;
-  if (v == 0) num[n++] = '0';
-  while (v > 0) {
-    num[n++] = static_cast<char>('0' + v % 10);
-    v /= 10;
+  const bool owned = tl_in_wasm != 0;
+  if (g_trace_enabled && tl_trap_log_count < 8) {
+    ++tl_trap_log_count;
+    safe_puts("[trap] tid=");
+    safe_dec(static_cast<unsigned long>(current_tid()));
+    safe_puts(" pthread=");
+    safe_hex(reinterpret_cast<uintptr_t>(::pthread_self()));
+    safe_puts(" sig=");
+    safe_dec(static_cast<unsigned long>(sig));
+    safe_puts(" pc=");
+    safe_hex(pc);
+    safe_puts(" fault_addr=");
+    safe_hex(reinterpret_cast<uintptr_t>(info ? info->si_addr : nullptr));
+    safe_puts(owned ? " -> thread-local guard: controlled trap\n"
+                    : " -> no guard on this thread: re-raise\n");
   }
-  while (n > 0) safe_write(num + --n, 1);
-  safe_puts(" pc=");
-  safe_hex(pc);
-  safe_puts(" fault_addr=");
-  safe_hex(reinterpret_cast<uintptr_t>(info ? info->si_addr : nullptr));
-  safe_puts("\n");
 
-  if (g_in_wasm) {
-    g_trap_signal = static_cast<sig_atomic_t>(sig);
-    g_in_wasm = 0;
-    siglongjmp(g_trap_jmp, sig);
+  // Only jump when THIS thread installed the guard.  The previous code used
+  // process-global jmp_buf/flag state, so a fault in a pthread worker could
+  // siglongjmp into a sigsetjmp frame owned by the main thread (UB).
+  if (owned) {
+    tl_trap_signal = static_cast<sig_atomic_t>(sig);
+    tl_in_wasm = 0;
+    siglongjmp(tl_trap_jmp, sig);
   }
-  // Not a wasm trap: restore default and re-raise rather than corrupt state.
+  // Not a wasm trap on this thread: restore default and re-raise rather than
+  // jumping into another thread's frame.
   struct sigaction sa{};
   sa.sa_handler = SIG_DFL;
   sigemptyset(&sa.sa_mask);
@@ -189,7 +218,7 @@ extern "C" uint64_t builtin_memory_atomic_wait32(void*, uint64_t memidx, uint64_
 // Returning false means no handler was found; the trampoline then calls the
 // raise builtin and the signal handler converts that into a controlled trap.
 extern "C" uint32_t builtin_throw_ref(void* vmctx, uint64_t exnref) {
-  TRACEF("throw_ref", 8, "throw_ref exnref=%#llx\n",
+  TRACEF("throw_ref", 8, "throw_ref tid=%ld exnref=%#llx\n", current_tid(),
          static_cast<unsigned long long>(exnref));
   // Bounded evidence dump of the exception object (VMGcHeader + DRC header +
   // payload).  The tag/instance fields are written by generated code.
@@ -278,12 +307,13 @@ extern "C" uint32_t builtin_get_instance_id(void*) {
 // and by `throw` continuations. Wasmtime unwinds natively; we have no unwinder,
 // so ud2 is the honest conversion to a controlled trap signal.
 extern "C" uint64_t builtin_raise(void*) {
-  TRACEF("raise", 16, "raise builtin -> ud2 (no native unwinder)\n");
+  TRACEF("raise", 16, "raise builtin tid=%ld -> ud2 (no native unwinder)\n",
+         current_tid());
   __builtin_trap();
   return 0;
 }
 extern "C" uint64_t builtin_trap(void*, uint64_t code) {
-  TRACEF("trap", 16, "trap builtin code=%llu -> ud2\n",
+  TRACEF("trap", 16, "trap builtin tid=%ld code=%llu -> ud2\n", current_tid(),
          static_cast<unsigned long long>(code));
   __builtin_trap();
   return 0;
@@ -326,6 +356,24 @@ void note_error(const char* what) {
   std::fprintf(stderr, "[wasm-host] controlled error: %s\n", what);
 }
 
+void reset_wasm_exit_state(void* vmctx) {
+  if (!vmctx) return;
+  void* store_ptr = nullptr;
+  std::memcpy(&store_ptr, at(vmctx, VMCTX_OFF_STORE_CONTEXT), sizeof(store_ptr));
+  if (!store_ptr) return;
+  auto* store = static_cast<VMStoreContext*>(store_ptr);
+  // A copied store inherits the main thread's exit PC/FP and handler chain.
+  // They describe a *different* native stack; clear them before guest code in
+  // another pthread starts throwing (see host/TRAPGUARD.md).
+  store->last_wasm_exit_trampoline_fp = 0;
+  store->last_wasm_exit_pc = 0;
+  store->last_wasm_entry_sp = 0;
+  store->last_wasm_entry_fp = 0;
+  store->last_wasm_entry_trap_handler = 0;
+  store->stack_chain[0] = 0;
+  store->stack_chain[1] = 0;
+}
+
 bool setup(HostState& state) {
   static_assert(sizeof(VMMemoryDefinition) == VM_MEMORY_DEFINITION_SIZE);
   static_assert(sizeof(VMTableDefinition) == VM_TABLE_DEFINITION_SIZE);
@@ -343,6 +391,7 @@ bool setup(HostState& state) {
   static_assert(VMCTX_NUM_DEFINED_TABLES == 1);
 
   g_state = &state;
+  g_trace_enabled = host_trace_enabled() ? 1 : 0;
   // Load the serialized Cranelift exception table from the running executable
   // once, before wasm starts.  Failure is only reported (throw_ref then takes
   // the honest trap path); it does not prevent the rest of the bootstrap.
@@ -519,26 +568,26 @@ bool setup(HostState& state) {
 }
 
 int call_ctors(HostState& state) {
-  if (sigsetjmp(g_trap_jmp, 1) != 0) return g_trap_signal;
-  g_in_wasm = 1;
+  if (sigsetjmp(tl_trap_jmp, 1) != 0) return tl_trap_signal;
+  tl_in_wasm = 1;
   // The module's wasm start function (index 344) initialises passive data
   // segments (TLS/thread-registry images) via memory.init.  __wasm_call_ctors
   // assumes it has already run.
   _wasm_function_3(state.vmctx, state.vmctx);
   _wasm_function_0(state.vmctx, state.vmctx);
-  g_in_wasm = 0;
+  tl_in_wasm = 0;
   return 0;
 }
 
 uint32_t call_malloc(HostState& state, uint32_t size, int& trap_signal) {
   volatile uint32_t result = 0;
-  if (sigsetjmp(g_trap_jmp, 1) != 0) {
-    trap_signal = g_trap_signal;
+  if (sigsetjmp(tl_trap_jmp, 1) != 0) {
+    trap_signal = tl_trap_signal;
     return 0;
   }
-  g_in_wasm = 1;
+  tl_in_wasm = 1;
   result = _wasm_function_149984(state.vmctx, state.vmctx, size);
-  g_in_wasm = 0;
+  tl_in_wasm = 0;
   trap_signal = 0;
   return result;
 }
@@ -546,12 +595,12 @@ uint32_t call_malloc(HostState& state, uint32_t size, int& trap_signal) {
 int call_stack_roundtrip(HostState& state, uint32_t* base_out, uint32_t* end_out) {
   constexpr uint32_t kBase = 0x12345000u;
   constexpr uint32_t kEnd = 0x12346000u;
-  if (sigsetjmp(g_trap_jmp, 1) != 0) return g_trap_signal;
-  g_in_wasm = 1;
+  if (sigsetjmp(tl_trap_jmp, 1) != 0) return tl_trap_signal;
+  tl_in_wasm = 1;
   _wasm_function_150011(state.vmctx, state.vmctx, kBase, kEnd);
   uint32_t base = _wasm_function_499(state.vmctx, state.vmctx);
   uint32_t end = _wasm_function_500(state.vmctx, state.vmctx);
-  g_in_wasm = 0;
+  tl_in_wasm = 0;
   *base_out = base;
   *end_out = end;
   // Restore the defaults so later calls see a clean VMContext.
@@ -560,10 +609,10 @@ int call_stack_roundtrip(HostState& state, uint32_t* base_out, uint32_t* end_out
 }
 
 int call_trap_test(HostState& state) {
-  if (sigsetjmp(g_trap_jmp, 1) != 0) return g_trap_signal;
-  g_in_wasm = 1;
+  if (sigsetjmp(tl_trap_jmp, 1) != 0) return tl_trap_signal;
+  tl_in_wasm = 1;
   _wasm_function_2(state.vmctx, state.vmctx);
-  g_in_wasm = 0;
+  tl_in_wasm = 0;
   return 0;
 }
 
