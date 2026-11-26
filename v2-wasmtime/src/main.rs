@@ -19,6 +19,7 @@ mod gfx;
 mod trace;
 mod wt;
 mod imports;
+pub(crate) mod raknet;
 mod state;
 
 use state::{St, CANVAS_H, CANVAS_W};
@@ -189,7 +190,13 @@ const CACHE_STAMP: &str = "data/cache/webclient.stamp";
 /// touches a fraction of it, so a smaller ceiling costs nothing and keeps the
 /// commit charge honest.
 fn pages() -> u32 {
-    std::env::var("WC_PAGES").ok().and_then(|v| v.parse().ok()).unwrap_or(16384)
+    if let Some(p) = std::env::var("WC_PAGES").ok().and_then(|v| v.parse().ok()) {
+        return p;
+    }
+    // The RakNet seam lives at 0x7FF0_0000.  A 16k-page (1 GiB) memory does
+    // not even reach it, so the native transport needs the engine's full
+    // 2 GiB heap even though most of it is never touched.
+    if std::env::var_os("WC_RAKNET").is_some() { 32768 } else { 16384 }
 }
 const WEB_BASE: &str = "https://www.roblox.com/";
 const ASSET_BASE: &str =
@@ -405,6 +412,45 @@ fn run() -> Result<()> {
             unsafe { *(store.data().mem.data()[me as usize + 112].get() as *mut u32) = 1 }
             eprintln!("[mbx ] main pthread {me:#x}");
         }
+    }
+    // Native RakNet transport: the join reply gives us the peer, and the
+    // engine has to be far enough along for the patched select() to consume a
+    // connect request. Both conditions are reached asynchronously, so start
+    // the ring from a small waiter rather than blocking instantiation.
+    if std::env::var_os("WC_RAKNET").is_some() {
+        let mem = store.data().mem.clone();
+        std::thread::Builder::new().name("rk-start".into()).spawn(move || {
+            use std::sync::atomic::Ordering;
+            let ring = raknet::Ring::new(mem.clone());
+            let secs = std::env::var("WC_RK_WAIT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(180u64);
+            let deadline = Instant::now() + Duration::from_secs(secs);
+            loop {
+                let engine = imports::boot::BOOTED.load(Ordering::Relaxed)
+                    || ring.updates() != 0
+                    || ring.selects() != 0;
+                if engine {
+                    if let Some(script) = imports::http::JOIN_SCRIPT.get() {
+                        match raknet::parse_join(script) {
+                            Ok(t) => {
+                                if let Err(e) = raknet::start(t.host, t.port, script.clone(), mem) {
+                                    eprintln!("[rk ] start failed: {e}");
+                                }
+                            }
+                            Err(e) => eprintln!("[rk ] no usable peer: {e}"),
+                        }
+                        return;
+                    }
+                }
+                if Instant::now() >= deadline {
+                    eprintln!("[rk ] join script / engine readiness timed out after {secs}s");
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        })?;
     }
     if let Ok(ks) = std::env::var("WC_HOOK") {
         let t = inst.get_table(&mut *store, "__indirect_function_table").unwrap();

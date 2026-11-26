@@ -43,6 +43,43 @@ const MAX_BODY: usize = 256 << 20;
 /// One session, one store per thread: the cookie has to be process global.
 pub static COOKIE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
+/// The join reply is left untouched under WC_RAKNET (the engine needs the
+/// native-UA endpoint as delivered), so stash its joinScript here instead of
+/// rewriting `gameFqdn`. `main` starts the UDP ring once this is available.
+pub static JOIN_SCRIPT: std::sync::OnceLock<serde_json::Value> = std::sync::OnceLock::new();
+
+fn store_join_script(body: &[u8]) {
+    let Ok(reply) = serde_json::from_slice::<serde_json::Value>(body) else {
+        eprintln!("[rk ] join reply was not JSON");
+        return;
+    };
+    let Some(raw) = reply.get("joinScript") else {
+        eprintln!("[rk ] join reply had no joinScript");
+        return;
+    };
+    let script = if let Some(s) = raw.as_str() {
+        match serde_json::from_str::<serde_json::Value>(s) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[rk ] joinScript was not JSON: {e}");
+                return;
+            }
+        }
+    } else {
+        raw.clone()
+    };
+    match crate::raknet::parse_join(&script) {
+        Ok(t) => eprintln!(
+            "[rk ] join peer {}:{} machine={:?} netstack={:?} data={:?}",
+            t.host, t.port, t.machine, t.netstack_port, t.data_port
+        ),
+        Err(e) => eprintln!("[rk ] unusable joinScript: {e}"),
+    }
+    if JOIN_SCRIPT.set(script).is_ok() {
+        eprintln!("[rk ] joinScript captured");
+    }
+}
+
 fn word(c: &Caller<'_, St>, p: u32) -> u32 {
     let d = c.data().mem.data();
     unsafe { *(d[p as usize].get() as *const u32) }
@@ -680,6 +717,11 @@ fn exec(req: &Req, cookie: Option<&str>) -> std::io::Result<(u16, String, String
     if std::env::var_os("WC_PEPDBG").is_some() && req.url.contains("product-experimentation") {
         eprintln!("[pep] {status} hdr={:?}", block);
         eprintln!("[pep] body[:500]={:?}", String::from_utf8_lossy(&body[..body.len().min(500)]));
+    }
+    // With the native transport the reply is the route: keep it byte for byte
+    // and hand the joinScript to the UDP seam instead of patching gameFqdn.
+    if status == 200 && is_join(&req.url) && std::env::var_os("WC_RAKNET").is_some() {
+        store_join_script(&body);
     }
     // The crafted gameFqdn routes the WebTransport session through a proxy.
     // A native-UA join already carries the RakNet endpoint, so rewriting it
