@@ -146,6 +146,7 @@ were merged in from the former `Alcohol` repo and are **experimental**:
 | --- | --- |
 | `client/` | Deno raw-backend host: WebGPU + draft-02 WebTransport over `Deno.connectQuic` |
 | `v2-wasmtime/` | Rust/wasmtime host, including a native-UDP RakNet ring |
+| `host/` | **C++ AOT host**: Cranelift-emitted object + hand-built Wasmtime VMContext, no runtime engine |
 | `v3-wasm2c/`, `vendor/` | parked wasm2c / wasmtime source patches |
 | `docs/ARCHIVE.md` | research record: join identity, RakNet gate, patch sites, ruled-out runtimes |
 | `REGENERATING.md` | how to recreate gitignored engine mirrors and caches |
@@ -166,3 +167,12 @@ The current engine gates RakNet off; a small wasm patch plus a native UDP seam
 is required. `v2-wasmtime/tools/patch_new.py` applies the socket patches and
 `v2-wasmtime/src/raknet.rs` implements the host side. See `docs/ARCHIVE.md`.
 The wasmtime host has not yet reached a join — treat it as work in progress.
+
+### C++ AOT host (`host/`, experimental)
+
+`tools/wasm2obj` compiles the patched module to a plain 342 MB ELF object;
+`host/` links it into `demo` with a hand-built VMContext, real imports and
+native libquiche WebTransport — no Wasmtime engine, Chrome, Vulkan or Deno at
+runtime. Build and status: **`host/BUILD.md`** (`./host/build_all.sh`); the
+ABI findings are in `docs/NATIVE-AOT-FINDINGS.md`. It runs ctors/imports but a
+full join is still blocked by native exception propagation (`host/GC.md`).
