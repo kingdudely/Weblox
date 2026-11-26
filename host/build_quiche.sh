@@ -19,7 +19,9 @@
 set -euo pipefail
 
 QUICHE_VERSION="${QUICHE_VERSION:-0.30.1}"
-PREFIX="${QUICHE_PREFIX:-/tmp/weblox-quiche}"
+# WC_QUICHE_DIR is the canonical name (see host/Makefile and host/BUILD.md);
+# QUICHE_PREFIX remains as a backwards-compatible alias.
+PREFIX="${WC_QUICHE_DIR:-${QUICHE_PREFIX:-/tmp/weblox-quiche}}"
 WORK="$PREFIX/build"
 CARGO_HOME_DIR="${CARGO_HOME:-$HOME/.cargo}"
 
