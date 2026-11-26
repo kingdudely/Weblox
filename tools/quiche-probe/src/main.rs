@@ -3,8 +3,11 @@
 //!
 //! This is a diagnostic harness, not a product transport. It uses the Rust
 //! `quiche` crate (Cloudflare's libquiche + BoringSSL) and its built-in H3
-//! implementation. It does NOT implement WebTransport streams/datagrams: the
-//! probe stops as soon as the CONNECT response headers are received.
+//! implementation. It does NOT implement WebTransport streams/datagrams: by
+//! default the probe stops as soon as the CONNECT response headers are
+//! received. With `--observe N`, it keeps driving the QUIC/H3 event loop for N
+//! seconds after CONNECT, sending periodic QUIC PINGs (ack-eliciting packets)
+//! to keep both idle timers alive, and logs close/timeout/error events.
 
 use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs as _, UdpSocket};
@@ -26,7 +29,14 @@ struct Args {
     caps: String,
     /// base64 SHA-256 of the peer certificate DER, from NetStackConfig.
     cert_hash: Option<String>,
+    /// Handshake timeout (applies before CONNECT :status is received).
     timeout_ms: u64,
+    /// After CONNECT :status, keep the session alive for this many seconds.
+    observe_secs: Option<u64>,
+    /// QUIC PING (ack-eliciting packet) cadence during observe mode, in ms.
+    keepalive_ms: u64,
+    /// Local max_idle_timeout transport parameter, in ms.
+    idle_timeout_ms: u64,
     verbose: bool,
 }
 
@@ -37,6 +47,9 @@ fn parse_args() -> Args {
     let mut caps = String::new();
     let mut cert_hash = None;
     let mut timeout_ms = 15_000u64;
+    let mut observe_secs = None;
+    let mut keepalive_ms = 5_000u64;
+    let mut idle_timeout_ms = 60_000u64;
     let mut verbose = false;
 
     let mut it = std::env::args().skip(1);
@@ -48,11 +61,21 @@ fn parse_args() -> Args {
             "--caps" => caps = it.next().expect("--caps value"),
             "--cert-hash" => cert_hash = Some(it.next().expect("--cert-hash value")),
             "--timeout-ms" => timeout_ms = it.next().expect("--timeout-ms value").parse().unwrap(),
+            "--observe" | "--observe-secs" => {
+                observe_secs = Some(it.next().expect("--observe value").parse().unwrap())
+            }
+            "--keepalive-ms" => {
+                keepalive_ms = it.next().expect("--keepalive-ms value").parse().unwrap()
+            }
+            "--idle-timeout-ms" => {
+                idle_timeout_ms = it.next().expect("--idle-timeout-ms value").parse().unwrap()
+            }
             "--verbose" | "-v" => verbose = true,
             "--help" | "-h" => {
                 println!(
                     "usage: quiche-probe --host <ip> --port <port> --fqdn <qdmux-fqdn> \
-                     [--caps <hex>] [--cert-hash <base64>] [--timeout-ms N] [-v]"
+                     [--caps <hex>] [--cert-hash <base64>] [--timeout-ms N] \
+                     [--observe SECONDS [--keepalive-ms N] [--idle-timeout-ms N]] [-v]"
                 );
                 std::process::exit(0);
             }
@@ -64,7 +87,23 @@ fn parse_args() -> Args {
         panic!("--host and --fqdn are required (try --help)");
     }
 
-    Args { host, port, fqdn, caps, cert_hash, timeout_ms, verbose }
+    Args {
+        host,
+        port,
+        fqdn,
+        caps,
+        cert_hash,
+        timeout_ms,
+        observe_secs,
+        keepalive_ms,
+        idle_timeout_ms,
+        verbose,
+    }
+}
+
+/// Human-readable elapsed time since process start, used on every logged event.
+fn elapsed_str(started: Instant) -> String {
+    format!("{:?}", started.elapsed())
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -140,7 +179,9 @@ fn main() {
     config
         .set_application_protos(&[b"h3"])
         .expect("set ALPN h3");
-    config.set_max_idle_timeout(10_000);
+    // Effective idle timeout is min(local, peer). Keepalive (QUIC PING) resets
+    // both ends' idle timers as long as the cadence is well below this value.
+    config.set_max_idle_timeout(args.idle_timeout_ms);
     config.set_max_recv_udp_payload_size(MAX_DATAGRAM_SIZE);
     config.set_max_send_udp_payload_size(MAX_DATAGRAM_SIZE);
     config.set_disable_active_migration(true);
@@ -197,38 +238,131 @@ fn main() {
     let mut req_sent = false;
     let mut got_status = false;
     let mut cert_checked = false;
+    let mut peer_settings_logged = false;
     let mut buf = vec![0u8; 65_535];
     let started = Instant::now();
-    let deadline = started + Duration::from_millis(args.timeout_ms);
+    let handshake_deadline = started + Duration::from_millis(args.timeout_ms);
     let mut handshake_at: Option<Instant> = None;
     let mut settings_at: Option<Instant> = None;
 
-    while Instant::now() < deadline {
-        if conn.is_closed() {
+    // Observe-mode state. All deadlines are absolute so a slow iteration can
+    // never extend the requested observation window.
+    let mut observe_start: Option<Instant> = None;
+    let mut observe_end: Option<Instant> = None;
+    let mut next_ping: Option<Instant> = None;
+    let mut next_report: Option<Instant> = None;
+    let mut pings_sent = 0u64;
+    let mut packets_sent = 1u64; // the initial packet above
+    let mut packets_recv = 0u64;
+    let mut on_timeout_calls = 0u64;
+    let mut errors = 0u64;
+    let mut last_recv_at = started;
+    let mut close_reason: Option<String> = None;
+
+    loop {
+        let now = Instant::now();
+        if let Some(end) = observe_end {
+            if now >= end {
+                println!(
+                    "[observe] END t={} target={}s (observation window elapsed)",
+                    elapsed_str(started),
+                    args.observe_secs.unwrap()
+                );
+                break;
+            }
+        } else if now >= handshake_deadline {
             println!(
-                "[quic] connection closed by peer: client={:?} peer={:?}",
+                "[timeout] t={} CONNECT was not received within {}ms",
+                elapsed_str(started),
+                args.timeout_ms
+            );
+            break;
+        }
+
+        if conn.is_closed() {
+            let reason = format!(
+                "t={} local={:?} peer={:?}",
+                elapsed_str(started),
                 conn.local_error(),
                 conn.peer_error()
             );
+            println!("[CLOSE] conn.closed {reason}");
+            close_reason = Some(reason);
             break;
+        }
+
+        // QUIC-level keepalive. quiche 0.30.1's Rust H3 API has no PING frame
+        // sender and its Config has no keep_alive_interval, but an
+        // ack-eliciting packet makes quiche emit a QUIC PING. Receiving the
+        // peer's ACK resets the idle timer at both ends.
+        if let Some(ping_at) = next_ping {
+            if now >= ping_at {
+                match conn.send_ack_eliciting() {
+                    Ok(()) => {
+                        pings_sent += 1;
+                        println!(
+                            "[keepalive] t={} QUIC PING #{pings_sent} scheduled (cadence={}ms)",
+                            elapsed_str(started),
+                            args.keepalive_ms
+                        );
+                    }
+                    Err(e) => {
+                        errors += 1;
+                        eprintln!(
+                            "[ERROR] t={} send_ack_eliciting failed: {e:?}",
+                            elapsed_str(started)
+                        );
+                    }
+                }
+                next_ping = Some(now + Duration::from_millis(args.keepalive_ms));
+            }
+        }
+
+        // Periodic transport snapshot for the longevity log.
+        if let Some(rep) = next_report {
+            if now >= rep {
+                let s = conn.stats();
+                println!(
+                    "[report] t={} elapsed_since_last_rx={:?} sent={} recv={} pings={} \
+                     quiche_sent={} quiche_recv={} lost={} retrans={} sent_bytes={} recv_bytes={} closed={}",
+                    elapsed_str(started),
+                    last_recv_at.elapsed(),
+                    packets_sent,
+                    packets_recv,
+                    pings_sent,
+                    s.sent,
+                    s.recv,
+                    s.lost,
+                    s.retrans,
+                    s.sent_bytes,
+                    s.recv_bytes,
+                    conn.is_closed()
+                );
+                next_report = Some(now + Duration::from_secs(30));
+            }
         }
 
         // Flush QUIC output before blocking on input.
         loop {
             match conn.send(&mut out) {
-                Ok((n, info)) => {
-                    if let Err(e) = socket.send_to(&out[..n], info.to) {
-                        eprintln!("[quic] UDP send failed: {e}");
+                Ok((n, info)) => match socket.send_to(&out[..n], info.to) {
+                    Ok(_) => packets_sent += 1,
+                    Err(e) => {
+                        errors += 1;
+                        eprintln!("[ERROR] t={} UDP send failed: {e}", elapsed_str(started));
                     }
-                }
+                },
                 Err(quiche::Error::Done) => break,
                 Err(e) => {
-                    eprintln!("[quic] conn.send error: {e:?}");
+                    errors += 1;
+                    eprintln!("[ERROR] t={} conn.send error: {e:?}", elapsed_str(started));
                     break;
                 }
             }
         }
 
+        // Keep the read timeout short so the keepalive cadence is precise even
+        // when quiche's own timer is much longer.
         let wait = conn
             .timeout()
             .unwrap_or(Duration::from_millis(100))
@@ -240,13 +374,22 @@ fn main() {
                 let recv_info = quiche::RecvInfo { from, to: local_addr };
                 match conn.recv(&mut buf[..len], recv_info) {
                     Ok(read) => {
+                        packets_recv += 1;
+                        last_recv_at = Instant::now();
                         if args.verbose {
-                            println!("[quic] received {len} bytes ({read} processed)");
+                            println!(
+                                "[quic] t={} received {len} bytes ({read} processed)",
+                                elapsed_str(started)
+                            );
                         }
                     }
                     Err(quiche::Error::Done) => {}
                     Err(e) => {
-                        eprintln!("[quic] conn.recv error: {e:?}");
+                        errors += 1;
+                        eprintln!(
+                            "[ERROR] t={} conn.recv error: {e:?}",
+                            elapsed_str(started)
+                        );
                     }
                 }
             }
@@ -254,10 +397,13 @@ fn main() {
                 if e.kind() == std::io::ErrorKind::WouldBlock
                     || e.kind() == std::io::ErrorKind::TimedOut =>
             {
+                on_timeout_calls += 1;
                 conn.on_timeout();
             }
             Err(e) => {
-                eprintln!("[quic] UDP recv error: {e}");
+                errors += 1;
+                eprintln!("[ERROR] t={} UDP recv error: {e}", elapsed_str(started));
+                on_timeout_calls += 1;
                 conn.on_timeout();
             }
         }
@@ -266,8 +412,8 @@ fn main() {
             if handshake_at.is_none() {
                 handshake_at = Some(Instant::now());
                 println!(
-                    "[quic] HANDSHAKE ESTABLISHED after {:?} (library {})",
-                    handshake_at.unwrap().duration_since(started),
+                    "[quic] HANDSHAKE ESTABLISHED t={} (library {})",
+                    elapsed_str(started),
                     env!("CARGO_PKG_VERSION")
                 );
             }
@@ -284,19 +430,21 @@ fn main() {
                     Ok(h3) => {
                         h3_conn = Some(h3);
                         settings_at = Some(Instant::now());
-                        println!("[h3] local SETTINGS sent on control stream");
+                        println!("[h3] t={} local SETTINGS sent on control stream", elapsed_str(started));
                     }
                     Err(e) => {
-                        eprintln!("[h3] with_transport failed: {e:?}");
+                        eprintln!("[ERROR] t={} h3 with_transport failed: {e:?}", elapsed_str(started));
+                        errors += 1;
                         break;
                     }
                 }
             }
 
             if let Some(h3) = &mut h3_conn {
-                if settings_at.is_some() {
+                if settings_at.is_some() && !peer_settings_logged {
                     if let Some(raw) = h3.peer_settings_raw() {
-                        println!("[h3] peer SETTINGS: {:?}", raw);
+                        peer_settings_logged = true;
+                        println!("[h3] t={} peer SETTINGS: {:?}", elapsed_str(started), raw);
                     }
                 }
 
@@ -316,14 +464,18 @@ fn main() {
                     ];
                     match h3.send_request(&mut conn, &req, false) {
                         Ok(stream) => {
-                            println!("[h3] extended CONNECT sent on stream {stream}: {req:?}");
+                            println!(
+                                "[h3] t={} extended CONNECT sent on stream {stream}: {req:?}",
+                                elapsed_str(started)
+                            );
                             req_sent = true;
                         }
                         Err(quiche::h3::Error::StreamBlocked) => {
                             // retry next iteration once the stream is writable
                         }
                         Err(e) => {
-                            eprintln!("[h3] send_request failed: {e:?}");
+                            eprintln!("[ERROR] t={} h3 send_request failed: {e:?}", elapsed_str(started));
+                            errors += 1;
                             break;
                         }
                     }
@@ -332,7 +484,10 @@ fn main() {
                 loop {
                     match h3.poll(&mut conn) {
                         Ok((stream, ev)) => {
-                            println!("[h3 event] stream={stream} {ev:?}");
+                            println!(
+                                "[h3 event] t={} stream={stream} {ev:?}",
+                                elapsed_str(started)
+                            );
                             if let quiche::h3::Event::Headers { list, .. } = ev {
                                 let fields: Vec<(String, String)> = list
                                     .iter()
@@ -343,19 +498,40 @@ fn main() {
                                         )
                                     })
                                     .collect();
-                                println!("[h3 response] stream={stream} headers={fields:?}");
-                                if let Some((_, status)) = fields
-                                    .iter()
-                                    .find(|(name, _)| name == ":status")
-                                {
-                                    println!("[RESULT] CONNECT :status = {status}");
-                                    got_status = true;
+                                println!(
+                                    "[h3 response] t={} stream={stream} headers={fields:?}",
+                                    elapsed_str(started)
+                                );
+                                if !got_status {
+                                    if let Some((_, status)) = fields
+                                        .iter()
+                                        .find(|(name, _)| name == ":status")
+                                    {
+                                        println!(
+                                            "[RESULT] t={} CONNECT :status = {status}",
+                                            elapsed_str(started)
+                                        );
+                                        got_status = true;
+                                        if let Some(secs) = args.observe_secs {
+                                            observe_start = Some(Instant::now());
+                                            observe_end = Some(Instant::now() + Duration::from_secs(secs));
+                                            next_ping = Some(Instant::now());
+                                            next_report = Some(Instant::now() + Duration::from_secs(30));
+                                            println!(
+                                                "[observe] START t={} target={secs}s keepalive={}ms idle_timeout={}ms",
+                                                elapsed_str(started),
+                                                args.keepalive_ms,
+                                                args.idle_timeout_ms
+                                            );
+                                        }
+                                    }
                                 }
                             }
                         }
                         Err(quiche::h3::Error::Done) => break,
                         Err(e) => {
-                            eprintln!("[h3] poll error: {e:?}");
+                            eprintln!("[ERROR] t={} h3 poll error: {e:?}", elapsed_str(started));
+                            errors += 1;
                             break;
                         }
                     }
@@ -363,13 +539,30 @@ fn main() {
             }
         }
 
-        if got_status {
-            // Give the server a moment to flush any trailing headers/frames.
+        if got_status && observe_end.is_none() {
+            // Default (handshake-only) mode: give the server a moment to flush
+            // trailing headers/frames, then stop.
             std::thread::sleep(Duration::from_millis(200));
             break;
         }
     }
 
+    if conn.is_closed() && close_reason.is_none() {
+        let reason = format!(
+            "t={} local={:?} peer={:?}",
+            elapsed_str(started),
+            conn.local_error(),
+            conn.peer_error()
+        );
+        println!("[CLOSE] conn.closed {reason}");
+        close_reason = Some(reason);
+    }
+
+    let observed_s = observe_start.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0);
+    let survived = args
+        .observe_secs
+        .map(|want| observe_start.is_some() && observed_s >= want as f64 && !conn.is_closed())
+        .unwrap_or(false);
     println!(
         "[summary] handshake={} h3={} connect_sent={} status_received={} closed={}",
         handshake_at.is_some(),
@@ -377,6 +570,19 @@ fn main() {
         req_sent,
         got_status,
         conn.is_closed()
+    );
+    println!(
+        "[summary] observe_target_s={} observed_s={:.2} survived={} close_reason={:?} \
+         pings_sent={} packets_sent={} packets_recv={} on_timeout_calls={} errors={}",
+        args.observe_secs.unwrap_or(0),
+        observed_s,
+        survived,
+        close_reason,
+        pings_sent,
+        packets_sent,
+        packets_recv,
+        on_timeout_calls,
+        errors
     );
     println!("[summary] quiche stats: {:?}", conn.stats());
 
