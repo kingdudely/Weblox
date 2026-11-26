@@ -53,7 +53,7 @@ pub const TX0: u32 = 0x80;
 /// The brief's ABI. `WC_RK_SLOT=1536` selects the slot stride used by the
 /// Weblox `tools/patch.py` ABI (`abi.js` reports 1536); the default matches the
 /// host-side seam specification this module was written against.
-pub const SLOT: u32 = 1524;
+pub const SLOT: u32 = 1536;
 pub const NSLOT: u32 = 64;
 pub const MAX_DATAGRAM: usize = 1500;
 pub const RX0: u32 = TX0 + NSLOT * SLOT;
