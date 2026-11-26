@@ -14,6 +14,7 @@
 #include <cstring>
 #include <atomic>
 #include <limits>
+#include <utility>
 
 #include <sys/mman.h>
 #include <ucontext.h>
@@ -27,6 +28,57 @@ HostState* g_state = nullptr;
 volatile sig_atomic_t g_in_wasm = 0;
 volatile sig_atomic_t g_trap_signal = 0;
 sigjmp_buf g_trap_jmp;
+
+// ---- bounded HOST_TRACE plumbing -------------------------------------------
+// Generated code calls builtins in hot loops; trace output is capped per
+// distinct key so a single run stays bounded and readable.
+bool host_trace_enabled() {
+  static const bool enabled = [] {
+    const char* s = std::getenv("HOST_TRACE");
+    return s && *s && std::strcmp(s, "0") != 0;
+  }();
+  return enabled;
+}
+
+bool trace_budget(const char* key, int cap) {
+  static struct { const char* key; int n; } slots[64];
+  for (auto& s : slots) {
+    if (s.key && std::strcmp(s.key, key) == 0) {
+      if (s.n >= cap) return false;
+      ++s.n;
+      return true;
+    }
+  }
+  for (auto& s : slots) {
+    if (!s.key) { s.key = key; s.n = 1; return true; }
+  }
+  return false;
+}
+
+#define TRACEF(key, cap, fmt, ...)                                            \
+  do {                                                                        \
+    if (host_trace_enabled() && trace_budget((key), (cap)))                   \
+      std::fprintf(stderr, "[trace] " fmt, ##__VA_ARGS__);                    \
+  } while (0)
+
+// ---- real GC heap (see host/GC.md) -----------------------------------------
+// The module was compiled with wasmtime-environ's
+// Collector::DeferredReferenceCounting (see gen_vmctx.rs). Wasm GC refs are
+// u32 *byte offsets* into VMStoreContext.gc_heap.base; a bump allocator with
+// a DRC header is enough for the engine's bootstrap allocations (no collection
+// is ever performed).
+uint8_t* g_gc_heap_base = nullptr;
+size_t g_gc_heap_size = 0;
+size_t g_gc_bump = 0;
+
+// VMDrcHeapData (wasmtime-environ vmtypes.rs): zeroed == empty OASR list.
+struct DrcHeapData {
+  uint32_t oasr_head;
+  uint32_t oasr_len;
+  uint32_t oasr_len_after_gc;
+  uint32_t reserved;
+};
+static DrcHeapData g_drc_heap_data{};
 
 // async-signal-safe-ish diagnostics: write() only, hand-rolled hex.
 void safe_write(const char* s, size_t n) {
@@ -129,39 +181,111 @@ extern "C" uint64_t builtin_memory_atomic_wait32(void*, uint64_t memidx, uint64_
   return 2; // "timed out" immediately: never blocks the smoke test
 }
 
+// DRC exception propagation needs a native unwinder this host does not have.
+// Returning false ("not caught") lets the generated try_call fall through to
+// its trap path, which the signal handler converts into a controlled error.
 extern "C" uint32_t builtin_throw_ref(void*, uint64_t exnref) {
-  (void)exnref;
+  TRACEF("throw_ref", 8, "throw_ref exnref=%#llx -> not caught\n",
+         static_cast<unsigned long long>(exnref));
   note_error("throw_ref called (exception propagation not implemented)");
   return 0; // false = not caught
 }
 
+// Wasmtime's libcall returns a *mut VMFuncRef (or null for a null table
+// entry). The active element segment was eagerly materialised in setup(), so
+// a null entry here really is a null funcref -- never fabricate one.
 extern "C" void* builtin_table_get_lazy_init_func_ref(void* vmctx, uint64_t table, uint64_t index) {
   (void)table;
   auto* tab = reinterpret_cast<VMTableDefinition*>(at(vmctx, VMCTX_OFF_TABLES));
-  static VMFuncRef fallback{};
-  fallback.vmctx = vmctx;
-  fallback.type_index = 1;
   if (!tab || index >= tab->current_elements) {
+    TRACEF("table_lazy", 8, "table.get_lazy_init_func_ref index=%llu out of bounds\n",
+           static_cast<unsigned long long>(index));
     note_error("table.get_lazy_init_func_ref index out of bounds");
-    return &fallback;
+    return nullptr;
   }
   auto* entries = reinterpret_cast<VMFuncRef**>(tab->base);
-  return entries[index] ? entries[index] : &fallback;
+  void* fr = entries[index];
+  TRACEF("table_lazy", 8, "table.get_lazy_init_func_ref index=%llu -> %p\n",
+         static_cast<unsigned long long>(index), fr);
+  return fr;
 }
 
+// u32 heap index (2-byte aligned, non-zero) of a fresh object. The host writes
+// the VMDrcHeader so the DRC read/write barriers emitted by Cranelift see a
+// valid ref_count/OASR link. No collection is performed; see host/GC.md.
 extern "C" uint32_t builtin_gc_alloc_raw(void*, uint64_t kind, uint64_t type_index,
                                          uint64_t size, uint64_t align) {
-  (void)kind; (void)type_index; (void)size; (void)align;
-  note_error("gc_alloc_raw called (GC not implemented in skeleton)");
+  uint64_t a = align < 8 ? 8 : align;  // DRC header is 8-byte aligned
+  uint64_t base = (g_gc_bump + a - 1) & ~(a - 1);
+  if (base == 0) base = a;             // 0 is the null reference
+  uint64_t end = base + size;
+  if (!g_gc_heap_base || end > g_gc_heap_size || size < 4) {
+    note_error("gc_alloc_raw: bounded GC heap exhausted");
+    return 0;  // trap sentinel (Falsy) -- honest OOM, never fabricate a ref
+  }
+  uint8_t* obj = g_gc_heap_base + base;
+  std::memset(obj, 0, static_cast<size_t>(size));
+  const uint32_t k = static_cast<uint32_t>(kind);  // kind in top 6 bits
+  const uint32_t ty = static_cast<uint32_t>(type_index);
+  std::memcpy(obj + 0, &k, 4);       // VMGcHeader.kind (+ reserved bits)
+  std::memcpy(obj + 4, &ty, 4);      // VMGcHeader.ty (VMSharedTypeIndex)
+  if (size >= 24) {
+    const uint64_t refcount = 1;     // DRC: host owns one strong ref
+    const uint32_t object_size = static_cast<uint32_t>(size);
+    std::memcpy(obj + 8, &refcount, 8);
+    std::memcpy(obj + 20, &object_size, 4);  // VMDrcHeader.object_size
+  }
+  g_gc_bump = static_cast<size_t>(end);
+  TRACEF("gc_alloc_raw", 12,
+         "gc_alloc_raw kind=%#x ty=%u size=%llu align=%llu -> heap_index=%llu\n",
+         k, ty, static_cast<unsigned long long>(size),
+         static_cast<unsigned long long>(align),
+         static_cast<unsigned long long>(base));
+  return static_cast<uint32_t>(base);
+}
+
+// Instance ids only matter for exception tags; any non-zero stable id works
+// for this single-instance host.
+extern "C" uint32_t builtin_get_instance_id(void*) {
+  TRACEF("instance_id", 4, "get_instance_id -> 1\n");
+  return 1;
+}
+
+// The `raise` libcall is invoked by gc_alloc_raw's trap path (builtin slot 41)
+// and by `throw` continuations. Wasmtime unwinds natively; we have no unwinder,
+// so ud2 is the honest conversion to a controlled trap signal.
+extern "C" uint64_t builtin_raise(void*) {
+  TRACEF("raise", 16, "raise builtin -> ud2 (no native unwinder)\n");
+  __builtin_trap();
+  return 0;
+}
+extern "C" uint64_t builtin_trap(void*, uint64_t code) {
+  TRACEF("trap", 16, "trap builtin code=%llu -> ud2\n",
+         static_cast<unsigned long long>(code));
+  __builtin_trap();
   return 0;
 }
 
-extern "C" uint32_t builtin_get_instance_id(void*) { return 0; }
+// DRC force_gc is a no-op: we never collect, and bump allocation never relies
+// on reclamation during bootstrap. Returning true avoids a trap sentinel.
+extern "C" uint32_t builtin_force_gc(void*) {
+  TRACEF("force_gc", 4, "force_gc -> no-op (no collector)\n");
+  return 1;
+}
 
-// Catch-all for builtin slots whose trampoline is not present in this object.
-extern "C" uint64_t builtin_stub(void*, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t) {
+// Bounded trace stub for every builtin slot without a real implementation.
+// `N` is the builtin index from vmctx_offsets.h / builtin.rs.
+template <unsigned N>
+static uint64_t trace_builtin(void*, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t) {
+  TRACEF("unknown_builtin", 128, "unimplemented builtin[%u] called\n", N);
   note_error("unimplemented builtin called");
   return 0;
+}
+
+template <std::size_t... I>
+static void install_trace_builtins(HostState& state, std::index_sequence<I...>) {
+  (void)std::initializer_list<int>{
+      (state.builtin_slots[I] = reinterpret_cast<void*>(&trace_builtin<I>), 0)...};
 }
 
 // ---- 341 generic import stubs (to be replaced by the real import worker) --
@@ -260,8 +384,9 @@ bool setup(HostState& state) {
   void* store_ptr = &state.store_storage;
   std::memcpy(at(state.vmctx, VMCTX_OFF_STORE_CONTEXT), &store_ptr, sizeof(store_ptr));
 
-  // Builtins array: every slot is a safe stub, the eight real ones override.
-  for (auto& slot : state.builtin_slots) slot = reinterpret_cast<void*>(&builtin_stub);
+  // Builtins array: every slot starts as a bounded tracing stub so HOST_TRACE=1
+  // can identify any builtin the bootstrap hits next; real ones override.
+  install_trace_builtins(state, std::make_index_sequence<BUILTIN_FUNCTIONS_ARRAY_LEN>{});
 #define SET_BUILTIN(name, fn) \
   state.builtin_slots[BUILTIN_INDEX_##name] = reinterpret_cast<void*>(&fn)
   SET_BUILTIN(MEMORY_COPY, builtin_memory_copy);
@@ -273,14 +398,36 @@ bool setup(HostState& state) {
   SET_BUILTIN(GC_ALLOC_RAW, builtin_gc_alloc_raw);
   SET_BUILTIN(GET_INSTANCE_ID, builtin_get_instance_id);
 #undef SET_BUILTIN
+  // Indices from builtin.rs with this module's feature set (see GC.md):
+  // 40 = trap, 41 = raise, 45 = force_gc (gc-drc).
+  state.builtin_slots[40] = reinterpret_cast<void*>(&builtin_trap);
+  state.builtin_slots[41] = reinterpret_cast<void*>(&builtin_raise);
+  state.builtin_slots[45] = reinterpret_cast<void*>(&builtin_force_gc);
   void* builtins_ptr = state.builtin_slots;
   std::memcpy(at(state.vmctx, VMCTX_OFF_BUILTIN_FUNCTIONS), &builtins_ptr, sizeof(builtins_ptr));
   void* epoch_ptr = &state.epoch;
   std::memcpy(at(state.vmctx, VMCTX_OFF_EPOCH_PTR), &epoch_ptr, sizeof(epoch_ptr));
 
-  // GC heap data and type-id table: the skeleton never allocates GC objects,
-  // but generated code may load the pointers unconditionally.
-  static uint8_t gc_heap_dummy[4096];
+  // Real GC heap: 256 MiB of zeroed anonymous memory. Wasm GC refs are u32
+  // byte offsets into this region (VMStoreContext.gc_heap.base), so start the
+  // bump pointer at 8 to reserve the null reference and keep 8-byte alignment.
+  constexpr size_t kGcHeapSize = size_t{256} << 20;
+  g_gc_heap_base = static_cast<uint8_t*>(
+      ::mmap(nullptr, kGcHeapSize, PROT_READ | PROT_WRITE,
+             MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+  if (g_gc_heap_base == MAP_FAILED) {
+    std::fprintf(stderr, "[wasm-host] GC heap mmap failed\n");
+    return false;
+  }
+  g_gc_heap_size = kGcHeapSize;
+  g_gc_bump = 8;
+  state.store_storage.gc_heap.base = g_gc_heap_base;
+  state.store_storage.gc_heap.current_length = kGcHeapSize;
+  std::fprintf(stderr, "[wasm-host] gc heap: %p %zu bytes (bump allocator, DRC headers)\n",
+               static_cast<void*>(g_gc_heap_base), kGcHeapSize);
+
+  // VMContext.gc_heap_data is a DRC heap-data pointer; generated read/write
+  // barriers load the OASR head and lengths from it (all zero = empty list).
   static uint32_t type_ids[65536];
   // Cranelift resolves a call_indirect's expected signature by loading
   // type_ids[module_type_index] from the VMContext, then comparing it with
@@ -288,7 +435,7 @@ bool setup(HostState& state) {
   // here; for this self-contained host identity is enough as long as both
   // sides use the same numbering (see gen_table.py).
   for (uint32_t i = 0; i < 65536; ++i) type_ids[i] = i;
-  void* gc_ptr = gc_heap_dummy;
+  void* gc_ptr = &g_drc_heap_data;
   void* types_ptr = type_ids;
   std::memcpy(at(state.vmctx, VMCTX_OFF_GC_HEAP_DATA), &gc_ptr, sizeof(gc_ptr));
   std::memcpy(at(state.vmctx, VMCTX_OFF_TYPE_IDS), &types_ptr, sizeof(types_ptr));
