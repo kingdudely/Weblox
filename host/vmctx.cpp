@@ -2,6 +2,7 @@
 // memory, builtin libcalls, import stubs and trap-to-error signal handling.
 #define _GNU_SOURCE 1
 #include "vmctx.h"
+#include "imports.h"
 
 #include <csignal>
 #include <setjmp.h>
@@ -129,8 +130,9 @@ extern "C" void builtin_memory_fill(void* vmctx, uint64_t dst, uint64_t val, uin
 
 extern "C" uint64_t builtin_memory_atomic_notify(void*, uint64_t memidx, uint64_t addr,
                                                  uint64_t count) {
-  (void)memidx; (void)addr; (void)count;
-  return 0; // no waiters in this single-threaded skeleton
+  (void)memidx;
+  return wb::imports_futex_notify(static_cast<uint32_t>(addr),
+                                  static_cast<uint32_t>(count));
 }
 
 extern "C" uint64_t builtin_memory_atomic_wait32(void*, uint64_t memidx, uint64_t addr,
@@ -276,14 +278,10 @@ bool setup(HostState& state) {
   mem_import->vmctx = state.vmctx;
   mem_import->index = 0;
 
-  // 341 imported functions: wasm-ABI stub + this same vmctx.
-  auto* imports = reinterpret_cast<VMFunctionImport*>(at(state.vmctx, VMCTX_OFF_IMPORTED_FUNCTIONS));
-  for (uint32_t i = 0; i < VMCTX_NUM_IMPORTED_FUNCTIONS; ++i) {
-    imports[i].array_call = reinterpret_cast<void*>(&wasm_import_stub);
-    imports[i].wasm_call = reinterpret_cast<void*>(&wasm_import_stub);
-    imports[i].type_index = 1;
-    imports[i].vmctx = state.vmctx;
-  }
+  // 341 imported functions: generated wasm-ABI implementations + this vmctx.
+  wb::imports_set_memory(state.memory_base, state.memory_def_storage.current_length);
+  auto* imports = reinterpret_cast<wb::FunctionImportSlot*>(at(state.vmctx, VMCTX_OFF_IMPORTED_FUNCTIONS));
+  wb::imports_install(imports, VMCTX_NUM_IMPORTED_FUNCTIONS, state.vmctx);
 
   // Defined table: entries are VMFuncRef pointers in Wasmtime's table layout.
   constexpr size_t kTableEntries = 161491; // from the module's table limits

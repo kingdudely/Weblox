@@ -1,10 +1,43 @@
 // Smoke test: prove the Wasmtime VMContext ABI works by calling one guest
 // export from a plain C++ process linked against wasm2obj's out.full.o.
 #include "vmctx.h"
+#include "imports.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
+#include <dlfcn.h>
+
+// Emscripten pthread worker entry: re-enter the wasm function named by the
+// table index `start` with a per-thread VMContext.  This is the hook the
+// ported __pthread_create_js import requires.
+static void* g_main_vmctx = nullptr;
+
+static void thread_entry(uint32_t start, uint32_t arg, uint32_t pthread_ptr) {
+  char sym[64];
+  std::snprintf(sym, sizeof(sym), "_wasm_function_%u", start - 341u);
+  using WasmFn = void (*)(void*, uint32_t);
+  auto* fn = reinterpret_cast<WasmFn>(dlsym(RTLD_DEFAULT, sym));
+  if (!fn) {
+    std::fprintf(stderr, "[pthr] no wasm symbol for start=%u (%s)\n", start, sym);
+    return;
+  }
+  void* vm = std::malloc(VMCTX_SIZE_OF_VMCTX);
+  if (!vm) return;
+  std::memcpy(vm, g_main_vmctx, VMCTX_SIZE_OF_VMCTX);
+  // Give this fibre a fresh stack guard.  vmctx+8 is VMStoreContext; its
+  // stack_limit lives at +24 (offsets from vmctx_offsets.h).
+  uintptr_t sp = reinterpret_cast<uintptr_t>(__builtin_frame_address(0));
+  uint64_t limit = static_cast<uint64_t>(sp - (64u << 20));
+  auto** store = reinterpret_cast<void**>(static_cast<uint8_t*>(vm) + VMCTX_OFF_STORE_CONTEXT);
+  if (*store) {
+    std::memcpy(static_cast<uint8_t*>(*store) + 24, &limit, sizeof(limit));
+  }
+  std::fprintf(stderr, "[pthr] re-enter start=%u (%s) arg=%u ptr=%#x\n", start, sym, arg, pthread_ptr);
+  fn(vm, arg);
+  std::free(vm);
+}
 
 int main(int argc, char** argv) {
   // --skip-ctors is useful because __wasm_call_ctors runs Emscripten's full
@@ -16,6 +49,8 @@ int main(int argc, char** argv) {
     std::fprintf(stderr, "[wasm-host] RESULT=FAIL setup failed\n");
     return 1;
   }
+  g_main_vmctx = state.vmctx;
+  wb::imports_set_thread_entry(&thread_entry);
   std::printf("[wasm-host] vmctx=%p size=%u memory=%p length=%zu imports=%u builtins=%u\n",
               static_cast<void*>(state.vmctx), VMCTX_SIZE_OF_VMCTX,
               static_cast<void*>(state.memory_base), state.memory_def_storage.current_length,
