@@ -1,3 +1,7 @@
+/// The host-side UDP/RakNet seam lives at the crate root; expose it here so
+/// the HTTP join hook and `main` can reach the same API.
+pub(crate) use crate::raknet;
+
 pub mod boot;
 pub mod embind;
 pub mod fetch;

@@ -593,7 +593,21 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
     const url = typeof input === "string" ? input : input.url;
     const h = new Headers(init.headers ?? (typeof input === "object" ? input.headers : undefined));
     patchHeaders(url, h);
-    return realFetch(input, { ...init, headers: h });
+    const res = await realFetch(input, { ...init, headers: h });
+    // Weblox flips these in the same settings response the page fetches.
+    // Last-wins: the live blob already sets Client3=true, so patch here
+    // rather than in the engine's preloaded-flags copy upstream.
+    if (Deno.env.get("WC_RAKNET") === "1" && /clientsettings(cdn)?\.roblox\.com\/v2\/settings\/application\//.test(url)) {
+      try {
+        const doc = await res.json();
+        if (doc?.applicationSettings) {
+          doc.applicationSettings.FFlagUseRbxTransportClient3 = "False";
+          doc.applicationSettings.FFlagUseRbxTransportServer = "False";
+          return new Response(JSON.stringify(doc), { status: res.status, headers: { "content-type": "application/json" } });
+        }
+      } catch { /* fall through with the original response */ }
+    }
+    return res;
   };
   (globalThis as any).XMLHttpRequest = XHR;
 
@@ -628,6 +642,27 @@ export function install(kind: "main" | "worker", host?: Host, opts: { place?: nu
   return { canvas, document: doc, cookie };
 }
 
+// Runtime backtrace for the transport-selection gate. Deno's V8 prints
+// `wasm-function[N]:0x<offset>` frames in Error().stack, which maps straight
+// to the function indices in the WAT without recompiling the 100 MB module.
+if (Deno.env.get("WC_BT_LOG") === "1") {
+  for (const k of ["log", "info", "warn", "error"] as const) {
+    const orig = console[k].bind(console);
+    (console as any)[k] = (...a: any[]) => {
+      const s = a.map(String).join(" ");
+      if (s.includes("Transport selection rejected")) {
+        const lim = Error.stackTraceLimit;
+        Error.stackTraceLimit = 200;
+        let stack: string | undefined;
+        try { stack = new Error().stack; } finally { Error.stackTraceLimit = lim; }
+        orig("[btlog] ", s, "\n", stack);
+        try { Deno.writeTextFileSync("/tmp/btagent-stack.txt", `[btlog] ${s}\n${stack}\n`); } catch { /* best effort */ }
+      }
+      return orig(...a);
+    };
+  }
+}
+
 /** Set the headers Roblox requires, on Roblox requests only. */
 export function patchHeaders(url: string, h: Headers) {
   let host = "";
@@ -635,9 +670,22 @@ export function patchHeaders(url: string, h: Headers) {
   if (!/(^|\.)(roblox\.com|rbxcdn\.com|robloxlabs\.com)$/.test(host)) return;
   if (!h.has("cookie")) h.set("cookie", (globalThis as any).document.cookie);
   if (!h.has("user-agent")) h.set("user-agent", UA);
+  // Native identity on gamejoin: the reply then carries a real Udmux
+  // endpoint instead of requiring a crafted gameFqdn. Covers both the XHR
+  // and plain-fetch paths, whichever the engine uses for the POST.
+  if (Deno.env.get("WC_RAKNET") === "1" && /^gamejoin\.roblox\.com$/.test(host)) {
+    h.set("user-agent", "Roblox/WinInet");
+    // The engine stamps rbx-user-agent with "Browser/Chromium/...", which
+    // gamejoin reads as a browser client and answers with status 12
+    // (playtesters only). Both identity headers must say native.
+    h.set("rbx-user-agent", "Roblox/WinInet");
+  }
   h.set("origin", ORIGIN);
   h.set("referer", PAGE + (globalThis as any).location.search);
-  h.set("rbx-user-agent", "Roblox/Darwin");
+  // Weblox joins with the native identity, which makes gamejoin return a
+  // real Udmux endpoint and a usable token. The browser identity gets a
+  // status-12 reply that has to be routed through a crafted gameFqdn.
+  if (Deno.env.get("WC_RAKNET") !== "1") h.set("rbx-user-agent", "Roblox/Darwin");
 }
 
 /**

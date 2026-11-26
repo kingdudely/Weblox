@@ -41,7 +41,7 @@ fn take_ring(target: u32) -> bool {
     }
 }
 
-fn add_ring(target: u32) -> bool {
+pub fn add_ring(target: u32) -> bool {
     RINGS_TOTAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut g = RINGS.lock().unwrap();
     *g.get_or_insert_with(HashMap::new).entry(target).or_insert(0) += 1;

@@ -18,6 +18,7 @@ mod fibre;
 mod gfx;
 mod trace;
 mod imports;
+pub(crate) mod raknet;
 mod state;
 
 use state::{St, CANVAS_H, CANVAS_W};
@@ -188,7 +189,13 @@ const CACHE_STAMP: &str = "data/cache/webclient.stamp";
 /// touches a fraction of it, so a smaller ceiling costs nothing and keeps the
 /// commit charge honest.
 fn pages() -> u32 {
-    std::env::var("WC_PAGES").ok().and_then(|v| v.parse().ok()).unwrap_or(16384)
+    if let Some(p) = std::env::var("WC_PAGES").ok().and_then(|v| v.parse().ok()) {
+        return p;
+    }
+    // The RakNet seam lives at 0x7FF0_0000.  A 16k-page (1 GiB) memory does
+    // not even reach it, so the native transport needs the engine's full
+    // 2 GiB heap even though most of it is never touched.
+    if std::env::var_os("WC_RAKNET").is_some() { 32768 } else { 16384 }
 }
 const WEB_BASE: &str = "https://www.roblox.com/";
 const ASSET_BASE: &str =
@@ -404,6 +411,45 @@ fn run() -> Result<()> {
             unsafe { *(store.data().mem.data()[me as usize + 112].get() as *mut u32) = 1 }
             eprintln!("[mbx ] main pthread {me:#x}");
         }
+    }
+    // Native RakNet transport: the join reply gives us the peer, and the
+    // engine has to be far enough along for the patched select() to consume a
+    // connect request. Both conditions are reached asynchronously, so start
+    // the ring from a small waiter rather than blocking instantiation.
+    if std::env::var_os("WC_RAKNET").is_some() {
+        let mem = store.data().mem.clone();
+        std::thread::Builder::new().name("rk-start".into()).spawn(move || {
+            use std::sync::atomic::Ordering;
+            let ring = raknet::Ring::new(mem.clone());
+            let secs = std::env::var("WC_RK_WAIT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(180u64);
+            let deadline = Instant::now() + Duration::from_secs(secs);
+            loop {
+                let engine = imports::boot::BOOTED.load(Ordering::Relaxed)
+                    || ring.updates() != 0
+                    || ring.selects() != 0;
+                if engine {
+                    if let Some(script) = imports::http::JOIN_SCRIPT.get() {
+                        match raknet::parse_join(script) {
+                            Ok(t) => {
+                                if let Err(e) = raknet::start(t.host, t.port, script.clone(), mem) {
+                                    eprintln!("[rk ] start failed: {e}");
+                                }
+                            }
+                            Err(e) => eprintln!("[rk ] no usable peer: {e}"),
+                        }
+                        return;
+                    }
+                }
+                if Instant::now() >= deadline {
+                    eprintln!("[rk ] join script / engine readiness timed out after {secs}s");
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        })?;
     }
     if let Ok(ks) = std::env::var("WC_HOOK") {
         let t = inst.get_table(&mut *store, "__indirect_function_table").unwrap();
@@ -809,6 +855,7 @@ fn find_under(root: &std::path::Path, tail: &str) -> Option<String> {
 async fn settings() -> String {
     const URL: &str = "https://clientsettingscdn.roblox.com/v2/settings/application/WebClientApp";
     const MIN: &str = r#"{"applicationSettings":{"BaseUrl":"https://www.roblox.com/","FIntWasmMemoryPages":"32768"},"RobloxLocaleId":"en-us","GameLocaleId":"en-us"}"#;
+    const MIN_RAK: &str = r#"{"applicationSettings":{"BaseUrl":"https://www.roblox.com/","FIntWasmMemoryPages":"32768","FFlagUseRbxTransportClient3":"False","FFlagUseRbxTransportServer":"False"},"RobloxLocaleId":"en-us","GameLocaleId":"en-us"}"#;
     let raw = std::process::Command::new("curl")
         .args(["-fsSL", "--max-time", "10", URL])
         .output()
@@ -817,11 +864,11 @@ async fn settings() -> String {
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
     let Some(body) = raw else {
         eprintln!("[prep] settings fetch failed");
-        return MIN.to_string();
+        return if std::env::var_os("WC_RAKNET").is_some() { MIN_RAK.to_string() } else { MIN.to_string() };
     };
     let Some(open) = body.find("\"applicationSettings\":{").map(|i| i + "\"applicationSettings\":".len()) else {
         eprintln!("[prep] settings had no applicationSettings");
-        return MIN.to_string();
+        return if std::env::var_os("WC_RAKNET").is_some() { MIN_RAK.to_string() } else { MIN.to_string() };
     };
     // walk to the matching brace of the applicationSettings object
     let mut depth = 0i32;
@@ -846,14 +893,27 @@ async fn settings() -> String {
     }
     let Some(close) = close else {
         eprintln!("[prep] settings object unterminated");
-        return MIN.to_string();
+        return if std::env::var_os("WC_RAKNET").is_some() { MIN_RAK.to_string() } else { MIN.to_string() };
     };
     eprintln!("[prep] {} bytes of settings", body.len());
-    let mut out = String::with_capacity(body.len() + 128);
+    let mut out = String::with_capacity(body.len() + 256);
     out.push_str(&body[..=open]);
-    out.push_str(r#""BaseUrl":"https://www.roblox.com/","FIntWasmMemoryPages":"32768","DFLogHttpTrace":"6","DFLogHttpTraceLight":"1","#);
     out.push_str(&body[open + 1..close]);
+    // Overrides must come last: the live settings blob already carries
+    // FFlagUseRbxTransportClient3=true, and duplicate JSON keys are
+    // last-wins in the engine's parser. Weblox flips these two to select
+    // the built-in RakNet; the native-UA join supplies a real Udmux
+    // endpoint, so there is no gameFqdn to craft.
+    let comma = if close > open + 1 { "," } else { "" };
+    out.push_str(comma);
+    out.push_str(r#""BaseUrl":"https://www.roblox.com/","FIntWasmMemoryPages":"32768","DFLogHttpTrace":"6","DFLogHttpTraceLight":"1""#);
+    if std::env::var_os("WC_RAKNET").is_some() {
+        out.push_str(r#","FFlagUseRbxTransportClient3":"False","FFlagUseRbxTransportServer":"False""#);
+    }
     out.push_str(r#"},"RobloxLocaleId":"en-us","GameLocaleId":"en-us"}"#);
+    if std::env::var_os("WC_RAKNET").is_some() {
+        let _ = std::fs::write("/tmp/opencode/settings-sent.json", &out);
+    }
     out
 }
 

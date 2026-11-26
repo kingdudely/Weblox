@@ -110,7 +110,8 @@ export class XHR {
     const buf = new Uint8Array(total);
     let at = 0;
     for (const c of this._chunks) { buf.set(c, at); at += c.length; }
-    const body = final && this._join ? patchJoin(new TextDecoder().decode(buf)) : null;
+    const native = Deno.env.get("WC_RAKNET") === "1";
+    const body = final && this._join && !native ? patchJoin(new TextDecoder().decode(buf)) : null;
     const bytes = body === null ? buf : new TextEncoder().encode(body);
     if (this.responseType === "arraybuffer") this.response = bytes.buffer;
     else if (this.responseType === "blob") this.response = new Blob([bytes]);
@@ -121,7 +122,13 @@ export class XHR {
     const ctrl = (this._ctrl = new AbortController());
     // Public places require rbx-user-agent: Roblox/Darwin on the join POST;
     // the regular User-Agent stays the Chrome UA (set by patchHeaders).
-    if (this._join) this._h.set("rbx-user-agent", "Roblox/Darwin");
+    // WC_RAKNET switches to Weblox's native identity instead, which returns a
+    // real RakNet endpoint and removes the need to derive gameFqdn.
+    if (this._join && Deno.env.get("WC_RAKNET") === "1") {
+      this._h.set("user-agent", "Roblox/WinInet");
+    } else if (this._join) {
+      this._h.set("rbx-user-agent", "Roblox/Darwin");
+    }
     patchHeaders(this._url, this._h);
     const timer = this.timeout ? setTimeout(() => { ctrl.abort(); this.ontimeout?.({}); }, this.timeout) : null;
     this.readyState = 2;
