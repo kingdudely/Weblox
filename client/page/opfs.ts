@@ -63,8 +63,8 @@ class Dir {
     else root.delete(key);
   }
   async *keys() { for (const k of root.keys()) if (k.startsWith(this.prefix)) yield k.slice(this.prefix.length); }
-  async *values() { for (const k of this.keys()) yield new FileHandle(this.prefix + k); }
-  async *entries() { for (const k of this.keys()) yield [k, new FileHandle(this.prefix + k)]; }
+  async *values() { for await (const k of this.keys()) yield new FileHandle(this.prefix + k); }
+  async *entries() { for await (const k of this.keys()) yield [k, new FileHandle(this.prefix + k)]; }
 }
 
 export function makeOPFS() { return new Dir(); }
