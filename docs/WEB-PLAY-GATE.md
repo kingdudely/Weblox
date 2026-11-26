@@ -103,6 +103,30 @@ Their repo also confirms the browser build has WebSocket bindings but no UDP
 socket imports, so RakNet is not reachable from a browser — WebTransport must
 be made to work, or a native host must supply UDP itself.
 
+## Vulkan / WebGPU requirement (Chrome on this box)
+
+With plain Chrome the engine failed with
+`[WasmPlayer] startup failed: Error: The browser did not provide a WebGPU adapter`.
+`navigator.gpu` existed but `requestAdapter()` returned null. The fix is to
+launch with Vulkan explicitly enabled:
+
+```
+--enable-unsafe-webgpu --ignore-gpu-blocklist --enable-features=Vulkan
+--use-angle=vulkan --use-vulkan=native --disable-gpu-sandbox
+```
+
+After that `requestAdapter()` succeeds, the page stays at
+`play.roblox.com/games/start`, and the engine reaches a real join
+(`Assigned peer id`, `#players = 21`).
+
+## Reliable gate patch injection
+
+Reloading the extension did **not** reliably apply our edits. A deterministic
+alternative is CDP `Page.addScriptToEvaluateOnNewDocument` with the `fetch`
+wrapper above, installed before `Page.navigate`. Verified live: after 15 s the
+page URL was still `https://play.roblox.com/games/start?placeId=189707`,
+`window.__gateHit === 1`, and no `wasmRedirect` redirect occurred.
+
 ## State
 
 The patched extension lives only in `/tmp` (not committed — it is third-party
