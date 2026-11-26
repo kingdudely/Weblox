@@ -72,10 +72,12 @@ static void main_thread_init(void* vmctx, uint32_t ptr) {
 // longjmps when its (internal) g_in_wasm flag is set, so install a temporary
 // handler here; a trapped export becomes a printed signal instead of a crash.
 namespace {
-sigjmp_buf g_export_jmp;
-volatile sig_atomic_t g_export_active = 0;
-volatile sig_atomic_t g_export_signal = 0;
+thread_local sigjmp_buf g_export_jmp;
+thread_local volatile sig_atomic_t g_export_active = 0;
+thread_local volatile sig_atomic_t g_export_signal = 0;
 void export_trap(int sig, siginfo_t*, void*) {
+  // Only the thread that installed this guard may longjmp into its own frame.
+  // A fault on any other thread must be handled by that thread's guard.
   if (!g_export_active) return;
   g_export_signal = sig;
   g_export_active = 0;

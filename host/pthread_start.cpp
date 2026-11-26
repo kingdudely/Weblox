@@ -169,6 +169,10 @@ uint8_t* make_worker_vmctx() {
   *store = *static_cast<host::VMStoreContext*>(main_store);
   void* store_ptr = store;
   std::memcpy(vm + VMCTX_OFF_STORE_CONTEXT, &store_ptr, sizeof(store_ptr));
+  // The copied store context carries the main thread's wasm exit PC/FP and
+  // unwind stack chain. A worker must not inherit those — the unwinder would
+  // walk the main thread's frames.
+  host::reset_wasm_exit_state(vm);
 
   // A real worker instantiates a fresh module: the mutable TLS/pthread globals
   // (1..7) start at zero, while the immutable constants (8..14) and the stack
