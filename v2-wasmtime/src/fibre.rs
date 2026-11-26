@@ -56,8 +56,28 @@ thread_local! {
     static STORE: Cell<*mut Store<St>> = const { Cell::new(std::ptr::null_mut()) };
     static CUR: Cell<u32> = const { Cell::new(u32::MAX) };
     static TASKS: RefCell<HashMap<u32, Task>> = RefCell::new(HashMap::new());
-    static READY: RefCell<VecDeque<u32>> = const { RefCell::new(VecDeque::new()) };
-    static TIMERS: RefCell<Vec<(Instant, Waker)>> = const { RefCell::new(Vec::new()) };
+    static TIMERS: RefCell<Vec<(Instant, Waker)>> = RefCell::new(Vec::new());
+    /// Unique id of this executor thread, assigned lazily.  A task belongs to
+    /// the thread that spawned it; cross-thread wakes must schedule it for
+    /// that thread, not for the thread that happened to call `wake()`.
+    static OWNER: Cell<usize> = const { Cell::new(usize::MAX) };
+}
+
+static NEXT_OWNER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(1);
+/// Global ready queue: (owning executor thread, task id).  A wake from any
+/// thread can schedule a task onto the correct thread's queue.
+static READY: std::sync::Mutex<VecDeque<(usize, u32)>> =
+    std::sync::Mutex::new(VecDeque::new());
+
+fn owner() -> usize {
+    OWNER.with(|o| {
+        let v = o.get();
+        if v == usize::MAX {
+            let id = NEXT_OWNER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            o.set(id);
+            id
+        } else { v }
+    })
 }
 
 /// Raw store handle; only ever touched from the owning thread.
@@ -156,14 +176,14 @@ fn ops(st: &mut Store<St>) -> Result<Ops> {
 
 // --- executor ------------------------------------------------------------
 
-struct TW(u32);
+struct TW(usize, u32);
 
 impl Wake for TW {
     fn wake(self: Arc<Self>) {
-        READY.with(|q| q.borrow_mut().push_back(self.0));
+        READY.lock().unwrap_or_else(|e| e.into_inner()).push_back((self.0, self.1));
     }
     fn wake_by_ref(self: &Arc<Self>) {
-        READY.with(|q| q.borrow_mut().push_back(self.0));
+        READY.lock().unwrap_or_else(|e| e.into_inner()).push_back((self.0, self.1));
     }
 }
 
@@ -209,7 +229,7 @@ fn wake_due() {
 }
 
 fn poll_task(id: u32) -> bool {
-    let waker = Waker::from(Arc::new(TW(id)));
+    let waker = Waker::from(Arc::new(TW(owner(), id)));
     let Some(mut t) = TASKS.with(|m| m.borrow_mut().remove(&id)) else { return true };
     let mut cx = Context::from_waker(&waker);
     let cur = CUR.with(|c| c.get());
@@ -233,8 +253,9 @@ fn pending(id: u32) -> bool {
 
 fn spawn(t: Task) -> Result<u32> {
     let id = NEXT_TASK.fetch_add(1, Ordering::Relaxed);
+    let o = owner();
     TASKS.with(|m| m.borrow_mut().insert(id, t));
-    READY.with(|q| q.borrow_mut().push_back(id));
+    READY.lock().unwrap_or_else(|e| e.into_inner()).push_back((o, id));
     Ok(id)
 }
 
@@ -243,7 +264,13 @@ fn drive(done: Option<u32>) {
     loop {
         let mut ran = false;
         loop {
-            let Some(id) = READY.with(|q| q.borrow_mut().pop_front()) else { break };
+            let me = owner();
+            let picked = {
+                let mut q = READY.lock().unwrap_or_else(|e| e.into_inner());
+                let pos = q.iter().position(|(o, _)| *o == me);
+                pos.map(|i| q.remove(i).unwrap().1)
+            };
+            let Some(id) = picked else { break };
             ran = true;
             poll_task(id);
             if done == Some(id) && !pending(id) {
@@ -274,7 +301,12 @@ fn drive(done: Option<u32>) {
             }
             let st = unsafe { &mut *p };
             if !st.data().is_main && TICKS.load(Ordering::Relaxed) % 20 == 0 {
-                let _ = crate::imports::mailbox::pump_mailbox(st);
+                // Must actually run this future.  Creating and dropping it
+                // meant no HTTP/RNA callback was ever delivered to a worker
+                // still inside guest code (the join/network thread).  Queue
+                // it rather than nested block_on, which recursively drives
+                // the whole executor and can spin forever.
+                let _ = spawn(Box::pin(async move { let _ = crate::imports::mailbox::pump_mailbox(st).await; }));
             }
             std::thread::sleep(Duration::from_millis(1));
             wake_due();
@@ -294,10 +326,12 @@ async fn restore(store: &mut Store<St>, tok: u32) -> Result<oneshot::Sender<u32>
         if std::env::var_os("WC_FIB").is_some() {
             eprintln!("[fib ] MISS {tok:#x}");
         }
-        return Ok(oneshot::channel().0);
+        return Err(wasmtime::Error::msg(format!("unknown fiber token {tok:#x}")));
     };
-    o.set_limits.call_async(&mut *store, (slot.base, slot.end)).await?;
-    o.set_sp.call_async(&mut *store, (slot.sp,)).await?;
+    // No await between the two stack writes: the guest C stack must switch
+    // atomically before any other task gets to run wasm.
+    o.set_limits.call(&mut *store, (slot.base, slot.end))?;
+    o.set_sp.call(&mut *store, (slot.sp,))?;
     Ok(slot.tx)
 }
 
@@ -317,12 +351,10 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
                 let e = o.get_end.call_async(&mut *st, ()).await?;
                 let (tx, rx) = oneshot::channel::<u32>();
                 st.data_mut().rt.as_mut().expect("rt").slots.insert(tok, Slot { tx, sp, base: b, end: e });
-                // the child starts on the caller's own stack range
-                o.set_limits.call_async(&mut *st, (base, limit)).await?;
-                o.set_sp.call_async(&mut *st, (base,)).await?;
-                let entry = entry;
+                // The guest stack switch belongs to the spawned task so no
+                // other task can run wasm on the child's stack in between.
                 spawn(Box::pin(async move {
-                    if let Err(e) = run_entry(p, tok, entry, arg).await {
+                    if let Err(e) = run_entry(p, tok, entry, arg, base, limit).await {
                         if std::env::var_os("WC_FIB").is_some() {
                             eprintln!("[fib ] tok={tok:#x} entry={entry} ended: {e:#}");
                         }
@@ -385,9 +417,12 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
     Ok(())
 }
 
-async fn run_entry(p: PStore, tok: u32, entry: u32, arg: u32) -> Result<()> {
+async fn run_entry(p: PStore, tok: u32, entry: u32, arg: u32, base: u32, limit: u32) -> Result<()> {
     let st = p.get();
-    let f = ops(st)?.entry.clone();
+    let o = ops(st)?;
+    o.set_limits.call(&mut *st, (base, limit))?;
+    o.set_sp.call(&mut *st, (base,))?;
+    let f = o.entry.clone();
     let mut out = [];
     f.call_async(&mut *st, &[
         wasmtime::Val::I32(tok as i32),
@@ -396,11 +431,10 @@ async fn run_entry(p: PStore, tok: u32, entry: u32, arg: u32) -> Result<()> {
     ], &mut out).await
 }
 
-async fn resume_destroy(p: PStore, slot: Slot) -> Result<()> {
-    let st = p.get();
-    let o = ops(st)?;
-    o.set_limits.call_async(&mut *st, (slot.base, slot.end)).await?;
-    o.set_sp.call_async(&mut *st, (slot.sp,)).await?;
+async fn resume_destroy(_p: PStore, slot: Slot) -> Result<()> {
+    // The page's `Oa` only resolves the dead fiber's promise with 0; it does
+    // NOT switch the guest C stack.  Switching here runs while the caller of
+    // fiber_destroy_js is still on its own stack and corrupts it.
     slot.tx.send(0).ok();
     Ok(())
 }
@@ -439,7 +473,7 @@ pub fn spawn_on_new_stack<T: wasmtime::AsContextMut<Data = St>>(
         }
     });
     TASKS.with(|m| m.borrow_mut().insert(id, wrapped));
-    READY.with(|q| q.borrow_mut().push_back(id));
+    READY.lock().unwrap_or_else(|e| e.into_inner()).push_back((owner(), id));
     Ok(())
 }
 
@@ -511,7 +545,7 @@ pub fn shutdown(store: &mut Store<St>) {
     let Some(rt) = store.data_mut().rt.as_mut() else { return };
     rt.slots.clear();
     TASKS.with(|m| m.borrow_mut().clear());
-    READY.with(|q| q.borrow_mut().clear());
+    READY.lock().unwrap_or_else(|e| e.into_inner()).clear();
 }
 
 /// Carve a guest stack for a task. Before instantiation there is no guest

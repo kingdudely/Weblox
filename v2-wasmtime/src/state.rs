@@ -47,6 +47,22 @@ pub struct St {
     pub gl_ctx: bool,
     pub asm_last: u32,
     pub imp_last: &'static str,
+    /// Crash-report attributes from `set_crash_attribute` (JS `ye` map).
+    pub crash_attrs: HashMap<String, String>,
+    /// Reason/type/value recorded by `report_crash` (JS `Af` -> `kf`).
+    pub crash_reason: Option<String>,
+    /// Bytes staged by the DOM text input for `copy_pending_text` (JS `l.pendingBytes`).
+    pub pending_bytes: Option<Vec<u8>>,
+    /// Which text input the glue selected (JS `l.currentInput`).
+    pub current_input_kind: Option<String>,
+    /// Guest pointer reserved for the glue's key-event struct (JS `h.keyEvent`).
+    pub key_event_ptr: Option<u32>,
+    /// Pointer-source tracking (`l.lastPointerType`): 0 mouse, 1 touch, 2 pen.
+    pub pointer_type: u8,
+    /// JS `l.penFiresTouchEvents`: None until decided by the glue.
+    pub pen_fires_touch_events: Option<bool>,
+    /// JS `l.penContactActive`.
+    pub pen_contact_active: bool,
 }
 
 impl St {
@@ -82,6 +98,14 @@ impl St {
             gl_ctx: false,
             asm_last: 0,
             imp_last: "",
+            crash_attrs: HashMap::new(),
+            crash_reason: None,
+            pending_bytes: None,
+            current_input_kind: None,
+            key_event_ptr: None,
+            pointer_type: 0,
+            pen_fires_touch_events: None,
+            pen_contact_active: false,
         }
     }
 }

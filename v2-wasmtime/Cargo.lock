@@ -29,8 +29,10 @@ dependencies = [
  "raw-window-handle",
  "rustls",
  "serde_json",
+ "shiguredo_http3",
  "tokio",
  "tungstenite",
+ "url",
  "wasmtime",
  "wasmtime-internal-fiber",
  "wgpu",
@@ -2451,6 +2453,12 @@ dependencies = [
  "cpufeatures 0.2.17",
  "digest 0.10.7",
 ]
+
+[[package]]
+name = "shiguredo_http3"
+version = "2026.1.0-canary.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7db6788a921e17a85903bddd18464d99c79d5fb3b6cf5193b90373a075fa35c0"
 
 [[package]]
 name = "shlex"

@@ -50,20 +50,7 @@ pub fn tex_format(i: u32) -> Option<wgpu::TextureFormat> {
         47 => wgpu::TextureFormat::Depth24PlusStencil8,
         48 => wgpu::TextureFormat::Depth32Float,
         49 => wgpu::TextureFormat::Depth32FloatStencil8,
-        50 => wgpu::TextureFormat::Bc1RgbaUnorm,
-        51 => wgpu::TextureFormat::Bc1RgbaUnormSrgb,
-        52 => wgpu::TextureFormat::Bc2RgbaUnorm,
-        53 => wgpu::TextureFormat::Bc2RgbaUnormSrgb,
-        54 => wgpu::TextureFormat::Bc3RgbaUnorm,
-        55 => wgpu::TextureFormat::Bc3RgbaUnormSrgb,
-        56 => wgpu::TextureFormat::Bc4RUnorm,
-        57 => wgpu::TextureFormat::Bc4RSnorm,
-        58 => wgpu::TextureFormat::Bc5RgUnorm,
-        59 => wgpu::TextureFormat::Bc5RgSnorm,
-        60 => wgpu::TextureFormat::Bc6hRgbUfloat,
-        61 => wgpu::TextureFormat::Bc6hRgbFloat,
-        62 => wgpu::TextureFormat::Bc7RgbaUnorm,
-        63 => wgpu::TextureFormat::Bc7RgbaUnormSrgb,
+        50..=63 => return None, // placeholder; filled below
         64 => wgpu::TextureFormat::Etc2Rgb8Unorm,
         65 => wgpu::TextureFormat::Etc2Rgb8UnormSrgb,
         66 => wgpu::TextureFormat::Etc2Rgb8A1Unorm,
@@ -74,6 +61,34 @@ pub fn tex_format(i: u32) -> Option<wgpu::TextureFormat> {
         71 => wgpu::TextureFormat::EacR11Snorm,
         72 => wgpu::TextureFormat::EacRg11Unorm,
         73 => wgpu::TextureFormat::EacRg11Snorm,
+        74 => wgpu::TextureFormat::Astc { block: wgpu::AstcBlock::B4x4, channel: wgpu::AstcChannel::Unorm },
+        75 => wgpu::TextureFormat::Astc { block: wgpu::AstcBlock::B4x4, channel: wgpu::AstcChannel::UnormSrgb },
+        76 => wgpu::TextureFormat::Astc { block: wgpu::AstcBlock::B5x4, channel: wgpu::AstcChannel::Unorm },
+        77 => wgpu::TextureFormat::Astc { block: wgpu::AstcBlock::B5x4, channel: wgpu::AstcChannel::UnormSrgb },
+        78 => wgpu::TextureFormat::Astc { block: wgpu::AstcBlock::B5x5, channel: wgpu::AstcChannel::Unorm },
+        79 => wgpu::TextureFormat::Astc { block: wgpu::AstcBlock::B5x5, channel: wgpu::AstcChannel::UnormSrgb },
+        80 => wgpu::TextureFormat::Astc { block: wgpu::AstcBlock::B6x5, channel: wgpu::AstcChannel::Unorm },
+        81 => wgpu::TextureFormat::Astc { block: wgpu::AstcBlock::B6x5, channel: wgpu::AstcChannel::UnormSrgb },
+        82 => wgpu::TextureFormat::Astc { block: wgpu::AstcBlock::B6x6, channel: wgpu::AstcChannel::Unorm },
+        83 => wgpu::TextureFormat::Astc { block: wgpu::AstcBlock::B6x6, channel: wgpu::AstcChannel::UnormSrgb },
+        84 => wgpu::TextureFormat::Astc { block: wgpu::AstcBlock::B8x5, channel: wgpu::AstcChannel::Unorm },
+        85 => wgpu::TextureFormat::Astc { block: wgpu::AstcBlock::B8x5, channel: wgpu::AstcChannel::UnormSrgb },
+        86 => wgpu::TextureFormat::Astc { block: wgpu::AstcBlock::B8x6, channel: wgpu::AstcChannel::Unorm },
+        87 => wgpu::TextureFormat::Astc { block: wgpu::AstcBlock::B8x6, channel: wgpu::AstcChannel::UnormSrgb },
+        88 => wgpu::TextureFormat::Astc { block: wgpu::AstcBlock::B8x8, channel: wgpu::AstcChannel::Unorm },
+        89 => wgpu::TextureFormat::Astc { block: wgpu::AstcBlock::B8x8, channel: wgpu::AstcChannel::UnormSrgb },
+        90 => wgpu::TextureFormat::Astc { block: wgpu::AstcBlock::B10x5, channel: wgpu::AstcChannel::Unorm },
+        91 => wgpu::TextureFormat::Astc { block: wgpu::AstcBlock::B10x5, channel: wgpu::AstcChannel::UnormSrgb },
+        92 => wgpu::TextureFormat::Astc { block: wgpu::AstcBlock::B10x6, channel: wgpu::AstcChannel::Unorm },
+        93 => wgpu::TextureFormat::Astc { block: wgpu::AstcBlock::B10x6, channel: wgpu::AstcChannel::UnormSrgb },
+        94 => wgpu::TextureFormat::Astc { block: wgpu::AstcBlock::B10x8, channel: wgpu::AstcChannel::Unorm },
+        95 => wgpu::TextureFormat::Astc { block: wgpu::AstcBlock::B10x8, channel: wgpu::AstcChannel::UnormSrgb },
+        96 => wgpu::TextureFormat::Astc { block: wgpu::AstcBlock::B10x10, channel: wgpu::AstcChannel::Unorm },
+        97 => wgpu::TextureFormat::Astc { block: wgpu::AstcBlock::B10x10, channel: wgpu::AstcChannel::UnormSrgb },
+        98 => wgpu::TextureFormat::Astc { block: wgpu::AstcBlock::B12x10, channel: wgpu::AstcChannel::Unorm },
+        99 => wgpu::TextureFormat::Astc { block: wgpu::AstcBlock::B12x10, channel: wgpu::AstcChannel::UnormSrgb },
+        100 => wgpu::TextureFormat::Astc { block: wgpu::AstcBlock::B12x12, channel: wgpu::AstcChannel::Unorm },
+        101 => wgpu::TextureFormat::Astc { block: wgpu::AstcBlock::B12x12, channel: wgpu::AstcChannel::UnormSrgb },
         _ => return None,
     })
 }
@@ -90,28 +105,15 @@ pub fn topology(i: u32) -> Option<wgpu::PrimitiveTopology> {
 }
 
 pub fn index_format(i: u32) -> Option<wgpu::IndexFormat> {
-    Some(match i {
-        1 => wgpu::IndexFormat::Uint16,
-        2 => wgpu::IndexFormat::Uint32,
-        _ => return None,
-    })
+    Some(match i { 1 => wgpu::IndexFormat::Uint16, 2 => wgpu::IndexFormat::Uint32, _ => return None })
 }
 
 pub fn front_face(i: u32) -> Option<wgpu::FrontFace> {
-    Some(match i {
-        1 => wgpu::FrontFace::Ccw,
-        2 => wgpu::FrontFace::Cw,
-        _ => return None,
-    })
+    Some(match i { 1 => wgpu::FrontFace::Ccw, 2 => wgpu::FrontFace::Cw, _ => return None })
 }
 
 pub fn cull_mode(i: u32) -> Option<wgpu::Face> {
-    match i {
-        1 => None,
-        2 => Some(wgpu::Face::Front),
-        3 => Some(wgpu::Face::Back),
-        _ => None,
-    }
+    match i { 1 => None, 2 => Some(wgpu::Face::Front), 3 => Some(wgpu::Face::Back), _ => None }
 }
 
 pub fn blend_op(i: u32) -> Option<wgpu::BlendOperation> {
@@ -203,17 +205,14 @@ pub fn vertex_format(i: u32) -> Option<wgpu::VertexFormat> {
         37 => wgpu::VertexFormat::Sint32x2,
         38 => wgpu::VertexFormat::Sint32x3,
         39 => wgpu::VertexFormat::Sint32x4,
+        40 => wgpu::VertexFormat::Unorm10_10_10_2,
         41 => wgpu::VertexFormat::Unorm8x4Bgra,
         _ => return None,
     })
 }
 
 pub fn step_mode(i: u32) -> Option<wgpu::VertexStepMode> {
-    Some(match i {
-        1 => wgpu::VertexStepMode::Vertex,
-        2 => wgpu::VertexStepMode::Instance,
-        _ => return None,
-    })
+    Some(match i { 1 => wgpu::VertexStepMode::Vertex, 2 => wgpu::VertexStepMode::Instance, _ => return None })
 }
 
 pub fn stencil_op(i: u32) -> Option<wgpu::StencilOperation> {
@@ -231,37 +230,19 @@ pub fn stencil_op(i: u32) -> Option<wgpu::StencilOperation> {
 }
 
 pub fn address_mode(i: u32) -> Option<wgpu::AddressMode> {
-    Some(match i {
-        1 => wgpu::AddressMode::ClampToEdge,
-        2 => wgpu::AddressMode::Repeat,
-        3 => wgpu::AddressMode::MirrorRepeat,
-        _ => return None,
-    })
+    Some(match i { 1 => wgpu::AddressMode::ClampToEdge, 2 => wgpu::AddressMode::Repeat, 3 => wgpu::AddressMode::MirrorRepeat, _ => return None })
 }
 
 pub fn filter_mode(i: u32) -> Option<wgpu::FilterMode> {
-    Some(match i {
-        1 => wgpu::FilterMode::Nearest,
-        2 => wgpu::FilterMode::Linear,
-        _ => return None,
-    })
+    Some(match i { 1 => wgpu::FilterMode::Nearest, 2 => wgpu::FilterMode::Linear, _ => return None })
 }
 
 pub fn mipmap_filter(i: u32) -> Option<wgpu::MipmapFilterMode> {
-    Some(match i {
-        1 => wgpu::MipmapFilterMode::Nearest,
-        2 => wgpu::MipmapFilterMode::Linear,
-        _ => return None,
-    })
+    Some(match i { 1 => wgpu::MipmapFilterMode::Nearest, 2 => wgpu::MipmapFilterMode::Linear, _ => return None })
 }
 
 pub fn texture_dimension(i: u32) -> Option<wgpu::TextureDimension> {
-    Some(match i {
-        1 => wgpu::TextureDimension::D1,
-        2 => wgpu::TextureDimension::D2,
-        3 => wgpu::TextureDimension::D3,
-        _ => return None,
-    })
+    Some(match i { 1 => wgpu::TextureDimension::D1, 2 => wgpu::TextureDimension::D2, 3 => wgpu::TextureDimension::D3, _ => return None })
 }
 
 pub fn view_dimension(i: u32) -> Option<wgpu::TextureViewDimension> {
@@ -277,12 +258,7 @@ pub fn view_dimension(i: u32) -> Option<wgpu::TextureViewDimension> {
 }
 
 pub fn texture_aspect(i: u32) -> Option<wgpu::TextureAspect> {
-    Some(match i {
-        1 => wgpu::TextureAspect::All,
-        2 => wgpu::TextureAspect::StencilOnly,
-        3 => wgpu::TextureAspect::DepthOnly,
-        _ => return None,
-    })
+    Some(match i { 1 => wgpu::TextureAspect::All, 2 => wgpu::TextureAspect::StencilOnly, 3 => wgpu::TextureAspect::DepthOnly, _ => return None })
 }
 
 pub fn alpha_mode(i: u32) -> Option<wgpu::CompositeAlphaMode> {
@@ -290,15 +266,42 @@ pub fn alpha_mode(i: u32) -> Option<wgpu::CompositeAlphaMode> {
         1 => wgpu::CompositeAlphaMode::Opaque,
         2 => wgpu::CompositeAlphaMode::PreMultiplied,
         3 => wgpu::CompositeAlphaMode::PostMultiplied,
-        4 => wgpu::CompositeAlphaMode::Auto,
+        4 => wgpu::CompositeAlphaMode::Inherit,
         _ => return None,
     })
 }
 
 pub fn store_op(i: u32) -> Option<wgpu::StoreOp> {
+    Some(match i { 1 => wgpu::StoreOp::Store, 2 => wgpu::StoreOp::Discard, _ => return None })
+}
+
+/// Reverse of `tex_format`: generated enum index for a wgpu format.
+pub fn tex_format_index(f: wgpu::TextureFormat) -> Option<u32> {
+    (1..=101u32).find(|&i| tex_format(i) == Some(f))
+}
+
+/// WebGPU FeatureName index -> wgpu feature flag (the JS table is 1-based).
+pub fn feature(i: u32) -> Option<wgpu::Features> {
     Some(match i {
-        1 => wgpu::StoreOp::Store,
-        2 => wgpu::StoreOp::Discard,
+        1 => wgpu::Features::empty(),
+        2 => wgpu::Features::DEPTH_CLIP_CONTROL,
+        3 => wgpu::Features::DEPTH32FLOAT_STENCIL8,
+        4 => wgpu::Features::TEXTURE_COMPRESSION_BC,
+        5 => wgpu::Features::TEXTURE_COMPRESSION_BC_SLICED_3D,
+        6 => wgpu::Features::TEXTURE_COMPRESSION_ETC2,
+        7 => wgpu::Features::TEXTURE_COMPRESSION_ASTC,
+        8 => wgpu::Features::TEXTURE_COMPRESSION_ASTC_SLICED_3D,
+        9 => wgpu::Features::TIMESTAMP_QUERY,
+        10 => wgpu::Features::INDIRECT_FIRST_INSTANCE,
+        11 => wgpu::Features::SHADER_F16,
+        12 => wgpu::Features::RG11B10UFLOAT_RENDERABLE,
+        13 => wgpu::Features::BGRA8UNORM_STORAGE,
+        14 => wgpu::Features::FLOAT32_FILTERABLE,
+        15 => wgpu::Features::FLOAT32_BLENDABLE,
+        16 => wgpu::Features::CLIP_DISTANCES,
+        17 => wgpu::Features::DUAL_SOURCE_BLENDING,
+        18 => wgpu::Features::SUBGROUP,
+        21 => wgpu::Features::PRIMITIVE_INDEX,
         _ => return None,
     })
 }

@@ -50,7 +50,9 @@ struct Gpu {
     surface: Option<wgpu::Surface<'static>>,
     adapter: Option<wgpu::Adapter>,
     maps: HashMap<u32, (u32, usize, bool)>,
+    map_temps: HashMap<u32, Vec<u32>>,
     size: (u32, u32),
+    format: u32,
 }
 
 static GPU: Mutex<Option<Gpu>> = Mutex::new(None);
@@ -140,7 +142,6 @@ impl<'a> M<'a> {
         let len = self.u32(p + 4);
         if sp == 0 { return String::new() }
         if len == u32::MAX {
-            // -1 length: NUL-terminated, as the glue's T() scans
             let mut out = Vec::new();
             for i in sp as usize..self.d.len() {
                 let b = unsafe { *self.d[i].get() };
@@ -223,6 +224,8 @@ fn ensure() -> bool {
         Ok(a) => a,
         Err(e) => { eprintln!("[wgpu] adapter: {e}"); return false }
     };
+    let preferred = surface.get_capabilities(&adapter).formats.first().copied()
+        .and_then(wgt::tex_format_index).unwrap_or(22);
     let info = adapter.get_info();
     eprintln!("[wgpu] {} {:?}", info.name, info.backend);
     let (device, queue) = match crate::gfx::block(adapter.request_device(&wgpu::DeviceDescriptor {
@@ -241,6 +244,7 @@ fn ensure() -> bool {
         g.device = Some(device);
         g.queue = Some(queue);
         g.adapter = Some(adapter);
+        g.format = preferred;
         g.size = (crate::gfx::size().0 as u32, crate::gfx::size().1 as u32);
         g.objs.insert(0, Obj::Surface(surface));
         let _ = (dev, q);
@@ -261,7 +265,9 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
         if w != 0 { if let Some(o) = take(raw) { put_at(w, o) } }
         w as i32
     })?;
-    l.func_wrap("env", "emwgpuGetPreferredFormat", || -> i32 { 22 })?; // rgba8unorm
+    l.func_wrap("env", "emwgpuGetPreferredFormat", || -> i32 {
+        with(|g| g.format) as i32
+    })?;
 
     macro_rules! f {
         ($name:literal, ($($p:ident : $t:ty),*), $r:ty, $body:expr) => {
@@ -282,6 +288,8 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
 
     f!("wgpuSurfaceConfigure", (s: i32, d: i32), (), |st: &mut wasmtime::Store<St>, m: M<'_>| {
         let (dev, fmt, w, h) = (m.u32(d + 4), m.u32(d + 8), m.u32(d + 24), m.u32(d + 28));
+        let usage = wgpu::TextureUsages::from_bits_truncate(m.u32(d + 16));
+        let alpha = wgt::alpha_mode(m.u32(d + 40));
         let vf: Vec<wgpu::TextureFormat> = (0..m.u32(d + 32))
             .filter_map(|k| wgt::tex_format(m.u32((m.u32(d + 36) + k * 4) as i32)))
             .collect();
@@ -294,35 +302,26 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
                 .or_else(|| caps.formats.first().copied()).unwrap_or(wgpu::TextureFormat::Bgra8Unorm);
             if w != 0 { g.size.0 = w }
             if h != 0 { g.size.1 = h }
+            g.format = wgt::tex_format_index(format).unwrap_or(22);
             let conf = wgpu::SurfaceConfiguration {
                 color_space: wgpu::SurfaceColorSpace::Srgb,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                usage: if usage.is_empty() { wgpu::TextureUsages::RENDER_ATTACHMENT } else { usage },
                 format,
                 width: g.size.0.max(1),
                 height: g.size.1.max(1),
                 present_mode: caps.present_modes.first().copied().unwrap_or(wgpu::PresentMode::Fifo),
-                alpha_mode: caps.alpha_modes.first().copied().unwrap_or(wgpu::CompositeAlphaMode::Auto),
-                view_formats: vec![],
+                alpha_mode: alpha.filter(|a| caps.alpha_modes.contains(a))
+                    .or_else(|| caps.alpha_modes.first().copied()).unwrap_or(wgpu::CompositeAlphaMode::Auto),
+                view_formats: vf,
                 desired_maximum_frame_latency: 2,
             };
-            let _ = device;
             s.configure(&device, &conf);
         });
     });
 
     f!("wgpuSurfaceGetCurrentTexture", (_s: i32, _t: i32), (), |st: &mut wasmtime::Store<St>, m: M<'_>| {});
 
-    macro_rules! create {
-        ($name:literal, $desc:ident, $body:expr) => {
-            f!($name, ($d: i32, $desc: i32), i32, {
-                let dev = match g_device() { Some(d) => d, None => return 0 };
-                let r: Option<Obj> = $body;
-                match r { Some(o) => put(o), None => 0 }
-            });
-        };
-    }
-
-    f!("emwgpuDeviceCreateBuffer", (d: i32, desc: i32, out: i32), i32, |st: &mut wasmtime::Store<St>, m: M<'_>| {
+    f!("emwgpuDeviceCreateBuffer", (d: i32, desc: i32, out: i32), i32, |_st: &mut wasmtime::Store<St>, m: M<'_>| {
         let _ = d;
         let size = m.u64(desc + 24);
         let mapped = m.u32(desc + 32) != 0;
@@ -333,12 +332,14 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
             label: label.as_deref(), size, usage,
             mapped_at_creation: mapped,
         });
+        // `out` is the engine's already-allocated C++ wrapper pointer; the
+        // JS glue only inserts the GPU object under that id.  Writing to
+        // guest memory here would clobber its vtable/refcount.
         put_at(out as u32, Obj::Buffer(b));
-        unsafe { *(st.data().mem.data()[out as usize].get() as *mut u32) = out as u32 };
         1
     });
 
-    f!("emwgpuDeviceCreateShaderModule", (d: i32, desc: i32, out: i32), (), |st: &mut wasmtime::Store<St>, m: M<'_>| {
+    f!("emwgpuDeviceCreateShaderModule", (d: i32, desc: i32, out: i32), (), |_st: &mut wasmtime::Store<St>, m: M<'_>| {
         let _ = d;
         let chain = m.u32(desc) as i32;
         let code = if chain != 0 && m.u32((chain + 4) as i32) == 2 {
@@ -353,11 +354,9 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
             source: wgpu::ShaderSource::Wgsl(code.into()),
         });
         put_at(out as u32, Obj::Shader(sh));
-        unsafe { *(st.data().mem.data()[out as usize].get() as *mut u32) = out as u32 };
     });
 
     f!("emwgpuShaderModuleGetCompilationInfo", (sh: i32, fut: i64, out: i32), (), |st: &mut wasmtime::Store<St>, m: M<'_>| {
-        // the engine only reads count + first message; report zero messages
         let _ = (sh, fut);
         unsafe {
             let d = st.data().mem.data();
@@ -367,38 +366,49 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
 
     f!("wgpuDeviceCreateTexture", (d: i32, desc: i32), i32, |st: &mut wasmtime::Store<St>, m: M<'_>| {
         let _ = d;
-                let Some(dev) = g_device() else { return 0 };
-                        let label = m.opt_str(desc + 4);
-                let usage = wgpu::TextureUsages::from_bits_truncate(m.u32(desc + 16));
+        let Some(dev) = g_device() else { return 0 };
+        let label = m.opt_str(desc + 4);
+        let usage = wgpu::TextureUsages::from_bits_truncate(m.u32(desc + 16));
         let dim = wgt::texture_dimension(m.u32(desc + 24)).unwrap_or(wgpu::TextureDimension::D2);
         let (w, h, dep) = (m.u32(desc + 28), m.u32(desc + 32), m.u32(desc + 36));
         let format = wgt::tex_format(m.u32(desc + 40)).unwrap_or(wgpu::TextureFormat::Rgba8Unorm);
         let mips = m.u32(desc + 44).max(1);
         let samples = m.u32(desc + 48).max(1);
+        let vf_n = m.u32(desc + 52);
+        let vf_p = m.u32(desc + 56);
+        let view_formats: Vec<wgpu::TextureFormat> = (0..vf_n)
+            .filter_map(|k| wgt::tex_format(m.u32((vf_p + k * 4) as i32)))
+            .collect();
         let t = dev.create_texture(&wgpu::TextureDescriptor {
             label: label.as_deref(), size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: dep },
             mip_level_count: mips, sample_count: samples, dimension: dim, format, usage,
-            view_formats: &[],
+            view_formats: &view_formats,
         });
-                wrapped(st, "emwgpuCreateTexture", Obj::Texture(t))
+        wrapped(st, "emwgpuCreateTexture", Obj::Texture(t))
     });
 
     f!("wgpuTextureCreateView", (t: i32, desc: i32), i32, |st: &mut wasmtime::Store<St>, m: M<'_>| {
-        let Some(Obj::Texture(t)) = take(t as u32) else { return 0 };
+        let Some(t) = with(|g| match g.objs.get(&(t as u32)) { Some(Obj::Texture(t)) => Some(t.clone()), _ => None }) else { return 0 };
         let r = if desc == 0 {
             t.create_view(&wgpu::TextureViewDescriptor::default())
         } else {
             let label = m.opt_str(desc + 4);
-            let chain = m.u32(desc) as i32;
-            let dim = if chain != 0 { wgt::view_dimension(m.u32(chain + 8)) } else { None };
+            let format = wgt::tex_format(m.u32(desc + 12));
+            let dimension = wgt::view_dimension(m.u32(desc + 16));
+            let base_mip_level = m.u32(desc + 20);
+            let mip_level_count = none_max(m.u32(desc + 24));
+            let base_array_layer = m.u32(desc + 28);
+            let array_layer_count = none_max(m.u32(desc + 32));
+            let aspect = wgt::texture_aspect(m.u32(desc + 36)).unwrap_or(wgpu::TextureAspect::All);
+            let ubits = m.u32(desc + 40);
+            let usage = if ubits != 0 { Some(wgpu::TextureUsages::from_bits_truncate(ubits)) } else { None };
             t.create_view(&wgpu::TextureViewDescriptor {
                 label: label.as_deref(),
-                dimension: dim,
-                ..Default::default()
+                format, dimension, usage, aspect,
+                base_mip_level, mip_level_count, base_array_layer, array_layer_count,
             })
         };
-        put(Obj::Texture(t));
-        put(Obj::View(r)) as i32
+        wrapped(st, "emwgpuCreateTextureView", Obj::View(r))
     });
 
     f!("wgpuDeviceCreateSampler", (d: i32, desc: i32), i32, |st: &mut wasmtime::Store<St>, m: M<'_>| {
@@ -415,6 +425,7 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
             lod_min_clamp: m.f32(desc + 36),
             lod_max_clamp: m.f32(desc + 40),
             compare: wgt::compare(m.u32(desc + 44)),
+            anisotropy_clamp: m.u32(desc + 48).max(1) as u16,
             ..Default::default()
         });
         wrapped(st, "emwgpuCreateSampler", Obj::Sampler(s))
@@ -423,12 +434,12 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
     f!("wgpuDeviceCreateCommandEncoder", (d: i32, desc: i32), i32, |st: &mut wasmtime::Store<St>, m: M<'_>| {
         let _ = (d, desc);
         let Some(dev) = g_device() else { return 0 };
-        put(Obj::Enc(Some(dev.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None })))) as i32
+        wrapped(st, "emwgpuCreateCommandEncoder", Obj::Enc(Some(dev.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None }))))
     });
 
     f!("wgpuCommandEncoderFinish", (e: i32, _d: i32), i32, |st: &mut wasmtime::Store<St>, m: M<'_>| {
         let Some(Obj::Enc(Some(enc))) = takeh(e) else { return 0 };
-        put(Obj::Cmd(enc.finish())) as i32
+        wrapped(st, "emwgpuCreateCommandBuffer", Obj::Cmd(enc.finish()))
     });
 
     f!("wgpuQueueWriteBuffer", (q: i32, b: i32, off: i64, data: i32, len: i32), (), |st: &mut wasmtime::Store<St>, m: M<'_>| {
@@ -442,18 +453,22 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
 
     f!("wgpuQueueWriteTexture", (q: i32, dst: i32, data: i32, len: i32, layout: i32, extent: i32), (), |st: &mut wasmtime::Store<St>, m: M<'_>| {
         let _ = q;
-        let bytes = raw(st, data as u32, len.max(0) as usize);
-        if std::env::var_os("WC_WGPU").is_some() { eprintln!("[wgt ] len={len} tex={} mip={} ext={}x{}x{} bpr={} rows={}", m.u32(dst), m.u32(dst + 4), m.u32(extent), m.u32(extent + 4), m.u32(extent + 8), m.u32(layout + 8), m.u32(layout + 12)); }
+        let loff = m.u64(layout) as usize;
+        let n = len.max(0) as usize;
+        let cap = st.data().mem.data().len().saturating_sub(data.max(0) as usize);
+        let all = raw(st, data as u32, n.saturating_add(loff).min(cap));
+        let bytes = all.get(loff..).unwrap_or(&[]).to_vec();
         let tex = m.u32(dst);
         let mip = m.u32(dst + 4);
         let origin = wgpu::Origin3d { x: m.u32(dst + 8), y: m.u32(dst + 12), z: m.u32(dst + 16) };
+        let aspect = wgt::texture_aspect(m.u32(dst + 20)).unwrap_or(wgpu::TextureAspect::All);
         let rows = m.u32(layout + 12);
         let bpr = m.u32(layout + 8);
         let ext = wgpu::Extent3d { width: m.u32(extent), height: m.u32(extent + 4), depth_or_array_layers: m.u32(extent + 8) };
         with(|g| {
             let (Some(q), Some(Obj::Texture(t))) = (&g.queue, g.objs.get(&tex)) else { return };
             q.write_texture(
-                wgpu::TexelCopyTextureInfo { texture: t, mip_level: mip, origin, aspect: wgpu::TextureAspect::All },
+                wgpu::TexelCopyTextureInfo { texture: t, mip_level: mip, origin, aspect },
                 &bytes,
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
@@ -480,24 +495,26 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
         for (k, ok) in ids.iter().enumerate() {
             let a = (atts_p + k as u32 * 56) as i32;
             if *ok == 0 { atts.push(None); continue }
-            let clear = m.u32(a + 16);
+            let load_op = m.u32(a + 16);
+            let store_op = m.u32(a + 20);
             let color = wgpu::Color {
                 r: m.f32(a + 24) as f64, g: m.f32(a + 28) as f64,
                 b: m.f32(a + 32) as f64, a: m.f32(a + 36) as f64,
             };
-            let load = if clear != 0 { wgpu::LoadOp::Clear(color) } else { wgpu::LoadOp::Load };
+            let load = if load_op == 2 { wgpu::LoadOp::Clear(color) } else { wgpu::LoadOp::Load };
+            let store = if store_op == 2 { wgpu::StoreOp::Discard } else { wgpu::StoreOp::Store };
             atts.push(Some(wgpu::RenderPassColorAttachment {
                 view: &keep[k],
                 resolve_target: None,
                 depth_slice: None,
-                ops: wgpu::Operations { load, store: wgpu::StoreOp::Store },
+                ops: wgpu::Operations { load, store },
             }));
         }
         let ds = m.u32(desc + 20) as i32;
         let depth = if ds != 0 {
             let v = m.u32(ds + 4);
             with(|g| g.objs.get(&v).map(|o| match o { Obj::View(v) => v.clone(), _ => unreachable!() }))
-                .map(|v| (Box::new(v), m.f32(ds + 16)))
+                .map(|v| (Box::new(v), m.f32(ds + 16), m.u32(ds + 8), m.u32(ds + 12)))
         } else { None };
         let Some(Obj::Enc(Some(mut enc))) = takeh(e) else { return 0 };
         let rp;
@@ -510,9 +527,12 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
                 occlusion_query_set: None,
                 multiview_mask: None,
             };
-            let ds_att = depth.as_ref().map(|(v, clear)| wgpu::RenderPassDepthStencilAttachment {
+            let ds_att = depth.as_ref().map(|(v, clear, load_op, store_op)| wgpu::RenderPassDepthStencilAttachment {
                 view: v,
-                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(*clear), store: wgpu::StoreOp::Store }),
+                depth_ops: Some(wgpu::Operations {
+                    load: if *load_op == 2 { wgpu::LoadOp::Clear(*clear) } else { wgpu::LoadOp::Load },
+                    store: if *store_op == 2 { wgpu::StoreOp::Discard } else { wgpu::StoreOp::Store },
+                }),
                 stencil_ops: None,
             });
             rpd.depth_stencil_attachment = ds_att;
@@ -524,24 +544,16 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
         wrapped(st, "emwgpuCreateRenderPassEncoder", Obj::RPass(Some((rp, keep))))
     });
 
-    macro_rules! rpass {
-        ($name:literal, ($($n:ident : $t:ty),*), |$pass:ident, $m:ident $(, $a:ident)*| $body:expr) => {
-            f!($name, (p: i32 $(, $n: $t)*), (), |_st: &mut wasmtime::Store<St>, _m: M<'_>| {
-                let Some(Obj::RPass(Some((mut $pass, keep)))) = with(|g| g.objs.remove(&(p as u32))) else { return };
-                $body;
-                with(|g| { g.objs.insert(p as u32, Obj::RPass(Some(($pass, keep)))); });
-            });
-        };
-    }
-
-    rpass!("wgpuRenderPassEncoderSetPipeline", (a: i32), |pass, m, a| {
-        if let Some(rp) = with(|g| g.objs.get(&(a as u32)).cloned_rp()) { pass.set_pipeline(&rp) }
+    f!("wgpuRenderPassEncoderSetPipeline", (p: i32, a: i32), (), |_st: &mut wasmtime::Store<St>, _m: M<'_>| {
+        if let Some(Obj::RPass(Some((mut pass, keep)))) = takeh(p) {
+            if let Some(rp) = with(|g| g.objs.get(&(a as u32)).cloned_rp()) { pass.set_pipeline(&rp) }
+            with(|g| { g.objs.insert(p as u32, Obj::RPass(Some((pass, keep)))); });
+        }
     });
-
     f!("wgpuRenderPassEncoderSetBindGroup", (p: i32, i: i32, b: i32, _n: i32, _o: i32), (), |_st: &mut wasmtime::Store<St>, _m: M<'_>| {
         if let Some(Obj::RPass(Some((mut pass, keep)))) = takeh(p) {
             if let Some(bg) = with(|g| g.objs.get(&(b as u32)).cloned_bg()) { pass.set_bind_group(i as u32, Some(&bg), &[]) }
-            put(Obj::RPass(Some((pass, keep))));
+            with(|g| { g.objs.insert(p as u32, Obj::RPass(Some((pass, keep)))); });
         }
     });
     f!("wgpuRenderPassEncoderSetVertexBuffer", (p: i32, slot: i32, b: i32, off: i64, size: i64), (), |_st: &mut wasmtime::Store<St>, _m: M<'_>| {
@@ -550,7 +562,7 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
                 let end = if size as u64 == u64::MAX { buf.size() } else { off as u64 + size as u64 };
                 pass.set_vertex_buffer(slot as u32, buf.slice(off as u64..end));
             }
-            put(Obj::RPass(Some((pass, keep))));
+            with(|g| { g.objs.insert(p as u32, Obj::RPass(Some((pass, keep)))); });
         }
     });
     f!("wgpuRenderPassEncoderSetIndexBuffer", (p: i32, b: i32, fmt: i32, off: i64, size: i64), (), |_st: &mut wasmtime::Store<St>, _m: M<'_>| {
@@ -559,7 +571,7 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
                 let end = if size as u64 == u64::MAX { buf.size() } else { off as u64 + size as u64 };
                 pass.set_index_buffer(buf.slice(off as u64..end), wgt::index_format(fmt as u32).unwrap_or(wgpu::IndexFormat::Uint32));
             }
-            put(Obj::RPass(Some((pass, keep))));
+            with(|g| { g.objs.insert(p as u32, Obj::RPass(Some((pass, keep)))); });
         }
     });
 
@@ -569,47 +581,45 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
     f!("wgpuRenderPassEncoderDraw", (p: i32, v: i32, inst: i32, base: i32, n: i32), (), |st: &mut wasmtime::Store<St>, m: M<'_>| {
         if let Some(Obj::RPass(Some((mut pass, keep)))) = takeh(p) {
             pass.draw(v as u32..(v + n) as u32, base as u32..(base + inst) as u32);
-            put(Obj::RPass(Some((pass, keep))));
+            with(|g| { g.objs.insert(p as u32, Obj::RPass(Some((pass, keep)))); });
         }
     });
     f!("wgpuRenderPassEncoderDrawIndexed", (p: i32, idx: i32, inst: i32, base: i32, vbase: i32, n: i32), (), |st: &mut wasmtime::Store<St>, m: M<'_>| {
         if let Some(Obj::RPass(Some((mut pass, keep)))) = takeh(p) {
             pass.draw_indexed(idx as u32..(idx + n) as u32, vbase, base as u32..(base + inst) as u32);
-            put(Obj::RPass(Some((pass, keep))));
+            with(|g| { g.objs.insert(p as u32, Obj::RPass(Some((pass, keep)))); });
         }
     });
     f!("wgpuRenderPassEncoderSetViewport", (p: i32, x: f32, y: f32, w: f32, h: f32, n: f32, d: f32), (), |st: &mut wasmtime::Store<St>, m: M<'_>| {
         if let Some(Obj::RPass(Some((mut pass, keep)))) = takeh(p) {
             pass.set_viewport(x, y, w, h, n, d);
-            put(Obj::RPass(Some((pass, keep))));
+            with(|g| { g.objs.insert(p as u32, Obj::RPass(Some((pass, keep)))); });
         }
     });
     f!("wgpuRenderPassEncoderSetScissorRect", (p: i32, x: i32, y: i32, w: i32, h: i32), (), |st: &mut wasmtime::Store<St>, m: M<'_>| {
         if let Some(Obj::RPass(Some((mut pass, keep)))) = takeh(p) {
             pass.set_scissor_rect(x as u32, y as u32, w as u32, h as u32);
-            put(Obj::RPass(Some((pass, keep))));
+            with(|g| { g.objs.insert(p as u32, Obj::RPass(Some((pass, keep)))); });
         }
     });
-    f!("wgpuRenderPassEncoderSetStencilReference", (p: i32, r: i32), (), |st: &mut wasmtime::Store<St>, m: M<'_>| {
+    f!("wgpuRenderPassEncoderSetStencilReference", (p: i32, r: i32), (), |_st: &mut wasmtime::Store<St>, _m: M<'_>| {
         if let Some(Obj::RPass(Some((mut pass, keep)))) = takeh(p) {
             pass.set_stencil_reference(r as u32);
-            put(Obj::RPass(Some((pass, keep))));
+            with(|g| { g.objs.insert(p as u32, Obj::RPass(Some((pass, keep)))); });
         }
     });
-    f!("wgpuRenderPassEncoderPushDebugGroup", (p: i32, g: i32), (), |st: &mut wasmtime::Store<St>, m: M<'_>| {
-        let _ = g;
+    f!("wgpuRenderPassEncoderPushDebugGroup", (p: i32, _g: i32), (), |_st: &mut wasmtime::Store<St>, _m: M<'_>| {
         if let Some(Obj::RPass(Some((mut pass, keep)))) = takeh(p) {
             pass.push_debug_group("");
-            put(Obj::RPass(Some((pass, keep))));
+            with(|g| { g.objs.insert(p as u32, Obj::RPass(Some((pass, keep)))); });
         }
     });
-    f!("wgpuRenderPassEncoderPopDebugGroup", (p: i32), (), |st: &mut wasmtime::Store<St>, m: M<'_>| {
+    f!("wgpuRenderPassEncoderPopDebugGroup", (p: i32), (), |_st: &mut wasmtime::Store<St>, _m: M<'_>| {
         if let Some(Obj::RPass(Some((mut pass, keep)))) = takeh(p) {
             pass.pop_debug_group();
-            put(Obj::RPass(Some((pass, keep))));
+            with(|g| { g.objs.insert(p as u32, Obj::RPass(Some((pass, keep)))); });
         }
     });
-
 
     f!("wgpuDeviceCreateBindGroupLayout", (d: i32, desc: i32), i32, |st: &mut wasmtime::Store<St>, m: M<'_>| {
         let _ = d;
@@ -622,23 +632,22 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
             let binding = m.u32(e + 4);
             let vis = wgpu::ShaderStages::from_bits_truncate(m.u32(e + 8));
             let ty = match m.u32(e + 28) {
-                1 | 2 | 3 => wgpu::BindingType::Buffer {
-                    ty: match m.u32(e + 28) { 1 => wgpu::BufferBindingType::Uniform, 2 => wgpu::BufferBindingType::Storage { read_only: false }, _ => wgpu::BufferBindingType::Storage { read_only: true } },
-                    has_dynamic_offset: m.u32(e + 32) != 0,
-                    min_binding_size: wgpu::BufferSize::new(m.u64(e + 40)),
-                },
+                1 => wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: m.u32(e + 32) != 0, min_binding_size: wgpu::BufferSize::new(m.u64(e + 40)) },
+                2 => wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: false }, has_dynamic_offset: m.u32(e + 32) != 0, min_binding_size: wgpu::BufferSize::new(m.u64(e + 40)) },
+                3 => wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: m.u32(e + 32) != 0, min_binding_size: wgpu::BufferSize::new(m.u64(e + 40)) },
                 _ => match m.u32(e + 52) {
-                    1 => wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    2 => wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
-                    3 => wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                    2 => wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    3 => wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                    4 => wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                     _ => {
                         if m.u32(e + 60) != 0 {
                             let st = match m.u32(e + 60) {
-                                1 => wgpu::TextureSampleType::Float { filterable: true },
-                                2 => wgpu::TextureSampleType::Float { filterable: false },
-                                3 => wgpu::TextureSampleType::Depth,
-                                4 => wgpu::TextureSampleType::Sint,
-                                _ => wgpu::TextureSampleType::Uint,
+                                2 => wgpu::TextureSampleType::Float { filterable: true },
+                                3 => wgpu::TextureSampleType::Float { filterable: false },
+                                4 => wgpu::TextureSampleType::Depth,
+                                5 => wgpu::TextureSampleType::Sint,
+                                6 => wgpu::TextureSampleType::Uint,
+                                _ => wgpu::TextureSampleType::Float { filterable: true },
                             };
                             wgpu::BindingType::Texture {
                                 sample_type: st,
@@ -646,7 +655,11 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
                                 multisampled: m.u32(e + 68) != 0,
                             }
                         } else {
-                            let access = match m.u32(e + 76) { 1 => wgpu::StorageTextureAccess::WriteOnly, _ => wgpu::StorageTextureAccess::ReadOnly };
+                            let access = match m.u32(e + 76) {
+                                2 => wgpu::StorageTextureAccess::WriteOnly,
+                                4 => wgpu::StorageTextureAccess::ReadWrite,
+                                _ => wgpu::StorageTextureAccess::ReadOnly,
+                            };
                             wgpu::BindingType::StorageTexture {
                                 access,
                                 format: wgt::tex_format(m.u32(e + 80)).unwrap_or(wgpu::TextureFormat::Rgba8Unorm),
@@ -656,16 +669,11 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
                     }
                 },
             };
-            eprintln!("[wg] entry b={binding} vis={vis:?} ty={ty:?}");
             entries.push(wgpu::BindGroupLayoutEntry { binding, visibility: vis, ty, count: None });
         }
         let label = m.opt_str(desc + 4);
-        eprintln!("[wg] bgl create n={n}");
         let o = dev.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: label.as_deref(), entries: &entries });
-        eprintln!("[wg] bgl created, wrap");
-        let r = wrapped(st, "emwgpuCreateBindGroupLayout", Obj::Bgl(o));
-        eprintln!("[wg] bgl wrapped");
-        r
+        wrapped(st, "emwgpuCreateBindGroupLayout", Obj::Bgl(o))
     });
 
     f!("wgpuDeviceCreatePipelineLayout", (d: i32, desc: i32), i32, |st: &mut wasmtime::Store<St>, m: M<'_>| {
@@ -681,7 +689,7 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
         let p = dev.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: label.as_deref(),
             bind_group_layouts: &bgls.iter().map(Some).collect::<Vec<_>>(),
-            immediate_size: 0,
+            immediate_size: m.u32(desc + 20),
         });
         wrapped(st, "emwgpuCreatePipelineLayout", Obj::Pl(p))
     });
@@ -721,7 +729,7 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
             }
         }
         let label = m.opt_str(desc + 4);
-        put(Obj::Bg(dev.create_bind_group(&wgpu::BindGroupDescriptor { label: label.as_deref(), layout: &lay, entries: &entries }))) as i32
+        wrapped(st, "emwgpuCreateBindGroup", Obj::Bg(dev.create_bind_group(&wgpu::BindGroupDescriptor { label: label.as_deref(), layout: &lay, entries: &entries })))
     });
 
     f!("wgpuDeviceCreateRenderPipeline", (d: i32, desc: i32), i32, |st: &mut wasmtime::Store<St>, m: M<'_>| {
@@ -880,30 +888,30 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
         let p = enc.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
         let p = unsafe { std::mem::transmute::<wgpu::ComputePass<'_>, wgpu::ComputePass<'static>>(p) };
         with(|g| { g.objs.insert(e as u32, Obj::Enc(Some(enc))); });
-        put(Obj::CPass(Some(p))) as i32
+        wrapped(st, "emwgpuCreateComputePassEncoder", Obj::CPass(Some(p)))
     });
-    f!("wgpuComputePassEncoderSetPipeline", (p: i32, a: i32), (), |st: &mut wasmtime::Store<St>, m: M<'_>| {
+    f!("wgpuComputePassEncoderSetPipeline", (p: i32, a: i32), (), |_st: &mut wasmtime::Store<St>, _m: M<'_>| {
         if let Some(Obj::CPass(Some(mut pass))) = takeh(p) {
             if let Some(cp) = with(|g| g.objs.get(&(a as u32)).map(|o| match o { Obj::Cp(x) => x.clone(), _ => unreachable!() })) { pass.set_pipeline(&cp) }
-            put(Obj::CPass(Some(pass)));
+            with(|g| { g.objs.insert(p as u32, Obj::CPass(Some(pass))); });
         }
     });
-    f!("wgpuComputePassEncoderDispatchWorkgroups", (p: i32, x: i32, y: i32, z: i32), (), |st: &mut wasmtime::Store<St>, m: M<'_>| {
-        if let Some(Obj::CPass(Some(mut pass))) = takeh(p) { pass.dispatch_workgroups(x as u32, y as u32, z as u32); put(Obj::CPass(Some(pass))); }
+    f!("wgpuComputePassEncoderDispatchWorkgroups", (p: i32, x: i32, y: i32, z: i32), (), |_st: &mut wasmtime::Store<St>, _m: M<'_>| {
+        if let Some(Obj::CPass(Some(mut pass))) = takeh(p) { pass.dispatch_workgroups(x as u32, y as u32, z as u32); with(|g| { g.objs.insert(p as u32, Obj::CPass(Some(pass))); }); }
     });
-    f!("wgpuComputePassEncoderSetBindGroup", (p: i32, i: i32, b: i32, _n: i32, _o: i32), (), |st: &mut wasmtime::Store<St>, m: M<'_>| {
+    f!("wgpuComputePassEncoderSetBindGroup", (p: i32, i: i32, b: i32, _n: i32, _o: i32), (), |_st: &mut wasmtime::Store<St>, _m: M<'_>| {
         if let Some(Obj::CPass(Some(mut pass))) = takeh(p) {
             if let Some(bg) = with(|g| g.objs.get(&(b as u32)).map(|o| match o { Obj::Bg(x) => x.clone(), _ => unreachable!() })) { pass.set_bind_group(i as u32, Some(&bg), &[]) }
-            put(Obj::CPass(Some(pass)));
+            with(|g| { g.objs.insert(p as u32, Obj::CPass(Some(pass))); });
         }
     });
-    f!("wgpuComputePassEncoderEnd", (p: i32), (), |st: &mut wasmtime::Store<St>, m: M<'_>| {
+    f!("wgpuComputePassEncoderEnd", (p: i32), (), |_st: &mut wasmtime::Store<St>, _m: M<'_>| {
         if let Some(Obj::CPass(Some(pass))) = takeh(p) { drop(pass) }
     });
-    f!("wgpuComputePassEncoderPushDebugGroup", (_p: i32, _g: i32), (), |st: &mut wasmtime::Store<St>, m: M<'_>| {});
-    f!("wgpuComputePassEncoderPopDebugGroup", (_p: i32), (), |st: &mut wasmtime::Store<St>, m: M<'_>| {});
+    f!("wgpuComputePassEncoderPushDebugGroup", (_p: i32, _g: i32), (), |_st: &mut wasmtime::Store<St>, _m: M<'_>| {});
+    f!("wgpuComputePassEncoderPopDebugGroup", (_p: i32), (), |_st: &mut wasmtime::Store<St>, _m: M<'_>| {});
 
-    f!("wgpuCommandEncoderCopyBufferToBuffer", (e: i32, a: i32, ao: i64, b: i32, bo: i64, n: i64), (), |st: &mut wasmtime::Store<St>, m: M<'_>| {
+    f!("wgpuCommandEncoderCopyBufferToBuffer", (e: i32, a: i32, ao: i64, b: i32, bo: i64, n: i64), (), |_st: &mut wasmtime::Store<St>, _m: M<'_>| {
         let Some(Obj::Enc(Some(mut enc))) = takeh(e) else { return };
         with(|g| {
             let (Some(Obj::Buffer(a)), Some(Obj::Buffer(b))) = (g.objs.get(&(a as u32)), g.objs.get(&(b as u32))) else { return };
@@ -912,39 +920,42 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
         with(|g| { g.objs.insert(e as u32, Obj::Enc(Some(enc))); });
     });
 
-    f!("wgpuCommandEncoderCopyTextureToTexture", (e: i32, s: i32, d: i32, ext: i32), (), |st: &mut wasmtime::Store<St>, m: M<'_>| {
+    f!("wgpuCommandEncoderCopyTextureToTexture", (e: i32, s: i32, d: i32, ext: i32), (), |_st: &mut wasmtime::Store<St>, m: M<'_>| {
         let Some(Obj::Enc(Some(mut enc))) = takeh(e) else { return };
         let src = texel(&m, s as u32);
         let dst = texel(&m, d as u32);
+        let saspect = wgt::texture_aspect(m.u32(s + 20)).unwrap_or(wgpu::TextureAspect::All);
+        let daspect = wgt::texture_aspect(m.u32(d + 20)).unwrap_or(wgpu::TextureAspect::All);
         let size = wgpu::Extent3d { width: m.u32(ext), height: m.u32(ext + 4), depth_or_array_layers: m.u32(ext + 8) };
         with(|g| {
             let (Some(Obj::Texture(a)), Some(Obj::Texture(b))) = (g.objs.get(&src.0), g.objs.get(&dst.0)) else { return };
             enc.copy_texture_to_texture(
-                wgpu::TexelCopyTextureInfo { texture: a, mip_level: src.1, origin: src.2, aspect: wgpu::TextureAspect::All },
-                wgpu::TexelCopyTextureInfo { texture: b, mip_level: dst.1, origin: dst.2, aspect: wgpu::TextureAspect::All },
+                wgpu::TexelCopyTextureInfo { texture: a, mip_level: src.1, origin: src.2, aspect: saspect },
+                wgpu::TexelCopyTextureInfo { texture: b, mip_level: dst.1, origin: dst.2, aspect: daspect },
                 size,
             );
         });
         with(|g| { g.objs.insert(e as u32, Obj::Enc(Some(enc))); });
     });
 
-    f!("wgpuCommandEncoderCopyTextureToBuffer", (e: i32, s: i32, d: i32, ext: i32), (), |st: &mut wasmtime::Store<St>, m: M<'_>| {
+    f!("wgpuCommandEncoderCopyTextureToBuffer", (e: i32, s: i32, d: i32, ext: i32), (), |_st: &mut wasmtime::Store<St>, m: M<'_>| {
         let Some(Obj::Enc(Some(mut enc))) = takeh(e) else { return };
         let src = texel(&m, s as u32);
+        let saspect = wgt::texture_aspect(m.u32(s + 20)).unwrap_or(wgpu::TextureAspect::All);
         let dbuf = m.u32(d + 16);
         let dlay = wgpu::TexelCopyBufferLayout { offset: m.u64(d), bytes_per_row: none_max(m.u32(d + 8)), rows_per_image: none_max(m.u32(d + 12)) };
         let size = wgpu::Extent3d { width: m.u32(ext), height: m.u32(ext + 4), depth_or_array_layers: m.u32(ext + 8) };
         with(|g| {
             let (Some(Obj::Texture(a)), Some(Obj::Buffer(b))) = (g.objs.get(&src.0), g.objs.get(&dbuf)) else { return };
             enc.copy_texture_to_buffer(
-                wgpu::TexelCopyTextureInfo { texture: a, mip_level: src.1, origin: src.2, aspect: wgpu::TextureAspect::All },
+                wgpu::TexelCopyTextureInfo { texture: a, mip_level: src.1, origin: src.2, aspect: saspect },
                 wgpu::TexelCopyBufferInfo { buffer: b, layout: dlay }, size,
             );
         });
         with(|g| { g.objs.insert(e as u32, Obj::Enc(Some(enc))); });
     });
 
-    f!("wgpuCommandEncoderResolveQuerySet", (e: i32, q: i32, a: i32, b: i32, d: i32, off: i64), (), |st: &mut wasmtime::Store<St>, m: M<'_>| {
+    f!("wgpuCommandEncoderResolveQuerySet", (e: i32, q: i32, a: i32, b: i32, d: i32, off: i64), (), |_st: &mut wasmtime::Store<St>, _m: M<'_>| {
         let Some(Obj::Enc(Some(mut enc))) = takeh(e) else { return };
         with(|g| {
             let (Some(Obj::Query(q)), Some(Obj::Buffer(d))) = (g.objs.get(&(q as u32)), g.objs.get(&(d as u32))) else { return };
@@ -957,63 +968,107 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
         let _ = d;
         let Some(dev) = g_device() else { return 0 };
         let ty = match m.u32(desc + 12) { 1 => wgpu::QueryType::Occlusion, _ => wgpu::QueryType::Timestamp };
-        put(Obj::Query(dev.create_query_set(&wgpu::QuerySetDescriptor { label: None, ty, count: m.u32(desc + 16) }))) as i32
+        wrapped(st, "emwgpuCreateQuerySet", Obj::Query(dev.create_query_set(&wgpu::QuerySetDescriptor { label: None, ty, count: m.u32(desc + 16) })))
     });
 
-    f!("wgpuCommandEncoderPushDebugGroup", (_e: i32, _g: i32), (), |st: &mut wasmtime::Store<St>, m: M<'_>| {});
-    f!("wgpuCommandEncoderPopDebugGroup", (_e: i32), (), |st: &mut wasmtime::Store<St>, m: M<'_>| {});
-    f!("wgpuQueueSubmit", (_q: i32, _n: i32, _l: i32), (), |st: &mut wasmtime::Store<St>, m: M<'_>| {});
+    f!("wgpuCommandEncoderPushDebugGroup", (_e: i32, _g: i32), (), |_st: &mut wasmtime::Store<St>, _m: M<'_>| {});
+    f!("wgpuCommandEncoderPopDebugGroup", (_e: i32), (), |_st: &mut wasmtime::Store<St>, _m: M<'_>| {});
+    f!("wgpuQueueSubmit", (_q: i32, _n: i32, _l: i32), (), |_st: &mut wasmtime::Store<St>, _m: M<'_>| {});
 
-    f!("wgpuBufferGetSize", (b: i32), i64, |st: &mut wasmtime::Store<St>, m: M<'_>| { with(|g| g.objs.get(&(b as u32)).map(|o| match o { Obj::Buffer(x) => x.size() as i64, _ => 0 })).unwrap_or(0) });
-    f!("wgpuTextureGetDepthOrArrayLayers", (t: i32), i32, |st: &mut wasmtime::Store<St>, m: M<'_>| { with(|g| g.objs.get(&(t as u32)).map(|o| match o { Obj::Texture(x) => x.depth_or_array_layers() as i32, _ => 0 })).unwrap_or(0) });
-    f!("wgpuTextureGetDimension", (t: i32), i32, |st: &mut wasmtime::Store<St>, m: M<'_>| { with(|g| g.objs.get(&(t as u32)).map(|o| match o { Obj::Texture(x) => match x.dimension() { wgpu::TextureDimension::D1 => 1, wgpu::TextureDimension::D2 => 2, wgpu::TextureDimension::D3 => 3 }, _ => 0 })).unwrap_or(0) });
-    f!("wgpuTextureGetUsage", (t: i32), i64, |st: &mut wasmtime::Store<St>, m: M<'_>| { with(|g| g.objs.get(&(t as u32)).map(|o| match o { Obj::Texture(x) => x.usage().bits() as i64, _ => 0 })).unwrap_or(0) });
+    f!("wgpuBufferGetSize", (b: i32), i64, |_st: &mut wasmtime::Store<St>, _m: M<'_>| { with(|g| g.objs.get(&(b as u32)).map(|o| match o { Obj::Buffer(x) => x.size() as i64, _ => 0 })).unwrap_or(0) });
+    f!("wgpuTextureGetDepthOrArrayLayers", (t: i32), i32, |_st: &mut wasmtime::Store<St>, _m: M<'_>| { with(|g| g.objs.get(&(t as u32)).map(|o| match o { Obj::Texture(x) => x.depth_or_array_layers() as i32, _ => 0 })).unwrap_or(0) });
+    f!("wgpuTextureGetDimension", (t: i32), i32, |_st: &mut wasmtime::Store<St>, _m: M<'_>| { with(|g| g.objs.get(&(t as u32)).map(|o| match o { Obj::Texture(x) => match x.dimension() { wgpu::TextureDimension::D1 => 1, wgpu::TextureDimension::D2 => 2, wgpu::TextureDimension::D3 => 3 }, _ => 0 })).unwrap_or(0) });
+    f!("wgpuTextureGetUsage", (t: i32), i64, |_st: &mut wasmtime::Store<St>, _m: M<'_>| { with(|g| g.objs.get(&(t as u32)).map(|o| match o { Obj::Texture(x) => x.usage().bits() as i64, _ => 0 })).unwrap_or(0) });
 
     f!("wgpuDeviceGetLimits", (d: i32, out: i32), i32, |st: &mut wasmtime::Store<St>, m: M<'_>| {
         let _ = d;
         let l = with(|g| g.device.as_ref().map(|d| d.limits())).unwrap_or_else(wgpu::Limits::downlevel_defaults);
         unsafe {
             let dd = st.data().mem.data();
-            let w = |off: u32, v: u32| *(dd[out as usize + off as usize].get() as *mut u32) = v;
-            w(4, l.max_texture_dimension_1d); w(8, l.max_texture_dimension_2d); w(12, l.max_texture_dimension_3d);
-            w(16, l.max_texture_array_layers); w(20, l.max_bind_groups); w(24, l.max_bindings_per_bind_group);
-            w(28, l.max_dynamic_uniform_buffers_per_pipeline_layout); w(32, l.max_dynamic_storage_buffers_per_pipeline_layout);
-            w(36, l.max_sampled_textures_per_shader_stage); w(40, l.max_samplers_per_shader_stage);
-            w(44, l.max_storage_buffers_per_shader_stage); w(48, l.max_storage_textures_per_shader_stage);
-            w(52, l.max_uniform_buffers_per_shader_stage); w(56, l.max_uniform_buffer_binding_size as u32);
-            w(60, l.max_storage_buffer_binding_size as u32); w(64, 128); w(68, 16384);
+            let w = |base: u32, off: u32, v: u32| *(dd[base as usize + off as usize].get() as *mut u32) = v;
+            let w64 = |base: u32, off: u32, v: u64| {
+                w(base, off, v as u32);
+                w(base, off + 4, (v >> 32) as u32);
+            };
+            let b = out as u32;
+            w(b, 4, l.max_texture_dimension_1d); w(b, 8, l.max_texture_dimension_2d); w(b, 12, l.max_texture_dimension_3d);
+            w(b, 16, l.max_texture_array_layers); w(b, 20, l.max_bind_groups);
+            w(b, 24, l.max_bind_groups_plus_vertex_buffers); w(b, 28, l.max_bindings_per_bind_group);
+            w(b, 32, l.max_dynamic_uniform_buffers_per_pipeline_layout);
+            w(b, 36, l.max_dynamic_storage_buffers_per_pipeline_layout);
+            w(b, 40, l.max_sampled_textures_per_shader_stage); w(b, 44, l.max_samplers_per_shader_stage);
+            w(b, 48, l.max_storage_buffers_per_shader_stage); w(b, 52, l.max_storage_textures_per_shader_stage);
+            w(b, 56, l.max_uniform_buffers_per_shader_stage);
+            w64(b, 64, l.max_uniform_buffer_binding_size);
+            w64(b, 72, l.max_storage_buffer_binding_size);
+            w(b, 80, l.min_uniform_buffer_offset_alignment);
+            w(b, 84, l.min_storage_buffer_offset_alignment);
+            w(b, 88, l.max_vertex_buffers);
+            w64(b, 96, l.max_buffer_size);
+            w(b, 104, l.max_vertex_attributes); w(b, 108, l.max_vertex_buffer_array_stride);
+            w(b, 112, l.max_inter_stage_shader_variables); w(b, 116, l.max_color_attachments);
+            w(b, 120, l.max_color_attachment_bytes_per_sample); w(b, 124, l.max_compute_workgroup_storage_size);
+            w(b, 128, l.max_compute_invocations_per_workgroup); w(b, 132, l.max_compute_workgroup_size_x);
+            w(b, 136, l.max_compute_workgroup_size_y); w(b, 140, l.max_compute_workgroup_size_z);
+            w(b, 144, l.max_compute_workgroups_per_dimension); w(b, 148, l.max_immediate_size);
+            let n = m.u32(out);
+            if n != 0 {
+                w(n, 8, l.max_storage_buffers_per_shader_stage);
+                w(n, 12, l.max_storage_textures_per_shader_stage);
+                w(n, 16, l.max_storage_buffers_per_shader_stage);
+                w(n, 20, l.max_storage_textures_per_shader_stage);
+            }
         }
         1
     });
 
-    f!("emwgpuDelete", (h: i32), (), |st: &mut wasmtime::Store<St>, m: M<'_>| { drop(take(h as u32)) });
-    f!("emwgpuDeviceDestroy", (_d: i32), (), |st: &mut wasmtime::Store<St>, m: M<'_>| {});
-    f!("emwgpuBufferUnmap", (b: i32), (), |_st: &mut wasmtime::Store<St>, _m: M<'_>| {
+    f!("emwgpuDelete", (h: i32), (), |_st: &mut wasmtime::Store<St>, _m: M<'_>| { drop(take(h as u32)) });
+    f!("emwgpuDeviceDestroy", (_d: i32), (), |_st: &mut wasmtime::Store<St>, _m: M<'_>| {
+        if let Some(d) = g_device() { d.destroy(); }
+    });
+    f!("emwgpuBufferUnmap", (b: i32), (), |st: &mut wasmtime::Store<St>, _m: M<'_>| {
+        let temps = with(|g| g.map_temps.remove(&(b as u32)).unwrap_or_default());
         with(|g| {
             if let Some((p, len, write)) = g.maps.remove(&(b as u32)) {
                 if let Some(Obj::Buffer(buf)) = g.objs.get(&(b as u32)) {
                     if write {
-                        let _ = (p, len);
+                        if let Some(q) = &g.queue {
+                            let d = st.data().mem.data();
+                            let bytes = unsafe { std::slice::from_raw_parts(d[p as usize].get() as *const u8, len) }.to_vec();
+                            q.write_buffer(buf, 0, &bytes);
+                        }
                     }
                     buf.unmap();
                 }
             }
         });
+        for p in temps { g_free(st, p); }
     });
 
-    f!("emwgpuBufferGetConstMappedRange", (b: i32, off: i32, _size: i32), i32, |st: &mut wasmtime::Store<St>, m: M<'_>| {
-        with(|g| g.maps.get(&(b as u32)).map(|(p, _, _)| (*p + off as u32) as i32)).unwrap_or(0)
+    f!("emwgpuBufferGetConstMappedRange", (b: i32, off: i32, size: i32), i32, |st: &mut wasmtime::Store<St>, _m: M<'_>| {
+        let Some((base, len, _)) = with(|g| g.maps.get(&(b as u32)).copied()) else { return 0 };
+        let off = off.max(0) as usize;
+        if off >= len { return 0 }
+        let n = if size < 0 { len - off } else { (size as usize).min(len - off) };
+        if n == 0 { return 0 }
+        let p = g_malloc(st, n as u32);
+        if p == 0 { return 0 }
+        let mem = st.data().mem.clone();
+        unsafe { std::ptr::copy_nonoverlapping(mem.data()[base as usize + off].get(), mem.data()[p as usize].get(), n) };
+        with(|g| g.map_temps.entry(b as u32).or_default().push(p));
+        p as i32
     });
 
-    l.func_wrap_async("env", "emwgpuBufferMapAsync", |c: Caller<'_, St>, (b, fut, off, size, _mode): (i32, i64, i64, i32, i32)| {
+    l.func_wrap_async("env", "emwgpuBufferMapAsync", |c: Caller<'_, St>, (b, fut, off, size, mode): (i32, i64, i64, i32, i32)| {
         let p = c.data().rt.as_ref().expect("rt").store;
         let futb: Box<dyn std::future::Future<Output = ()> + Send> = Box::new(async move {
             let st = p.get();
             crate::trace::hit("wgpu_map");
             let Some(buf) = with(|g| g.objs.get(&(b as u32)).cloned_buf()) else { return };
             let n = if size == -1 { buf.size() - off as u64 } else { size as u64 };
+            let mode = if mode & 2 != 0 { wgpu::MapMode::Write } else { wgpu::MapMode::Read };
             let (tx, mut rx) = futures::channel::oneshot::channel();
-            buf.slice(off as u64..off as u64 + n).map_async(wgpu::MapMode::Read, move |r| { let _ = tx.send(r); });
+            buf.slice(off as u64..off as u64 + n).map_async(mode, move |r| { let _ = tx.send(r); });
             loop {
                 with(|g| { if let Some(d) = &g.device { let _ = d.poll(wgpu::PollType::Poll); } });
                 match rx.try_recv() {
@@ -1027,7 +1082,7 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
             let mem = st.data().mem.clone();
             unsafe { std::ptr::copy_nonoverlapping(view.as_ptr(), mem.data()[gp as usize].get(), n as usize) };
             drop(view);
-            with(|g| { g.maps.insert(b as u32, (gp, n as usize, false)); });
+            with(|g| { g.maps.insert(b as u32, (gp, n as usize, mode == wgpu::MapMode::Write)); });
             if let Some(inst) = st.data().inst {
                 if let Ok(f) = inst.get_typed_func::<(i64, i32, i32), ()>(&mut *st, "emwgpuOnMapAsyncCompleted") {
                     let _ = f.call_async(&mut *st, (fut, 1, 0)).await;
@@ -1059,42 +1114,6 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
             wgpu::TexelCopyTextureInfo { texture: &frame.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
             wgpu::Extent3d { width: src.width().min(frame.texture.width()), height: src.height().min(frame.texture.height()), depth_or_array_layers: 1 },
         );
-        if let Ok(path) = std::env::var("WC_SHOT") {
-            static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-            let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if n % 30 == 29 {
-                let (w, h) = (frame.texture.width(), frame.texture.height());
-                let bpr = (w * 4 + 255) & !255;
-                let buf = dev.create_buffer(&wgpu::BufferDescriptor {
-                    label: None, size: (bpr * h) as u64,
-                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false,
-                });
-                let mut enc2 = dev.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-                enc2.copy_texture_to_buffer(
-                    wgpu::TexelCopyTextureInfo { texture: &frame.texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-                    wgpu::TexelCopyBufferInfo { buffer: &buf, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(bpr), rows_per_image: None } },
-                    wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
-                );
-                let c3 = enc2.finish();
-                with(|g| { if let Some(q) = &g.queue { q.submit([c3]); } });
-                buf.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-                let _ = dev.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
-                if let Ok(view) = buf.slice(..).get_mapped_range() {
-                    let mut out = format!("P6\n{w} {h}\n255\n").into_bytes();
-                    for y in 0..h {
-                        let row = &view[(y * bpr) as usize..];
-                        for x in 0..w {
-                            let i = (x * 4) as usize;
-                            out.push(row[i + 2]); out.push(row[i + 1]); out.push(row[i]);
-                        }
-                    }
-                    drop(view);
-                    let _ = std::fs::write(&path, out);
-                    eprintln!("[shot] {path} {w}x{h} frame {n}");
-                }
-                buf.unmap();
-            }
-        }
         let c2 = enc.finish();
         with(|g| {
             if let Some(q) = &g.queue {
@@ -1126,7 +1145,8 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
     });
 
     l.func_wrap("env", "wgpuDeviceHasFeature", |_c: Caller<'_, St>, _d: i32, f: i32| -> i32 {
-        matches!(f, 4 | 5) as i32
+        let Some(feat) = wgt::feature(f as u32) else { return 0 };
+        with(|g| g.device.as_ref().map(|d| d.features().contains(feat)).unwrap_or(false)) as i32
     })?;
     Ok(())
 }
@@ -1161,9 +1181,7 @@ impl<'a> CloneObj for Option<&'a Obj> {
     fn cloned_view(self) -> Option<wgpu::TextureView> { match self { Some(Obj::View(x)) => Some(x.clone()), _ => None } }
 }
 
-trait CloneRp {
-    fn cloned_rp(self) -> Option<wgpu::RenderPipeline>;
-}
+trait CloneRp { fn cloned_rp(self) -> Option<wgpu::RenderPipeline>; }
 impl<'a> CloneRp for Option<&'a Obj> {
     fn cloned_rp(self) -> Option<wgpu::RenderPipeline> {
         match self { Some(Obj::Rp(p)) => Some(p.clone()), _ => None }

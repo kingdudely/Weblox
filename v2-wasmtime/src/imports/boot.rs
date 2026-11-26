@@ -136,6 +136,28 @@ pub fn perf_ms() -> f64 {
 }
 
 
+/// Catch the transport-selection rejection while the guest is on the stack
+/// and print the wasm frames that led to it.  `force_capture` works from
+/// inside a `func_wrap` import; no trap is needed.
+fn bt_here(c: &Caller<'_, St>, tag: &str, s: &str) {
+    if !std::env::var_os("WC_BT_LOG").is_some()
+        || !s.contains("Transport selection rejected")
+    {
+        return;
+    }
+    let bt = wasmtime::WasmBacktrace::force_capture(c);
+    eprintln!("[btlog] {tag} {s}");
+    for (i, f) in bt.frames().iter().enumerate() {
+        eprintln!(
+            "[btlog] #{i} func={} off={:?} modoff={:?} name={:?}",
+            f.func_index(),
+            f.func_offset(),
+            f.module_offset(),
+            f.func_name()
+        );
+    }
+}
+
 pub fn dump_pcs_pub() { dump_pcs() }
 
 fn dump_pcs() {
@@ -354,6 +376,7 @@ pub fn register(l: &mut Linker<St>) -> anyhow::Result<()> {
     // console
     l.func_wrap("env", "emscripten_console_log", |_c: Caller<'_, St>, p: i32| {
         let s = rstr(&_c, p as u32);
+        bt_here(&_c, "console_log", &s);
         if s.contains("join: initialized") || s.contains("joinGameSucceeded") {
             BOOTED.store(true, std::sync::atomic::Ordering::Relaxed);
         }
@@ -407,6 +430,7 @@ pub fn register(l: &mut Linker<St>) -> anyhow::Result<()> {
     l.func_wrap("env", "_emscripten_log_formatted", |c: Caller<'_, St>,
      _flags: i32, fmt: i32| {
         let s = rstr(&c, fmt as u32);
+        bt_here(&c, "log_formatted", &s);
         if std::env::var_os("WC_BT2").is_some() && s.contains("abort") {
             unsafe {
                 let mut fp: usize;
@@ -490,14 +514,18 @@ pub fn register(l: &mut Linker<St>) -> anyhow::Result<()> {
         wbytes(&mut c, p as u32, &b);
         0
     })?;
-    l.func_wrap("env", "emscripten_get_heap_max", || i32::MIN)?;
-    l.func_wrap("env", "emscripten_resize_heap", |c: Caller<'_, St>, want: i32| -> i32 {
-        (want as u32 as u64 <= c.data().mem.data().len() as u64) as i32
+    // The JS glue returns the current heap byte length and always reports a
+    // failed resize (the wasm memory is fixed-size here).  Lying about either
+    // makes the engine write past the end of the buffer.
+    l.func_wrap("env", "emscripten_get_heap_max", |c: Caller<'_, St>| -> i32 {
+        (c.data().mem.data().len() as u64).min(i32::MAX as u64) as i32
     })?;
+    l.func_wrap("env", "emscripten_resize_heap", |_c: Caller<'_, St>, _want: i32| -> i32 { 0 })?;
     l.func_wrap("env", "emscripten_num_logical_cores", || cores())?;
     l.func_wrap("env", "get_hardware_concurrency", || cores())?;
     l.func_wrap("env", "HaveOffsetConverter", || 0i32)?;
-    l.func_wrap("env", "RBX_setFullWasmStackTrace", || 0.0f64)?;
+    // JS: save Error.stackTraceLimit, set it to Infinity, return old (or -1).
+    l.func_wrap("env", "RBX_setFullWasmStackTrace", || -1.0f64)?;
     l.func_wrap("env", "RBX_restoreWasmStackTraceLimit", |_n: f64| {})?;
 
     // EM_ASM
@@ -545,9 +573,9 @@ pub fn register(l: &mut Linker<St>) -> anyhow::Result<()> {
         |mut c: Caller<'_, St>, _t: i32, w: i32, h: i32| -> i32 {
             wbytes(&mut c, w as u32, &CANVAS_W.to_le_bytes());
             wbytes(&mut c, h as u32, &CANVAS_H.to_le_bytes());
-            1
+            0
         })?;
-    l.func_wrap("env", "emscripten_set_canvas_element_size", |_a: i32, _b: i32, _c: i32| 1i32)?;
+    l.func_wrap("env", "emscripten_set_canvas_element_size", |_a: i32, _b: i32, _c: i32| 0i32)?;
     l.func_wrap("env", "get_effective_device_pixel_ratio", || 1.0f64)?;
     l.func_wrap("env", "emscripten_get_device_pixel_ratio", || 1.0f64)?;
 
@@ -684,10 +712,15 @@ pub fn register(l: &mut Linker<St>) -> anyhow::Result<()> {
             fut
         })?;
 
-    // wasi_snapshot_preview1: the module only needs wall clock, no environ, exit
+    // JS `To`: ids 0..=3 are valid, others return 28 (EINVAL). 0 is Date.now(),
+    // 1..=3 are performance.timeOrigin+performance.now().
     l.func_wrap("wasi_snapshot_preview1", "clock_time_get",
-        |mut c: Caller<'_, St>, _id: i32, _prec: i64, out: i32| -> i32 {
-            let ns = (now_ms() * 1e6) as u64;
+        |mut c: Caller<'_, St>, id: i32, _prec: i64, out: i32| -> i32 {
+            let ns = match id {
+                0 => (now_ms() * 1e6) as u64,
+                1..=3 => (perf_ms() * 1e6) as u64,
+                _ => return 28,
+            };
             wbytes(&mut c, out as u32, &ns.to_le_bytes());
             0
         })?;

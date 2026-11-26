@@ -12,6 +12,7 @@ use anyhow::Result;
 use wasmtime::{Caller, Linker, Store};
 
 use crate::state::St;
+use crate::wt as wtransport;
 
 /// Receive ring shared with the engine: datagrams use kind 1, streams kind 0.
 #[derive(Clone)]
@@ -45,7 +46,7 @@ static TX: Mutex<Option<HashMap<(u32, u32), std::sync::Arc<tokio::sync::Mutex<wt
 struct Open {
     conn: wtransport::Connection,
 }
-static KEEP: Mutex<Vec<wtransport::Endpoint<wtransport::endpoint::endpoint_side::Client>>> =
+static KEEP: Mutex<Vec<wtransport::Endpoint>> =
     Mutex::new(Vec::new());
 static CONNS: Mutex<Option<HashMap<u32, Open>>> = Mutex::new(None);
 static MEM: OnceLock<wasmtime::SharedMemory> = OnceLock::new();
@@ -337,7 +338,7 @@ fn connect(id: u32, url: String, owner: u32, ring: Ring) {
             }
         });
 
-        let (dg, own) = (conn.clone(), owner);
+        let (mut dg, own) = (conn.clone(), owner);
         rt().spawn(async move {
             while let Ok(d) = dg.receive_datagram().await {
                 eprintln!("[rna ] dgram-in {}", d.payload().len());
@@ -393,12 +394,7 @@ fn open(id: u32, sid: u32, owner: u32) {
     };
     rt().spawn(async move {
         match conn.open_uni().await {
-            Ok(s) => {
-                let Ok(mut s) = s.await else {
-                    push(owner, Ev::WriteErr(id, sid as i32));
-                    PENDING.lock().unwrap().get_or_insert_with(HashMap::new).remove(&(id, sid));
-                    return;
-                };
+            Ok(mut s) => {
                 let queued = PENDING.lock().unwrap().get_or_insert_with(HashMap::new).remove(&(id, sid));
                 if let Some(q) = queued {
                     for b in q {

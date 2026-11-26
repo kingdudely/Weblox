@@ -17,6 +17,7 @@ mod diag;
 mod fibre;
 mod gfx;
 mod trace;
+mod wt;
 mod imports;
 mod state;
 
@@ -809,6 +810,7 @@ fn find_under(root: &std::path::Path, tail: &str) -> Option<String> {
 async fn settings() -> String {
     const URL: &str = "https://clientsettingscdn.roblox.com/v2/settings/application/WebClientApp";
     const MIN: &str = r#"{"applicationSettings":{"BaseUrl":"https://www.roblox.com/","FIntWasmMemoryPages":"32768"},"RobloxLocaleId":"en-us","GameLocaleId":"en-us"}"#;
+    const MIN_RAK: &str = r#"{"applicationSettings":{"BaseUrl":"https://www.roblox.com/","FIntWasmMemoryPages":"32768","FFlagUseRbxTransportClient3":"False","FFlagUseRbxTransportServer":"False"},"RobloxLocaleId":"en-us","GameLocaleId":"en-us"}"#;
     let raw = std::process::Command::new("curl")
         .args(["-fsSL", "--max-time", "10", URL])
         .output()
@@ -817,11 +819,11 @@ async fn settings() -> String {
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
     let Some(body) = raw else {
         eprintln!("[prep] settings fetch failed");
-        return MIN.to_string();
+        return if std::env::var_os("WC_RAKNET").is_some() { MIN_RAK.to_string() } else { MIN.to_string() };
     };
     let Some(open) = body.find("\"applicationSettings\":{").map(|i| i + "\"applicationSettings\":".len()) else {
         eprintln!("[prep] settings had no applicationSettings");
-        return MIN.to_string();
+        return if std::env::var_os("WC_RAKNET").is_some() { MIN_RAK.to_string() } else { MIN.to_string() };
     };
     // walk to the matching brace of the applicationSettings object
     let mut depth = 0i32;
@@ -846,14 +848,27 @@ async fn settings() -> String {
     }
     let Some(close) = close else {
         eprintln!("[prep] settings object unterminated");
-        return MIN.to_string();
+        return if std::env::var_os("WC_RAKNET").is_some() { MIN_RAK.to_string() } else { MIN.to_string() };
     };
     eprintln!("[prep] {} bytes of settings", body.len());
-    let mut out = String::with_capacity(body.len() + 128);
+    let mut out = String::with_capacity(body.len() + 256);
     out.push_str(&body[..=open]);
-    out.push_str(r#""BaseUrl":"https://www.roblox.com/","FIntWasmMemoryPages":"32768","DFLogHttpTrace":"6","DFLogHttpTraceLight":"1","#);
     out.push_str(&body[open + 1..close]);
+    // Overrides must come last: the live settings blob already carries
+    // FFlagUseRbxTransportClient3=true, and duplicate JSON keys are
+    // last-wins in the engine's parser. Weblox flips these two to select
+    // the built-in RakNet; the native-UA join supplies a real Udmux
+    // endpoint, so there is no gameFqdn to craft.
+    let comma = if close > open + 1 { "," } else { "" };
+    out.push_str(comma);
+    out.push_str(r#""BaseUrl":"https://www.roblox.com/","FIntWasmMemoryPages":"32768","DFLogHttpTrace":"6","DFLogHttpTraceLight":"1""#);
+    if std::env::var_os("WC_RAKNET").is_some() {
+        out.push_str(r#","FFlagUseRbxTransportClient3":"False","FFlagUseRbxTransportServer":"False""#);
+    }
     out.push_str(r#"},"RobloxLocaleId":"en-us","GameLocaleId":"en-us"}"#);
+    if std::env::var_os("WC_RAKNET").is_some() {
+        let _ = std::fs::write("/tmp/opencode/settings-sent.json", &out);
+    }
     out
 }
 

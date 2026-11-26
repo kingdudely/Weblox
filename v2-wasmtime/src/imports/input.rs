@@ -26,7 +26,12 @@ pub const TOUCHCANCEL: u32 = 18;
 pub const FOCUS: u32 = 19;
 pub const BLUR: u32 = 20;
 
-const N: usize = 24;
+// Emscripten DOM event ids used as callback slots; 26/27 gamepad, 38 pointerlockerror.
+pub const GAMEPADCONNECTED: u32 = 26;
+pub const GAMEPADDISCONNECTED: u32 = 27;
+pub const POINTERLOCKERROR: u32 = 38;
+
+const N: usize = 39;
 static CB: [AtomicU32; N] = [const { AtomicU32::new(0) }; N];
 static USER: [AtomicU32; N] = [const { AtomicU32::new(0) }; N];
 
@@ -209,23 +214,44 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
     set!("emscripten_set_mouseenter_callback_on_thread", MOUSEENTER);
     set!("emscripten_set_blur_callback_on_thread", BLUR);
     set!("emscripten_set_focus_callback_on_thread", FOCUS);
+    // JS `Kt(e,r,t,n,a)`: target=1/2 (document/window), store callback+user.
     l.func_wrap("env", "emscripten_set_pointerlockerror_callback_on_thread",
-        |_a: i32, _f: i32, _u: i32, _c: i32, _t: i32| -> i32 { 0 })?;
-    l.func_wrap("env", "emscripten_request_pointerlock", |_a: i32, _b: i32| -> i32 {
+        |target: i32, user: i32, _capture: i32, func: i32, _thread: i32| -> i32 {
+            if crate::gfx::handles().is_none() { return -1 }
+            if target != 1 && target != 2 { return -4 }
+            CB[POINTERLOCKERROR as usize].store(func as u32, Ordering::Relaxed);
+            USER[POINTERLOCKERROR as usize].store(user as u32, Ordering::Relaxed);
+            0
+        })?;
+    // JS `Lt(e,r)`: -4 bad target, -1 unsupported, -2 no activation, 1 deferred, 0 success.
+    l.func_wrap("env", "emscripten_request_pointerlock", |target: i32, deferred: i32| -> i32 {
+        if target != 1 && target != 2 { return -4 }
+        if crate::gfx::handles().is_none() { return -1 }
+        if deferred != 0 { return 1 }
         crate::gfx::pointer_lock(true);
         0
     })?;
     l.func_wrap("env", "emscripten_exit_pointerlock", || -> i32 {
+        if crate::gfx::handles().is_none() { return -1 }
         crate::gfx::pointer_lock(false);
         0
     })?;
+    // No gamepads exist on X11: `Mt` -> 0, `rr` -> 0, `Ft` -> -5 for any index.
     l.func_wrap("env", "emscripten_get_num_gamepads", || -> i32 { 0 })?;
     l.func_wrap("env", "emscripten_sample_gamepad_data", || -> i32 { 0 })?;
-    l.func_wrap("env", "emscripten_get_gamepad_status", |_a: i32, _b: i32| -> i32 { -1 })?;
+    l.func_wrap("env", "emscripten_get_gamepad_status", |_a: i32, _b: i32| -> i32 { -5 })?;
     l.func_wrap("env", "emscripten_set_gamepadconnected_callback_on_thread",
-        |_a: i32, _f: i32, _u: i32, _t: i32| -> i32 { 0 })?;
+        |user: i32, _capture: i32, func: i32, _thread: i32| -> i32 {
+            CB[GAMEPADCONNECTED as usize].store(func as u32, Ordering::Relaxed);
+            USER[GAMEPADCONNECTED as usize].store(user as u32, Ordering::Relaxed);
+            0
+        })?;
     l.func_wrap("env", "emscripten_set_gamepaddisconnected_callback_on_thread",
-        |_a: i32, _f: i32, _u: i32, _t: i32| -> i32 { 0 })?;
+        |user: i32, _capture: i32, func: i32, _thread: i32| -> i32 {
+            CB[GAMEPADDISCONNECTED as usize].store(func as u32, Ordering::Relaxed);
+            USER[GAMEPADDISCONNECTED as usize].store(user as u32, Ordering::Relaxed);
+            0
+        })?;
     l.func_wrap("env", "js_request_keyboard_layout", |_c: Caller<'_, St>| { })?;
     l.func_wrap("env", "js_keyboard_layout_status", |_c: Caller<'_, St>| -> i32 { 1 })?;
     l.func_wrap("env", "js_copy_keyboard_layout_key",

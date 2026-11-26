@@ -26,6 +26,8 @@ libloading = "0.8"
 wgpu = { version = "30.0.2", default-features = false, features = ["gles", "vulkan", "wgsl"] }
 raw-window-handle = "0.6.2"
 tungstenite = "0.30.0"
+shiguredo_http3 = "2026.1.0-canary.16"
+url = "2"
 
 [patch.crates-io]
 # 3-line leniency patch: the module has 4-aligned 64-bit atomics and only runs

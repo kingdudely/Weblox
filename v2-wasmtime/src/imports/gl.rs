@@ -164,29 +164,28 @@ fn get_string(c: &mut Caller<'_, St>, name: u32) -> i32 {
 pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
     let engine = l.engine().clone();
 
-    l.func_wrap("env", "emscripten_webgl_create_context", |mut c: Caller<'_, St>, _t: i32, _a: i32| -> i32 {
-        if let Err(e) = crate::gfx::ensure() {
-            eprintln!("[gfx ] open failed: {e}");
-            return 0;
-        }
-        c.data_mut().gl_ctx = true;
-        1
-    })?;
-    l.func_wrap("env", "emscripten_webgl_make_context_current", |_c: Caller<'_, St>, _h: i32| -> i32 {
-        crate::gfx::make_current();
-        0
+    // The engine uses WebGPU here; there is no DOM canvas to hand out a WebGL
+    // context from.  Reproduce the glue's failure codes instead of a fake handle.
+    l.func_wrap("env", "emscripten_webgl_create_context", |_c: Caller<'_, St>, _t: i32, _a: i32| -> i32 { 0 })?;
+    l.func_wrap("env", "emscripten_webgl_make_context_current", |_c: Caller<'_, St>, h: i32| -> i32 {
+        if h == 0 { crate::gfx::make_current(); 0 } else { -5 }
     })?;
     l.func_wrap("env", "emscripten_webgl_destroy_context", |_c: Caller<'_, St>, _h: i32| -> i32 { 0 })?;
     l.func_wrap("env", "emscripten_webgl_get_context_attributes",
-        |mut c: Caller<'_, St>, _h: i32, out: i32| -> i32 {
-            if out != 0 {
-                let d = c.data().mem.data();
-                unsafe { std::ptr::write_bytes(d[out as usize].get(), 0, 32) };
-            }
-            0
+        |_c: Caller<'_, St>, _h: i32, out: i32| -> i32 {
+            if out == 0 { -5 } else { -3 }
         })?;
+    static LAST_SIZE: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(u64::MAX);
     l.func_wrap("env", "applyPendingCanvasResize", |mut c: Caller<'_, St>, w: i32, h: i32| -> i32 {
         let (gw, gh) = crate::gfx::size();
+        let cur = ((gw as u64) << 32) | gh as u64;
+        let last = LAST_SIZE.load(std::sync::atomic::Ordering::Relaxed);
+        if last == u64::MAX || last == cur {
+            LAST_SIZE.store(cur, std::sync::atomic::Ordering::Relaxed);
+            return 0;
+        }
+        LAST_SIZE.store(cur, std::sync::atomic::Ordering::Relaxed);
         let d = c.data().mem.data();
         if w != 0 { unsafe { *(d[w as usize].get() as *mut u32) = gw as u32 } }
         if h != 0 { unsafe { *(d[h as usize].get() as *mut u32) = gh as u32 } }
