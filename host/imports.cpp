@@ -3505,6 +3505,11 @@ extern "C" void wasm_import_337___call_sighandler(void* vmctx, void* caller_vmct
 // passes its own VMContext as the hidden first argument.  See IMPORTS.md.
 //
 // ---------------------------------------------------------------------------
+// Kept in the preserved region (the includes above are regenerated).
+#include "vmctx.h"
+#include <csignal>
+#include <setjmp.h>
+
 namespace wb {
 namespace {
 
@@ -3776,6 +3781,11 @@ struct Mailbox {
   std::condition_variable cv;
   bool signaled = false;
   bool alive = true;
+  // Counted ring from v2-wasmtime/src/imports/mailbox.rs: a notify is not an
+  // edge, so a ring arriving while the target is busy must survive until the
+  // receiver reaches a safe point.  Bounded below so a stuck guest cannot
+  // grow host state forever.
+  std::atomic<uint32_t> rings{0};
 };
 std::mutex g_mailboxes_mtx;
 std::unordered_map<uint32_t, std::shared_ptr<Mailbox>> g_mailboxes;
@@ -3792,15 +3802,20 @@ std::shared_ptr<Mailbox> mailbox_for(uint32_t ptr) {
 // The ring count is bounded here so a stuck guest cannot grow state forever.
 std::atomic<uint32_t> g_mailbox_trace_count{0};
 std::atomic<uint32_t> g_mailbox_rings{0};
+std::atomic<uint32_t> g_mailbox_pending{0};
 void mailbox_ring(uint32_t target) {
   note_once("[mbx] first notify accepted for thread " + std::to_string(target));
   if (g_mailbox_rings.load(std::memory_order_relaxed) < 1024) {
     g_mailbox_rings.fetch_add(1, std::memory_order_relaxed);
   }
+  const auto box = mailbox_for(target);
+  if (box->rings.load(std::memory_order_relaxed) < 1024) {
+    box->rings.fetch_add(1, std::memory_order_relaxed);
+  }
+  g_mailbox_pending.fetch_add(1, std::memory_order_relaxed);
   // `Atomics.waitAsync(target, target)` is what the JS glue arms in await();
   // wake it through the same futex table the host's memory.notify uses.
   imports_futex_notify(target, 1);
-  const auto box = mailbox_for(target);
   {
     std::lock_guard<std::mutex> lock(box->m);
     box->signaled = true;
@@ -3841,6 +3856,164 @@ WasmCallback g_wasm_cb = nullptr;
 MainThreadInit g_main_thread_init = nullptr;
 uint32_t g_main_thread = 0;
 std::atomic<uint32_t> g_keepalive{0};
+
+// --- guest mailbox drain: C++ counterpart of Rust's pump_mailbox ----------
+//
+// v2-wasmtime/src/imports/mailbox.rs accepts a notify into a counted host
+// ring, marks the receiver's pthread word (+112) ready, and calls the guest's
+// exported `_emscripten_check_mailbox` at a safe point (the turn loop on the
+// main thread; a frequently used import on a worker).  The export is wasm
+// index 150299 -> `_wasm_function_149958` in out.full.o (type () -> (), same
+// raw ABI as main_loop_iteration).  The C++ host previously accepted rings
+// but never made that call, so messages sat in host memory forever.
+//
+// All guest re-entry below happens on the thread that owns the main loop.
+// A notifying pthread worker only ever increments a ring and wakes the host
+// waiter; it never re-enters wasm.  Host/guest memory reads are bounds
+// checked, the number of targets and rings consumed per drain is bounded,
+// and a trapping guest drain becomes a controlled host error.
+extern "C" void _wasm_function_149958(void*, void*);  // _emscripten_check_mailbox
+
+}  // namespace (import helpers)
+
+struct DrainStats {
+  uint32_t drains;       // mailbox_drain calls on the loop thread
+  uint32_t guest_calls;  // successful _emscripten_check_mailbox re-entries
+  uint32_t readied;      // pthread ready words written (all targets)
+  uint32_t traps;        // guest drain calls converted to controlled errors
+};
+
+namespace {  // drain state
+constexpr std::size_t kMaxDrainTargets = 64;
+std::atomic<bool> g_in_drain{false};
+std::atomic<uint32_t> g_drain_calls{0};
+std::atomic<uint32_t> g_drain_guest_calls{0};
+std::atomic<uint32_t> g_drain_readied{0};
+std::atomic<uint32_t> g_drain_traps{0};
+
+std::mutex g_main_tid_mtx;
+std::thread::id g_main_tid;
+void remember_main_thread() {
+  std::lock_guard<std::mutex> lock(g_main_tid_mtx);
+  if (g_main_tid == std::thread::id{}) g_main_tid = std::this_thread::get_id();
+}
+bool is_main_thread() {
+  std::lock_guard<std::mutex> lock(g_main_tid_mtx);
+  return g_main_tid == std::thread::id{} ||
+         g_main_tid == std::this_thread::get_id();
+}
+
+// Thread-local trap guard for the drain's wasm call.  A signal on the RNA
+// pumper thread must never siglongjmp into the loop thread's stack.
+thread_local sigjmp_buf g_drain_jmp;
+thread_local volatile sig_atomic_t g_drain_active = 0;
+thread_local volatile sig_atomic_t g_drain_signal = 0;
+void drain_trap_handler(int sig, siginfo_t*, void*) {
+  if (g_drain_active) {
+    g_drain_signal = static_cast<sig_atomic_t>(sig);
+    g_drain_active = 0;
+    siglongjmp(g_drain_jmp, sig);
+  }
+  struct sigaction sa{};
+  sa.sa_handler = SIG_DFL;
+  sigemptyset(&sa.sa_mask);
+  sigaction(sig, &sa, nullptr);
+  ::raise(sig);
+}
+}  // namespace (drain state)
+
+// Called by the loop driver (and by busy guest safe points) on the main
+// thread.  Returns the number of pthread words marked ready.
+uint32_t mailbox_drain(void* vmctx) {
+  if (!vmctx || !imports_has_memory()) return 0;
+  remember_main_thread();
+  if (!is_main_thread()) return 0;  // no host-thread wasm re-entry
+  if (g_in_drain.exchange(true)) return 0;
+  g_drain_calls.fetch_add(1, std::memory_order_relaxed);
+
+  std::vector<uint32_t> targets;
+  if (g_main_thread && mem_ok(g_main_thread, 116)) targets.push_back(g_main_thread);
+  {
+    std::lock_guard<std::mutex> lock(g_mailboxes_mtx);
+    for (const auto& kv : g_mailboxes) {
+      if (targets.size() >= kMaxDrainTargets) break;
+      if (kv.second->rings.load(std::memory_order_relaxed) == 0) continue;
+      if (std::find(targets.begin(), targets.end(), kv.first) != targets.end()) continue;
+      targets.push_back(kv.first);
+    }
+  }
+
+  volatile uint32_t readied = 0;  // survives the trap longjmp above
+  for (uint32_t target : targets) {
+    // `self` from slot 340 can be a host memory base; only ever trust a
+    // guest address that is inside linear memory.
+    if (!mem_ok(target, 116)) continue;
+    mem_st32(target + 112, 1);  // v2-wasmtime mailbox::set_ready
+    ++readied;
+    g_drain_readied.fetch_add(1, std::memory_order_relaxed);
+    const auto box = mailbox_for(target);
+    uint32_t n = box->rings.load(std::memory_order_relaxed);
+    while (n > 0 && !box->rings.compare_exchange_weak(
+                        n, n - 1, std::memory_order_relaxed)) {
+    }
+    if (n > 0) {
+      uint32_t p = g_mailbox_pending.load(std::memory_order_relaxed);
+      while (p > 0 && !g_mailbox_pending.compare_exchange_weak(
+                          p, p - 1, std::memory_order_relaxed)) {
+      }
+    }
+  }
+
+  if (readied) {
+    static const int kSignals[4] = {SIGSEGV, SIGFPE, SIGILL, SIGBUS};
+    struct sigaction sa{};
+    sa.sa_sigaction = &drain_trap_handler;
+    sa.sa_flags = SA_SIGINFO | SA_NODEFER;
+    sigemptyset(&sa.sa_mask);
+    struct sigaction old[4];
+    for (int i = 0; i < 4; ++i) sigaction(kSignals[i], &sa, &old[i]);
+
+    g_drain_signal = 0;
+    if (sigsetjmp(g_drain_jmp, 1) == 0) {
+      g_drain_active = 1;
+      _wasm_function_149958(vmctx, vmctx);
+      g_drain_active = 0;
+      g_drain_guest_calls.fetch_add(1, std::memory_order_relaxed);
+    } else {
+      host::note_error("mailbox _emscripten_check_mailbox trapped");
+      g_drain_traps.fetch_add(1, std::memory_order_relaxed);
+    }
+    for (int i = 0; i < 4; ++i) sigaction(kSignals[i], &old[i], nullptr);
+  }
+  g_in_drain.store(false);
+
+  if (trace_enabled() && readied) {
+    std::fprintf(stderr,
+                 "[drain] main=%#x readied=%u pending=%u guest_calls=%u "
+                 "traps=%u\n",
+                 g_main_thread, readied,
+                 g_mailbox_pending.load(std::memory_order_relaxed),
+                 g_drain_guest_calls.load(std::memory_order_relaxed),
+                 g_drain_traps.load(std::memory_order_relaxed));
+  }
+  return readied;
+}
+
+// Frequently used imports call this on a busy guest turn: only re-enter the
+// guest when a ring is actually waiting, as Rust's mailbox::pump_now does.
+void mailbox_drain_if_pending(void* vmctx) {
+  if (g_mailbox_pending.load(std::memory_order_relaxed) == 0) return;
+  mailbox_drain(vmctx);
+}
+
+DrainStats drain_stats() {
+  return {g_drain_calls.load(std::memory_order_relaxed),
+          g_drain_guest_calls.load(std::memory_order_relaxed),
+          g_drain_readied.load(std::memory_order_relaxed),
+          g_drain_traps.load(std::memory_order_relaxed)};
+}
+
+namespace {  // resume import helpers
 
 // --- civil time (UTC), ported from v2-wasmtime/src/imports/boot.rs ----------
 int64_t days_from_civil(int64_t y, int64_t m, int64_t d) {
@@ -4133,6 +4306,9 @@ extern "C" double wasm_import_004_emscripten_get_now(void* vmctx, void* caller_v
   // A guest turn at its clock: hand over one native RNA completion, exactly
   // one per invocation (the bridge has a re-entrancy guard).
   if (wb::g_guest_tick) wb::g_guest_tick(vmctx);
+  // Safe point for a pending mailbox ring (Rust's mailbox::pump_now).  No-op
+  // unless a notify actually arrived; never re-enters wasm on a worker.
+  wb::mailbox_drain_if_pending(vmctx);
   return wb::steady_ms();
 }
 
@@ -4142,6 +4318,7 @@ extern "C" int32_t wasm_import_005___asyncjs__rbxFutexWaitMainJspi(
   WB_TRACE_IMPORT(5);
   (void)caller_vmctx;
   if (wb::g_guest_tick) wb::g_guest_tick(vmctx);
+  wb::mailbox_drain_if_pending(vmctx);
   const uint32_t addr = static_cast<uint32_t>(a1);
   const uint32_t expected = static_cast<uint32_t>(a2);
   const uint8_t* word = wb::mem_ptr(addr, 4);
@@ -4553,6 +4730,7 @@ extern "C" void wasm_import_324__emscripten_init_main_thread_js(void* vmctx, voi
   const uint32_t ptr = static_cast<uint32_t>(a1);
   // JS glue calls the guest's own _emscripten_thread_init + TLS init here.
   if (wb::g_main_thread_init) wb::g_main_thread_init(vmctx, ptr);
+  wb::remember_main_thread();  // this import runs on the loop's owner thread
   wb::imports_set_main_thread(ptr);
   wb::mem_st32(ptr + 112, 1);
   wb::note_once("[pthr] main thread init hook installed");
