@@ -20,7 +20,9 @@
 #include <unordered_set>
 #include <vector>
 
-#include <execinfo.h>
+// No <execinfo.h>: glibc's backtrace()/backtrace_symbols() unwind with libgcc
+// CFI, and this binary links Cranelift frames that have no .eh_frame_hdr.
+// See host/TRACE.md.
 
 #include <curl/curl.h>
 
@@ -741,6 +743,10 @@ bool trace_enabled() {
   }();
   return on;
 }
+// noinline is load-bearing: the guest return address below is read from the
+// caller's frame, which only names the wasm import stub if this helper is a
+// real call.
+__attribute__((noinline))
 void trace_import_args(std::uint32_t slot, const std::uint64_t* args,
                        unsigned nargs) {
   if (slot && slot <= kImportCount &&
@@ -752,18 +758,29 @@ void trace_import_args(std::uint32_t slot, const std::uint64_t* args,
       std::fprintf(stderr, "%s%#llx", i ? "," : "",
                    static_cast<unsigned long long>(args[i]));
     }
-    std::fprintf(stderr, "\n");
-    void* frames[10];
-    const int n = backtrace(frames, 10);
-    char** syms = backtrace_symbols(frames, n);
-    if (syms) {
-      for (int i = 1; i < n; ++i) {
-        if (std::strstr(syms[i], "_wasm_function_")) {
-          std::fprintf(stderr, "[import]   frame[%d] %s\n", i, syms[i]);
-        }
-      }
-      std::free(syms);
+    // NO unwinding.  Read one return address straight off the live stack:
+    // with -fno-omit-frame-pointer, the first word of this helper's frame is
+    // the saved frame pointer of the import stub that called it, and on
+    // x86-64 that stub's return address (into Cranelift-generated guest code)
+    // sits at [stub_fp + 8].  Two plain loads; libgcc/CFI never sees a frame.
+#if defined(__x86_64__)
+    // Level 0 is the current frame (supported).  Its first word is the saved
+    // caller frame pointer -- the wasm import stub's -- whose +8 slot holds
+    // the guest return address.  We never ask the compiler to unwind.
+    const void* const self_fp = __builtin_frame_address(0);
+    const void* const stub_fp =
+        self_fp ? *reinterpret_cast<const void* const*>(self_fp) : nullptr;
+    if (stub_fp) {
+      const auto* ret = reinterpret_cast<const std::uintptr_t*>(
+          reinterpret_cast<const char*>(stub_fp) + 8);
+      std::fprintf(stderr, " ret=%#llx\n",
+                   static_cast<unsigned long long>(*ret));
+    } else {
+      std::fprintf(stderr, " ret=unavailable\n");
     }
+#else
+    std::fprintf(stderr, " ret=unavailable\n");
+#endif
   }
 }
 }  // namespace wb
