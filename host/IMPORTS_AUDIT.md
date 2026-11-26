@@ -9,9 +9,10 @@ wrapper. No Chrome/Deno/game client was launched.
 ## 0. Bottom line
 
 1. **No zero-returning import slot is hit before the current join failure.**
-   Across all available `HOST_TRACE=1` logs, 32 distinct import slots are
-   called; **all 32 already have real implementations**. The observed stub-hit
-   count is **0**.
+   Across all available `HOST_TRACE=1` logs (including the `wt-cpp-exn` and
+   `wt-cpp-unwind` branches, which add exn/unwind diagnostics but no new
+   import calls), 32 distinct import slots are called; **all 32 already have
+   real implementations**. The observed stub-hit count is **0**.
 2. The join attempt does not reach stub-dependent code. It gets through
    `__wasm_call_ctors` and `prepare()`, enters `initialize()`, and then traps
    on the **`throw_ref` builtin** (`[trace] throw_ref exnref=0x8 -> not
@@ -38,6 +39,8 @@ Logs parsed (all native C++ host, `HOST_TRACE=1`):
 | `/tmp/opencode/wt-cpp-bootstrap/host/join_run.log` | historic join attempt (49 lines) | 32 first-call lines; `throw_ref` trap at `initialize()` |
 | `/tmp/opencode/wt-prepare-join.log` | historic prepare/join run (108 lines) | same 32 slots; same trap |
 | `/tmp/opencode/host_table_trace.log` | early ctors-only trace (32 lines) | subset of the same 32 slots |
+| `/tmp/opencode/wt-cpp-exn/host/join_exn.log` | exn-branch join (137 lines) | same 32 slots; `throw_ref` still uncaught |
+| `/tmp/opencode/wt-cpp-unwind/host/join_unwind.log` | unwind-branch join (109 lines) | same 32 slots; `no guest handler found`, same trap |
 | `host/imports-join-trace.log` | fresh bounded run on this branch, before the fixes | 32 first-call lines, 0 stubs |
 | `host/imports-join-trace-after.log` | bounded run after the first regeneration | 32 first-call lines, 0 stubs |
 | `host/imports-join-trace-final.log` | final bounded run, after RNA forwarders were preserved and the demo rebuilt | 32 first-call lines, 0 stubs |
