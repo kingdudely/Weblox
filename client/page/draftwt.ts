@@ -227,6 +227,11 @@ function wrapWritable(stream) {
 const wtDbg = (() => {
   try { return Deno.env.get("WC_WT_DBG") === "1"; } catch { return false; }
 })();
+// Experiment: qdmux may drop sessions that see no datagram traffic even while
+// QUIC PINGs flow. Opt-in only; default behaviour must stay unchanged.
+const wtDgKeepAlive = (() => {
+  try { return Deno.env.get("WC_WT_KEEPALIVE_DG") === "1"; } catch { return false; }
+})();
 const wtEnvNum = (name, fallback) => {
   try {
     const v = Number(Deno.env.get(name));
@@ -258,6 +263,7 @@ export class DraftWebTransport {
   #incomingUni = []; #incomingBi = [];
   #uniWake; #biWake;
   #maxDG = 1200;
+  #dgKeepAliveTimer;
 
   constructor(url, options = {}) {
     console.error("[draft02] constructed", String(url).slice(0, 100));
@@ -284,9 +290,16 @@ export class DraftWebTransport {
       });
       wtLog("connectQuic returned", elapsed());
       this.#conn = conn;
+      const stopDgKeepAlive = () => {
+        if (this.#dgKeepAliveTimer !== undefined) {
+          clearInterval(this.#dgKeepAliveTimer);
+          this.#dgKeepAliveTimer = undefined;
+          wtLog("datagram keepalive stopped", elapsed());
+        }
+      };
       conn.closed.then(
-        (v) => { console.error("[draft02] conn.closed RESOLVED", "elapsed", elapsed(), "value", wtDescribe(v)); this.#closedResolve(v); },
-        (e) => { console.error("[draft02] conn.closed REJECTED", "elapsed", elapsed(), "reason", wtDescribe(e)); this.#closedResolve(null); },
+        (v) => { stopDgKeepAlive(); console.error("[draft02] conn.closed RESOLVED", "elapsed", elapsed(), "value", wtDescribe(v)); this.#closedResolve(v); },
+        (e) => { stopDgKeepAlive(); console.error("[draft02] conn.closed REJECTED", "elapsed", elapsed(), "reason", wtDescribe(e)); this.#closedResolve(null); },
       );
 
       // control stream: SETTINGS
@@ -317,6 +330,33 @@ export class DraftWebTransport {
       this.#maxDG = Math.max(0, conn.maxDatagramSize - sidBuf.length);
       console.error("[draft02] sessionId", String(this.#sessionId), "maxDG", this.#maxDG);
       this.#readyResolve();
+
+      if (wtDgKeepAlive) {
+        const ms = wtEnvNum("WC_WT_KEEPALIVE_DG_MS", 5000);
+        // Optional hex payload for A/B; default is the bare session-id prefix.
+        let payload = new Uint8Array(0);
+        try {
+          const hex = Deno.env.get("WC_WT_KEEPALIVE_DG_PAYLOAD") ?? "";
+          if (hex) {
+            const bytes = hex.match(/../g)?.map((b) => Number.parseInt(b, 16)) ?? [];
+            if (bytes.some((b) => !Number.isFinite(b))) throw new Error("bad hex");
+            payload = Uint8Array.from(bytes);
+          }
+        } catch (e) { wtLog("datagram keepalive bad payload", wtDescribe(e)); }
+        const dg = Uint8Array.from([...sidBuf, ...payload]);
+        wtLog("datagram keepalive enabled", { ms, sessionId: String(this.#sessionId), bytes: Array.from(dg) });
+        this.#dgKeepAliveTimer = setInterval(() => {
+          try {
+            const p = conn.sendDatagram(dg);
+            if (p && typeof p.then === "function") {
+              p.then(
+                () => wtLog("datagram keepalive sent", elapsed(), "bytes", dg.length),
+                (e) => wtLog("datagram keepalive send rejected", elapsed(), wtDescribe(e)),
+              );
+            } else wtLog("datagram keepalive sent", elapsed(), "bytes", dg.length);
+          } catch (e) { wtLog("datagram keepalive send threw", elapsed(), wtDescribe(e)); }
+        }, ms);
+      }
 
       // ONE reader for all incoming uni streams: control / QPACK / WT.
       (async () => {
