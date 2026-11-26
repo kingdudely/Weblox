@@ -5,6 +5,7 @@
 // input, a title, and a place to put the page.
 import { install } from "./page/env.ts";
 import { resolveEngine, resolvePage, installFetch, canonical } from "./page/net.ts";
+import { maybePerf } from "./perf.ts";
 
 const place = Number(Deno.args[0] ?? Deno.env.get("WC_PLACE") ?? 189707);
 const cookieFile = Deno.env.get("WC_COOKIE_FILE") ?? "/home/john/mizg.txt";
@@ -52,9 +53,15 @@ const syncSurface = () => {
 syncSurface();
 win.addEventListener("resize", syncSurface);
 
+// Optional main-loop segment timing (WC_PERF=1). The engine drives its loop
+// through a MessageChannel (WebClient.js schedule_main_loop); this observes
+// turn boundaries from the host side without changing engine files or shims.
+const perf = maybePerf();
+
 // Optional self-capture of the app's own rendered canvas, written to a local
 // file. System/Wayland screenshot APIs are unavailable in this environment.
 const dumpDest = Deno.env.get("WC_DUMP_FILE") ?? "/tmp/opencode/appdump.png";
+const textEncoder = new TextEncoder();
 const dumpFrame = Deno.env.get("WC_DUMP") === "1"
   ? async (tex: any, device: any, w: number, h: number) => {
     try {
@@ -67,7 +74,7 @@ const dumpFrame = Deno.env.get("WC_DUMP") === "1"
       await buf.mapAsync(G.GPUMapMode.READ);
       const raw = new Uint8Array(buf.getMappedRange()).slice();
       buf.unmap();
-      const header = new TextEncoder().encode(`${w}x${h}\n`);
+      const header = textEncoder.encode(`${w}x${h}\n`);
       const out = new Uint8Array(header.byteLength + raw.byteLength);
       out.set(header); out.set(raw, header.byteLength);
       await Deno.writeFile(dumpDest, out);
@@ -91,9 +98,18 @@ const host = {
   setTitle: (t: string) => win.setTitle(t),
 };
 
+if (perf) {
+  const on = host.on;
+  host.on = (type, fn) => on(type, (e) => {
+    const t0 = performance.now();
+    try { fn(e); } finally { perf.record("input", performance.now() - t0); }
+  });
+}
+
 const page = install("main", host, { place, cookie });
 // The engine configures this context with its own device during bootstrap.
 page.canvas.getContext("webgpu");
+perf?.wrapRuntime(host, surface, DraftWebTransport);
 
 win.addEventListener("close", () => Deno.exit(0));
 win.setTitle(`${place} - Alcohol`);
