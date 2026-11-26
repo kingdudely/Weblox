@@ -1,0 +1,1717 @@
+[
+ {
+  "name": "HaveOffsetConverter",
+  "internal": "xi",
+  "sig": "i"
+ },
+ {
+  "name": "RBX_restoreWasmStackTraceLimit",
+  "internal": "gi",
+  "sig": "vd"
+ },
+ {
+  "name": "RBX_setFullWasmStackTrace",
+  "internal": "vi",
+  "sig": "d"
+ },
+ {
+  "name": "__assert_fail",
+  "internal": "fo",
+  "sig": ""
+ },
+ {
+  "name": "__asyncjs__create_suspended_fiber_js",
+  "internal": "Ia",
+  "sig": "iiiiii"
+ },
+ {
+  "name": "__asyncjs__fiber_transfer_js",
+  "internal": "Da",
+  "sig": "iii"
+ },
+ {
+  "name": "__asyncjs__rbxFutexWaitMainJspi",
+  "internal": "na",
+  "sig": "iiid"
+ },
+ {
+  "name": "__asyncjs__rbx_opfs_clear",
+  "internal": "ri",
+  "sig": "i"
+ },
+ {
+  "name": "__asyncjs__rbx_opfs_contains",
+  "internal": "ni",
+  "sig": "ii"
+ },
+ {
+  "name": "__asyncjs__rbx_opfs_file_size",
+  "internal": "ti",
+  "sig": "ii"
+ },
+ {
+  "name": "__asyncjs__rbx_opfs_get",
+  "internal": "ai",
+  "sig": "iii"
+ },
+ {
+  "name": "__asyncjs__rbx_opfs_get_buffer",
+  "internal": "ii",
+  "sig": "iiii"
+ },
+ {
+  "name": "__asyncjs__rbx_opfs_get_buffer_offset",
+  "internal": "oi",
+  "sig": "iiiiii"
+ },
+ {
+  "name": "__asyncjs__rbx_opfs_get_offset",
+  "internal": "si",
+  "sig": "iiiii"
+ },
+ {
+  "name": "__asyncjs__rbx_opfs_list",
+  "internal": "ci",
+  "sig": "iii"
+ },
+ {
+  "name": "__asyncjs__rbx_opfs_list_sized",
+  "internal": "Za",
+  "sig": "iii"
+ },
+ {
+  "name": "__asyncjs__rbx_opfs_open",
+  "internal": "li",
+  "sig": "vii"
+ },
+ {
+  "name": "__asyncjs__rbx_opfs_remove",
+  "internal": "ui",
+  "sig": "ii"
+ },
+ {
+  "name": "__asyncjs__rbx_opfs_remove_batch",
+  "internal": "fi",
+  "sig": "ii"
+ },
+ {
+  "name": "__asyncjs__rbx_opfs_set",
+  "internal": "di",
+  "sig": "iiii"
+ },
+ {
+  "name": "__call_sighandler",
+  "internal": "_o",
+  "sig": ""
+ },
+ {
+  "name": "__pthread_create_js",
+  "internal": "En",
+  "sig": ""
+ },
+ {
+  "name": "__syscall_getegid32",
+  "internal": "Fn",
+  "sig": ""
+ },
+ {
+  "name": "__syscall_geteuid32",
+  "internal": "In",
+  "sig": ""
+ },
+ {
+  "name": "__syscall_getgid32",
+  "internal": "Dn",
+  "sig": ""
+ },
+ {
+  "name": "__syscall_getuid32",
+  "internal": "On",
+  "sig": ""
+ },
+ {
+  "name": "_abort_js",
+  "internal": "po",
+  "sig": ""
+ },
+ {
+  "name": "_embind_register_bigint",
+  "internal": "bo",
+  "sig": ""
+ },
+ {
+  "name": "_embind_register_bool",
+  "internal": "ho",
+  "sig": ""
+ },
+ {
+  "name": "_embind_register_emval",
+  "internal": "yo",
+  "sig": ""
+ },
+ {
+  "name": "_embind_register_float",
+  "internal": "So",
+  "sig": ""
+ },
+ {
+  "name": "_embind_register_function",
+  "internal": "Po",
+  "sig": ""
+ },
+ {
+  "name": "_embind_register_integer",
+  "internal": "No",
+  "sig": ""
+ },
+ {
+  "name": "_embind_register_memory_view",
+  "internal": "Jo",
+  "sig": ""
+ },
+ {
+  "name": "_embind_register_std_string",
+  "internal": "zo",
+  "sig": ""
+ },
+ {
+  "name": "_embind_register_std_wstring",
+  "internal": "Zo",
+  "sig": ""
+ },
+ {
+  "name": "_embind_register_void",
+  "internal": "es",
+  "sig": ""
+ },
+ {
+  "name": "_emscripten_fetch_get_response_headers",
+  "internal": "rs",
+  "sig": ""
+ },
+ {
+  "name": "_emscripten_fetch_get_response_headers_length",
+  "internal": "ns",
+  "sig": ""
+ },
+ {
+  "name": "_emscripten_init_main_thread_js",
+  "internal": "ts",
+  "sig": ""
+ },
+ {
+  "name": "_emscripten_log_formatted",
+  "internal": "is",
+  "sig": ""
+ },
+ {
+  "name": "_emscripten_notify_mailbox_postmessage",
+  "internal": "os",
+  "sig": ""
+ },
+ {
+  "name": "_emscripten_receive_on_main_thread_js",
+  "internal": "ss",
+  "sig": ""
+ },
+ {
+  "name": "_emscripten_runtime_keepalive_clear",
+  "internal": "cs",
+  "sig": ""
+ },
+ {
+  "name": "_emscripten_thread_cleanup",
+  "internal": "ls",
+  "sig": ""
+ },
+ {
+  "name": "_emscripten_thread_mailbox_await",
+  "internal": "Er",
+  "sig": ""
+ },
+ {
+  "name": "_emscripten_thread_set_strongref",
+  "internal": "us",
+  "sig": ""
+ },
+ {
+  "name": "_gmtime_js",
+  "internal": "fs",
+  "sig": ""
+ },
+ {
+  "name": "_localtime_js",
+  "internal": "ps",
+  "sig": ""
+ },
+ {
+  "name": "_mktime_js",
+  "internal": "gs",
+  "sig": ""
+ },
+ {
+  "name": "_msync_js",
+  "internal": "Jn",
+  "sig": ""
+ },
+ {
+  "name": "_tzset_js",
+  "internal": "vs",
+  "sig": ""
+ },
+ {
+  "name": "applyPendingBrowserCanvasResize",
+  "internal": "Ka",
+  "sig": "v"
+ },
+ {
+  "name": "applyPendingCanvasResize",
+  "internal": "Xa",
+  "sig": "iii"
+ },
+ {
+  "name": "blur_text_input",
+  "internal": "Ca",
+  "sig": "v"
+ },
+ {
+  "name": "choose_current_text_input",
+  "internal": "ya",
+  "sig": "viii"
+ },
+ {
+  "name": "clock_time_get",
+  "internal": "ws",
+  "sig": ""
+ },
+ {
+  "name": "copy_pending_text",
+  "internal": "wa",
+  "sig": "vi"
+ },
+ {
+  "name": "emscripten_asm_const_async_on_main_thread",
+  "internal": "xs",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_asm_const_double",
+  "internal": "ys",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_asm_const_int",
+  "internal": "Cs",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_asm_const_int_sync_on_main_thread",
+  "internal": "Ss",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_async_call",
+  "internal": "As",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_check_blocking_allowed",
+  "internal": "Es",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_console_error",
+  "internal": "Fs",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_console_log",
+  "internal": "Is",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_console_warn",
+  "internal": "Ds",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_date_now",
+  "internal": "Hn",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_errn",
+  "internal": "Os",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_exit_pointerlock",
+  "internal": "Xn",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_exit_with_live_runtime",
+  "internal": "Rs",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_fetch_free",
+  "internal": "Ls",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_get_canvas_element_size",
+  "internal": "js",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_get_device_pixel_ratio",
+  "internal": "Zn",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_get_element_css_size",
+  "internal": "et",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_get_gamepad_status",
+  "internal": "nt",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_get_heap_max",
+  "internal": "Gs",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_get_now",
+  "internal": "tr",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_get_num_gamepads",
+  "internal": "tt",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_has_asyncify",
+  "internal": "Vs",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_num_logical_cores",
+  "internal": "Ps",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_outn",
+  "internal": "Ns",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_pc_get_function",
+  "internal": "ir",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_request_pointerlock",
+  "internal": "it",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_resize_heap",
+  "internal": "Hs",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_runtime_keepalive_push",
+  "internal": "zs",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_sample_gamepad_data",
+  "internal": "or",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_set_blur_callback_on_thread",
+  "internal": "st",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_set_canvas_element_size",
+  "internal": "$s",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_set_focus_callback_on_thread",
+  "internal": "ut",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_set_gamepadconnected_callback_on_thread",
+  "internal": "dt",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_set_gamepaddisconnected_callback_on_thread",
+  "internal": "_t",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_set_keydown_callback_on_thread",
+  "internal": "pt",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_set_keyup_callback_on_thread",
+  "internal": "gt",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_set_mousedown_callback_on_thread",
+  "internal": "bt",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_set_mouseenter_callback_on_thread",
+  "internal": "ht",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_set_mouseleave_callback_on_thread",
+  "internal": "wt",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_set_mousemove_callback_on_thread",
+  "internal": "xt",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_set_mouseup_callback_on_thread",
+  "internal": "yt",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_set_pointerlockerror_callback_on_thread",
+  "internal": "Ct",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_set_touchcancel_callback_on_thread",
+  "internal": "St",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_set_touchend_callback_on_thread",
+  "internal": "kt",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_set_touchmove_callback_on_thread",
+  "internal": "Tt",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_set_touchstart_callback_on_thread",
+  "internal": "Bt",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_set_wheel_callback_on_thread",
+  "internal": "At",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_stack_snapshot",
+  "internal": "Js",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_stack_unwind_buffer",
+  "internal": "Ks",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_start_fetch",
+  "internal": "Ys",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_unwind_to_js_event_loop",
+  "internal": "Qs",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_webgl_create_context",
+  "internal": "sc",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_webgl_destroy_context",
+  "internal": "cc",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_webgl_get_context_attributes",
+  "internal": "lc",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_webgl_make_context_current",
+  "internal": "uc",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_webgpu_get_device",
+  "internal": "fc",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_websocket_close",
+  "internal": "Ot",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_websocket_delete",
+  "internal": "Mt",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_websocket_new",
+  "internal": "Rt",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_websocket_send_binary",
+  "internal": "Lt",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_websocket_send_utf8_text",
+  "internal": "Wt",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_websocket_set_onclose_callback_on_thread",
+  "internal": "jt",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_websocket_set_onerror_callback_on_thread",
+  "internal": "Ut",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_websocket_set_onmessage_callback_on_thread",
+  "internal": "Gt",
+  "sig": ""
+ },
+ {
+  "name": "emscripten_websocket_set_onopen_callback_on_thread",
+  "internal": "Vt",
+  "sig": ""
+ },
+ {
+  "name": "emwgpuBufferGetConstMappedRange",
+  "internal": "dc",
+  "sig": ""
+ },
+ {
+  "name": "emwgpuBufferMapAsync",
+  "internal": "_c",
+  "sig": ""
+ },
+ {
+  "name": "emwgpuBufferUnmap",
+  "internal": "mc",
+  "sig": ""
+ },
+ {
+  "name": "emwgpuDelete",
+  "internal": "pc",
+  "sig": ""
+ },
+ {
+  "name": "emwgpuDeviceCreateBuffer",
+  "internal": "gc",
+  "sig": ""
+ },
+ {
+  "name": "emwgpuDeviceCreateShaderModule",
+  "internal": "vc",
+  "sig": ""
+ },
+ {
+  "name": "emwgpuDeviceDestroy",
+  "internal": "bc",
+  "sig": ""
+ },
+ {
+  "name": "emwgpuGetPreferredFormat",
+  "internal": "wc",
+  "sig": ""
+ },
+ {
+  "name": "emwgpuShaderModuleGetCompilationInfo",
+  "internal": "yc",
+  "sig": ""
+ },
+ {
+  "name": "environ_get",
+  "internal": "Pt",
+  "sig": ""
+ },
+ {
+  "name": "environ_sizes_get",
+  "internal": "Nt",
+  "sig": ""
+ },
+ {
+  "name": "exit",
+  "internal": "kr",
+  "sig": ""
+ },
+ {
+  "name": "fd_pread",
+  "internal": "Jt",
+  "sig": ""
+ },
+ {
+  "name": "fiber_destroy_js",
+  "internal": "Oa",
+  "sig": "vi"
+ },
+ {
+  "name": "focus_text_input",
+  "internal": "va",
+  "sig": "v"
+ },
+ {
+  "name": "getWebGpuTimestampInterval",
+  "internal": "Qa",
+  "sig": "i"
+ },
+ {
+  "name": "get_effective_device_pixel_ratio",
+  "internal": "ua",
+  "sig": "d"
+ },
+ {
+  "name": "get_hardware_concurrency",
+  "internal": "wi",
+  "sig": "i"
+ },
+ {
+  "name": "glActiveTexture",
+  "internal": "kc",
+  "sig": ""
+ },
+ {
+  "name": "glAttachShader",
+  "internal": "Bc",
+  "sig": ""
+ },
+ {
+  "name": "glBindAttribLocation",
+  "internal": "Ec",
+  "sig": ""
+ },
+ {
+  "name": "glBindBuffer",
+  "internal": "Ic",
+  "sig": ""
+ },
+ {
+  "name": "glBindBufferBase",
+  "internal": "Oc",
+  "sig": ""
+ },
+ {
+  "name": "glBindBufferRange",
+  "internal": "Rc",
+  "sig": ""
+ },
+ {
+  "name": "glBindFramebuffer",
+  "internal": "Wc",
+  "sig": ""
+ },
+ {
+  "name": "glBindRenderbuffer",
+  "internal": "Uc",
+  "sig": ""
+ },
+ {
+  "name": "glBindTexture",
+  "internal": "Vc",
+  "sig": ""
+ },
+ {
+  "name": "glBindVertexArray",
+  "internal": "Nc",
+  "sig": ""
+ },
+ {
+  "name": "glBlendFunc",
+  "internal": "Hc",
+  "sig": ""
+ },
+ {
+  "name": "glBlendFuncSeparate",
+  "internal": "$c",
+  "sig": ""
+ },
+ {
+  "name": "glBlitFramebuffer",
+  "internal": "Xc",
+  "sig": ""
+ },
+ {
+  "name": "glBufferData",
+  "internal": "Yc",
+  "sig": ""
+ },
+ {
+  "name": "glBufferSubData",
+  "internal": "Zc",
+  "sig": ""
+ },
+ {
+  "name": "glCheckFramebufferStatus",
+  "internal": "rl",
+  "sig": ""
+ },
+ {
+  "name": "glClear",
+  "internal": "tl",
+  "sig": ""
+ },
+ {
+  "name": "glClearBufferfi",
+  "internal": "il",
+  "sig": ""
+ },
+ {
+  "name": "glClearBufferfv",
+  "internal": "sl",
+  "sig": ""
+ },
+ {
+  "name": "glClearBufferiv",
+  "internal": "ll",
+  "sig": ""
+ },
+ {
+  "name": "glClearColor",
+  "internal": "fl",
+  "sig": ""
+ },
+ {
+  "name": "glClearDepthf",
+  "internal": "_l",
+  "sig": ""
+ },
+ {
+  "name": "glClearStencil",
+  "internal": "pl",
+  "sig": ""
+ },
+ {
+  "name": "glClientWaitSync",
+  "internal": "vl",
+  "sig": ""
+ },
+ {
+  "name": "glClipControlEXT",
+  "internal": "hl",
+  "sig": ""
+ },
+ {
+  "name": "glColorMask",
+  "internal": "xl",
+  "sig": ""
+ },
+ {
+  "name": "glCompileShader",
+  "internal": "Cl",
+  "sig": ""
+ },
+ {
+  "name": "glCompressedTexImage2D",
+  "internal": "kl",
+  "sig": ""
+ },
+ {
+  "name": "glCompressedTexImage3D",
+  "internal": "Bl",
+  "sig": ""
+ },
+ {
+  "name": "glCompressedTexSubImage2D",
+  "internal": "El",
+  "sig": ""
+ },
+ {
+  "name": "glCompressedTexSubImage3D",
+  "internal": "Il",
+  "sig": ""
+ },
+ {
+  "name": "glCopyTexSubImage2D",
+  "internal": "Ol",
+  "sig": ""
+ },
+ {
+  "name": "glCreateProgram",
+  "internal": "Rl",
+  "sig": ""
+ },
+ {
+  "name": "glCreateShader",
+  "internal": "Wl",
+  "sig": ""
+ },
+ {
+  "name": "glCullFace",
+  "internal": "Ul",
+  "sig": ""
+ },
+ {
+  "name": "glDeleteBuffers",
+  "internal": "Vl",
+  "sig": ""
+ },
+ {
+  "name": "glDeleteFramebuffers",
+  "internal": "Nl",
+  "sig": ""
+ },
+ {
+  "name": "glDeleteProgram",
+  "internal": "Hl",
+  "sig": ""
+ },
+ {
+  "name": "glDeleteRenderbuffers",
+  "internal": "$l",
+  "sig": ""
+ },
+ {
+  "name": "glDeleteShader",
+  "internal": "Xl",
+  "sig": ""
+ },
+ {
+  "name": "glDeleteSync",
+  "internal": "Yl",
+  "sig": ""
+ },
+ {
+  "name": "glDeleteTextures",
+  "internal": "Zl",
+  "sig": ""
+ },
+ {
+  "name": "glDeleteVertexArrays",
+  "internal": "ru",
+  "sig": ""
+ },
+ {
+  "name": "glDepthFunc",
+  "internal": "tu",
+  "sig": ""
+ },
+ {
+  "name": "glDepthMask",
+  "internal": "iu",
+  "sig": ""
+ },
+ {
+  "name": "glDisable",
+  "internal": "su",
+  "sig": ""
+ },
+ {
+  "name": "glDisableVertexAttribArray",
+  "internal": "lu",
+  "sig": ""
+ },
+ {
+  "name": "glDrawArrays",
+  "internal": "fu",
+  "sig": ""
+ },
+ {
+  "name": "glDrawArraysInstanced",
+  "internal": "_u",
+  "sig": ""
+ },
+ {
+  "name": "glDrawBuffers",
+  "internal": "pu",
+  "sig": ""
+ },
+ {
+  "name": "glDrawElements",
+  "internal": "vu",
+  "sig": ""
+ },
+ {
+  "name": "glDrawElementsInstanced",
+  "internal": "hu",
+  "sig": ""
+ },
+ {
+  "name": "glEnable",
+  "internal": "xu",
+  "sig": ""
+ },
+ {
+  "name": "glEnableVertexAttribArray",
+  "internal": "Cu",
+  "sig": ""
+ },
+ {
+  "name": "glFenceSync",
+  "internal": "ku",
+  "sig": ""
+ },
+ {
+  "name": "glFramebufferRenderbuffer",
+  "internal": "Bu",
+  "sig": ""
+ },
+ {
+  "name": "glFramebufferTexture2D",
+  "internal": "Eu",
+  "sig": ""
+ },
+ {
+  "name": "glFramebufferTextureLayer",
+  "internal": "Iu",
+  "sig": ""
+ },
+ {
+  "name": "glGenBuffers",
+  "internal": "Ou",
+  "sig": ""
+ },
+ {
+  "name": "glGenFramebuffers",
+  "internal": "Ru",
+  "sig": ""
+ },
+ {
+  "name": "glGenRenderbuffers",
+  "internal": "Wu",
+  "sig": ""
+ },
+ {
+  "name": "glGenTextures",
+  "internal": "Uu",
+  "sig": ""
+ },
+ {
+  "name": "glGenVertexArrays",
+  "internal": "Vu",
+  "sig": ""
+ },
+ {
+  "name": "glGenerateMipmap",
+  "internal": "Nu",
+  "sig": ""
+ },
+ {
+  "name": "glGetActiveUniform",
+  "internal": "zu",
+  "sig": ""
+ },
+ {
+  "name": "glGetActiveUniformBlockiv",
+  "internal": "qu",
+  "sig": ""
+ },
+ {
+  "name": "glGetError",
+  "internal": "Ku",
+  "sig": ""
+ },
+ {
+  "name": "glGetIntegerv",
+  "internal": "Zu",
+  "sig": ""
+ },
+ {
+  "name": "glGetProgramInfoLog",
+  "internal": "rf",
+  "sig": ""
+ },
+ {
+  "name": "glGetProgramiv",
+  "internal": "tf",
+  "sig": ""
+ },
+ {
+  "name": "glGetShaderInfoLog",
+  "internal": "of",
+  "sig": ""
+ },
+ {
+  "name": "glGetShaderiv",
+  "internal": "cf",
+  "sig": ""
+ },
+ {
+  "name": "glGetString",
+  "internal": "uf",
+  "sig": ""
+ },
+ {
+  "name": "glGetUniformBlockIndex",
+  "internal": "df",
+  "sig": ""
+ },
+ {
+  "name": "glGetUniformLocation",
+  "internal": "gf",
+  "sig": ""
+ },
+ {
+  "name": "glInvalidateFramebuffer",
+  "internal": "bf",
+  "sig": ""
+ },
+ {
+  "name": "glLinkProgram",
+  "internal": "wf",
+  "sig": ""
+ },
+ {
+  "name": "glMapBufferRange",
+  "internal": "yf",
+  "sig": ""
+ },
+ {
+  "name": "glPixelStorei",
+  "internal": "Sf",
+  "sig": ""
+ },
+ {
+  "name": "glPolygonOffset",
+  "internal": "Tf",
+  "sig": ""
+ },
+ {
+  "name": "glReadPixels",
+  "internal": "Ff",
+  "sig": ""
+ },
+ {
+  "name": "glRenderbufferStorage",
+  "internal": "Df",
+  "sig": ""
+ },
+ {
+  "name": "glRenderbufferStorageMultisample",
+  "internal": "Mf",
+  "sig": ""
+ },
+ {
+  "name": "glScissor",
+  "internal": "Lf",
+  "sig": ""
+ },
+ {
+  "name": "glShaderSource",
+  "internal": "jf",
+  "sig": ""
+ },
+ {
+  "name": "glStencilFunc",
+  "internal": "Gf",
+  "sig": ""
+ },
+ {
+  "name": "glStencilMask",
+  "internal": "Pf",
+  "sig": ""
+ },
+ {
+  "name": "glStencilOp",
+  "internal": "Jf",
+  "sig": ""
+ },
+ {
+  "name": "glTexImage2D",
+  "internal": "zf",
+  "sig": ""
+ },
+ {
+  "name": "glTexImage3D",
+  "internal": "qf",
+  "sig": ""
+ },
+ {
+  "name": "glTexParameterf",
+  "internal": "Kf",
+  "sig": ""
+ },
+ {
+  "name": "glTexParameterfv",
+  "internal": "Qf",
+  "sig": ""
+ },
+ {
+  "name": "glTexParameteri",
+  "internal": "ed",
+  "sig": ""
+ },
+ {
+  "name": "glTexStorage2D",
+  "internal": "nd",
+  "sig": ""
+ },
+ {
+  "name": "glTexStorage3D",
+  "internal": "ad",
+  "sig": ""
+ },
+ {
+  "name": "glTexSubImage2D",
+  "internal": "od",
+  "sig": ""
+ },
+ {
+  "name": "glTexSubImage3D",
+  "internal": "cd",
+  "sig": ""
+ },
+ {
+  "name": "glUniform1i",
+  "internal": "dd",
+  "sig": ""
+ },
+ {
+  "name": "glUniformBlockBinding",
+  "internal": "md",
+  "sig": ""
+ },
+ {
+  "name": "glUnmapBuffer",
+  "internal": "gd",
+  "sig": ""
+ },
+ {
+  "name": "glUseProgram",
+  "internal": "bd",
+  "sig": ""
+ },
+ {
+  "name": "glVertexAttribPointer",
+  "internal": "wd",
+  "sig": ""
+ },
+ {
+  "name": "glViewport",
+  "internal": "yd",
+  "sig": ""
+ },
+ {
+  "name": "has_keyboard",
+  "internal": "ta",
+  "sig": "i"
+ },
+ {
+  "name": "has_mouse",
+  "internal": "ca",
+  "sig": "i"
+ },
+ {
+  "name": "install_pointer_source_tracking",
+  "internal": "sa",
+  "sig": "v"
+ },
+ {
+  "name": "is_mobile_browser",
+  "internal": "fa",
+  "sig": "i"
+ },
+ {
+  "name": "is_mouse_sourced_event",
+  "internal": "oa",
+  "sig": "i"
+ },
+ {
+  "name": "is_touch_mobile",
+  "internal": "da",
+  "sig": "i"
+ },
+ {
+  "name": "is_touch_screen_device",
+  "internal": "aa",
+  "sig": "i"
+ },
+ {
+  "name": "js_copy_keyboard_layout_key",
+  "internal": "Ma",
+  "sig": "viii"
+ },
+ {
+  "name": "js_external_content_sharing_deliver",
+  "internal": "Fa",
+  "sig": "vii"
+ },
+ {
+  "name": "js_fetch_file",
+  "internal": "Kt",
+  "sig": ""
+ },
+ {
+  "name": "js_keyboard_layout_status",
+  "internal": "Ra",
+  "sig": "i"
+ },
+ {
+  "name": "js_linking_open_url",
+  "internal": "_a",
+  "sig": "iii"
+ },
+ {
+  "name": "js_request_keyboard_layout",
+  "internal": "La",
+  "sig": "v"
+ },
+ {
+  "name": "js_web_client_ms_since_navigation",
+  "internal": "ma",
+  "sig": "d"
+ },
+ {
+  "name": "js_web_client_page_visible",
+  "internal": "pa",
+  "sig": "i"
+ },
+ {
+  "name": "js_web_client_wasm_cache_state",
+  "internal": "ga",
+  "sig": "i"
+ },
+ {
+  "name": "memory",
+  "internal": "De",
+  "sig": ""
+ },
+ {
+  "name": "preallocate_emscripten_key_event_buffer",
+  "internal": "ia",
+  "sig": "vi"
+ },
+ {
+  "name": "presentBrowserFrame",
+  "internal": "Ya",
+  "sig": "viii"
+ },
+ {
+  "name": "proc_exit",
+  "internal": "Sr",
+  "sig": ""
+ },
+ {
+  "name": "random_get",
+  "internal": "kd",
+  "sig": ""
+ },
+ {
+  "name": "rbx_opfs_close",
+  "internal": "_i",
+  "sig": "vi"
+ },
+ {
+  "name": "rbx_opfs_free",
+  "internal": "mi",
+  "sig": "vi"
+ },
+ {
+  "name": "rbx_opfs_install_helpers",
+  "internal": "ei",
+  "sig": "vii"
+ },
+ {
+  "name": "rbx_opfs_read_sync_if_cached",
+  "internal": "pi",
+  "sig": "iiiii"
+ },
+ {
+  "name": "rbx_wasm_rna_close_js",
+  "internal": "Wa",
+  "sig": "vi"
+ },
+ {
+  "name": "rbx_wasm_rna_connect_js",
+  "internal": "ja",
+  "sig": "viiiiiiiiiiiiii"
+ },
+ {
+  "name": "rbx_wasm_rna_is_supported_js",
+  "internal": "Ua",
+  "sig": "i"
+ },
+ {
+  "name": "rbx_wasm_rna_open_stream_js",
+  "internal": "Ga",
+  "sig": "vii"
+ },
+ {
+  "name": "rbx_wasm_rna_pause_stream_read_js",
+  "internal": "Va",
+  "sig": "vii"
+ },
+ {
+  "name": "rbx_wasm_rna_receive_ring_consumed_js",
+  "internal": "Pa",
+  "sig": "viii"
+ },
+ {
+  "name": "rbx_wasm_rna_resume_stream_read_js",
+  "internal": "Na",
+  "sig": "vii"
+ },
+ {
+  "name": "rbx_wasm_rna_send_connection_close_js",
+  "internal": "Ja",
+  "sig": "vi"
+ },
+ {
+  "name": "rbx_wasm_rna_send_datagram_js",
+  "internal": "Ha",
+  "sig": "viiiii"
+ },
+ {
+  "name": "rbx_wasm_rna_shutdown_stream_read_js",
+  "internal": "za",
+  "sig": "vii"
+ },
+ {
+  "name": "rbx_wasm_rna_shutdown_stream_write_js",
+  "internal": "$a",
+  "sig": "vii"
+ },
+ {
+  "name": "rbx_wasm_rna_write_stream_js",
+  "internal": "qa",
+  "sig": "viiii"
+ },
+ {
+  "name": "read_host_info_int",
+  "internal": "bi",
+  "sig": "ii"
+ },
+ {
+  "name": "read_host_info_string",
+  "internal": "hi",
+  "sig": "viii"
+ },
+ {
+  "name": "report_crash",
+  "internal": "Id",
+  "sig": ""
+ },
+ {
+  "name": "reset_current_text_input",
+  "internal": "Sa",
+  "sig": "v"
+ },
+ {
+  "name": "schedule_main_loop",
+  "internal": "la",
+  "sig": "v"
+ },
+ {
+  "name": "set_crash_attribute",
+  "internal": "Dd",
+  "sig": ""
+ },
+ {
+  "name": "set_text_box_horiz_alignment",
+  "internal": "ka",
+  "sig": "vi"
+ },
+ {
+  "name": "set_text_box_overlay",
+  "internal": "ba",
+  "sig": "vi"
+ },
+ {
+  "name": "set_text_box_vert_alignment",
+  "internal": "Ta",
+  "sig": "vi"
+ },
+ {
+  "name": "set_text_color",
+  "internal": "xa",
+  "sig": "vffff"
+ },
+ {
+  "name": "setup_font",
+  "internal": "Ba",
+  "sig": "viiifii"
+ },
+ {
+  "name": "shift_canvas",
+  "internal": "ha",
+  "sig": "vf"
+ },
+ {
+  "name": "sync_text_and_pos",
+  "internal": "Aa",
+  "sig": "viii"
+ },
+ {
+  "name": "update_text_box_rect",
+  "internal": "Ea",
+  "sig": "vffff"
+ },
+ {
+  "name": "wgpuBufferGetSize",
+  "internal": "Od",
+  "sig": ""
+ },
+ {
+  "name": "wgpuCommandEncoderBeginComputePass",
+  "internal": "Md",
+  "sig": ""
+ },
+ {
+  "name": "wgpuCommandEncoderBeginRenderPass",
+  "internal": "Rd",
+  "sig": ""
+ },
+ {
+  "name": "wgpuCommandEncoderCopyBufferToBuffer",
+  "internal": "Ld",
+  "sig": ""
+ },
+ {
+  "name": "wgpuCommandEncoderCopyTextureToBuffer",
+  "internal": "Wd",
+  "sig": ""
+ },
+ {
+  "name": "wgpuCommandEncoderCopyTextureToTexture",
+  "internal": "jd",
+  "sig": ""
+ },
+ {
+  "name": "wgpuCommandEncoderFinish",
+  "internal": "Ud",
+  "sig": ""
+ },
+ {
+  "name": "wgpuCommandEncoderPopDebugGroup",
+  "internal": "Gd",
+  "sig": ""
+ },
+ {
+  "name": "wgpuCommandEncoderPushDebugGroup",
+  "internal": "Vd",
+  "sig": ""
+ },
+ {
+  "name": "wgpuCommandEncoderResolveQuerySet",
+  "internal": "Pd",
+  "sig": ""
+ },
+ {
+  "name": "wgpuComputePassEncoderDispatchWorkgroups",
+  "internal": "Nd",
+  "sig": ""
+ },
+ {
+  "name": "wgpuComputePassEncoderEnd",
+  "internal": "Jd",
+  "sig": ""
+ },
+ {
+  "name": "wgpuComputePassEncoderPopDebugGroup",
+  "internal": "Hd",
+  "sig": ""
+ },
+ {
+  "name": "wgpuComputePassEncoderPushDebugGroup",
+  "internal": "zd",
+  "sig": ""
+ },
+ {
+  "name": "wgpuComputePassEncoderSetBindGroup",
+  "internal": "$d",
+  "sig": ""
+ },
+ {
+  "name": "wgpuComputePassEncoderSetPipeline",
+  "internal": "qd",
+  "sig": ""
+ },
+ {
+  "name": "wgpuDeviceCreateBindGroup",
+  "internal": "Xd",
+  "sig": ""
+ },
+ {
+  "name": "wgpuDeviceCreateBindGroupLayout",
+  "internal": "Kd",
+  "sig": ""
+ },
+ {
+  "name": "wgpuDeviceCreateCommandEncoder",
+  "internal": "Yd",
+  "sig": ""
+ },
+ {
+  "name": "wgpuDeviceCreateComputePipeline",
+  "internal": "Qd",
+  "sig": ""
+ },
+ {
+  "name": "wgpuDeviceCreatePipelineLayout",
+  "internal": "Zd",
+  "sig": ""
+ },
+ {
+  "name": "wgpuDeviceCreateQuerySet",
+  "internal": "e_",
+  "sig": ""
+ },
+ {
+  "name": "wgpuDeviceCreateRenderPipeline",
+  "internal": "r_",
+  "sig": ""
+ },
+ {
+  "name": "wgpuDeviceCreateSampler",
+  "internal": "n_",
+  "sig": ""
+ },
+ {
+  "name": "wgpuDeviceCreateTexture",
+  "internal": "t_",
+  "sig": ""
+ },
+ {
+  "name": "wgpuDeviceGetLimits",
+  "internal": "a_",
+  "sig": ""
+ },
+ {
+  "name": "wgpuDeviceHasFeature",
+  "internal": "i_",
+  "sig": ""
+ },
+ {
+  "name": "wgpuInstanceCreateSurface",
+  "internal": "o_",
+  "sig": ""
+ },
+ {
+  "name": "wgpuQueueSubmit",
+  "internal": "s_",
+  "sig": ""
+ },
+ {
+  "name": "wgpuQueueWriteBuffer",
+  "internal": "c_",
+  "sig": ""
+ },
+ {
+  "name": "wgpuQueueWriteTexture",
+  "internal": "l_",
+  "sig": ""
+ },
+ {
+  "name": "wgpuRenderPassEncoderDraw",
+  "internal": "u_",
+  "sig": ""
+ },
+ {
+  "name": "wgpuRenderPassEncoderDrawIndexed",
+  "internal": "f_",
+  "sig": ""
+ },
+ {
+  "name": "wgpuRenderPassEncoderEnd",
+  "internal": "d_",
+  "sig": ""
+ },
+ {
+  "name": "wgpuRenderPassEncoderPopDebugGroup",
+  "internal": "__",
+  "sig": ""
+ },
+ {
+  "name": "wgpuRenderPassEncoderPushDebugGroup",
+  "internal": "m_",
+  "sig": ""
+ },
+ {
+  "name": "wgpuRenderPassEncoderSetBindGroup",
+  "internal": "p_",
+  "sig": ""
+ },
+ {
+  "name": "wgpuRenderPassEncoderSetIndexBuffer",
+  "internal": "g_",
+  "sig": ""
+ },
+ {
+  "name": "wgpuRenderPassEncoderSetPipeline",
+  "internal": "v_",
+  "sig": ""
+ },
+ {
+  "name": "wgpuRenderPassEncoderSetScissorRect",
+  "internal": "b_",
+  "sig": ""
+ },
+ {
+  "name": "wgpuRenderPassEncoderSetStencilReference",
+  "internal": "h_",
+  "sig": ""
+ },
+ {
+  "name": "wgpuRenderPassEncoderSetVertexBuffer",
+  "internal": "w_",
+  "sig": ""
+ },
+ {
+  "name": "wgpuRenderPassEncoderSetViewport",
+  "internal": "x_",
+  "sig": ""
+ },
+ {
+  "name": "wgpuSurfaceConfigure",
+  "internal": "y_",
+  "sig": ""
+ },
+ {
+  "name": "wgpuTextureCreateView",
+  "internal": "C_",
+  "sig": ""
+ },
+ {
+  "name": "wgpuTextureGetDepthOrArrayLayers",
+  "internal": "S_",
+  "sig": ""
+ },
+ {
+  "name": "wgpuTextureGetDimension",
+  "internal": "k_",
+  "sig": ""
+ },
+ {
+  "name": "wgpuTextureGetUsage",
+  "internal": "T_",
+  "sig": ""
+ }
+]

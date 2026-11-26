@@ -1,0 +1,9 @@
+{
+  "nodeModulesDir": "auto",
+  "desktop": { "backend": "raw" },
+  "unstable": ["webgpu", "worker-options", "net"],
+  "tasks": {
+    "dev": "deno desktop -A --unstable-net --include page --include mirror main.ts",
+    "check": "deno check main.ts page/*.ts"
+  }
+}

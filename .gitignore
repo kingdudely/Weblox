@@ -16,3 +16,20 @@ build/bundle/
 
 # rust build output
 **/target/
+
+# Native host artifacts (regenerate locally; keep source)
+client/client.*.bak/
+client/opscheck*/
+client/*.pcap
+v2-wasmtime/target/
+v2-wasmtime/data/cache/
+v2-wasmtime/data/content/
+v3-wasm2c/gen/
+v3-wasm2c/gen/obj/
+v3-wasm2c/data/cache/
+v3-wasm2c/sliced.c
+*.har
+*.pch
+*.o
+*.a
+*.so
