@@ -15,6 +15,10 @@ table: table.cpp
 table.cpp: gen_table.py $(WASM)
 	python3 gen_table.py --wasm $(WASM) --out-dir .
 
+# 27 MB of data-segment images; regenerate at build time, keep out of git.
+runtime_data.cpp runtime_data.h: gen_runtime_data.py $(WASM)
+	python3 gen_runtime_data.py --wasm $(WASM) --out-dir .
+
 demo: main.cpp vmctx.cpp imports.cpp runtime_data.cpp table.cpp vmctx.h imports.h vmctx_offsets.h runtime_data.h table.h
 	$(CXX) $(CXXFLAGS) -o $@ main.cpp vmctx.cpp imports.cpp runtime_data.cpp table.cpp $(WASM_OBJ) $(LDFLAGS)
 

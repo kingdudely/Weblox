@@ -35,5 +35,6 @@ v3-wasm2c/sliced.c
 *.so
 host/demo
 host/*.o
-# generated from the wasm element section by host/gen_table.py
+# generated from the wasm element/data sections; regenerate with make
 host/table.cpp
+host/runtime_data.cpp
