@@ -140,7 +140,7 @@ and byte patterns are more reliable anchors than strings.
 
 - **wasm2c**: generated C is machine code with opaque names; a 3 GB translation
   regenerates weekly. Measured guest CPU was only 2–10%, so AOT gains were
-  irrelevant. Parked at `v3-wasm2c/`.
+  irrelevant. Parked on the local `experiment/wasm2c` branch.
 - **Raw V8 C++ host / wee8**: `FunctionTemplate` imports are JS-callable under
   the hood; wee8 hardcodes `SharedFlag{false}` (no pthreads) and rejects
   exception tags. Full V8 has no public API to create a `WasmMemoryObject`
