@@ -20,6 +20,9 @@ const WT_UNI = 0x54n;
 const WT_BI = 0x41n;
 const FRAME_HEADERS = 0x01n;
 const FRAME_SETTINGS = 0x04n;
+// draft-02 §5: CLOSE_WEBTRANSPORT_SESSION capsule. The session is alive only
+// while the CONNECT stream is open, so we must keep reading that stream.
+const CLOSE_WEBTRANSPORT_SESSION = 0x2843n;
 
 const SETTINGS = [
   [0x08n, 1n], [0x33n, 1n], [0xffd277n, 1n],
@@ -252,7 +255,8 @@ function wtDescribe(v) {
 
 export class DraftWebTransport {
   ready; closed;
-  #conn; #sessionId = 0n; #readyResolve; #closedResolve; #reject;
+  #conn; #sessionId = 0n; #readyResolve; #closedResolve; #closedReject; #reject;
+  #closedDone = false;
   #headerUni = new Uint8Array(0); #headerBi = new Uint8Array(0);
   #dgIn = []; #dgWaiters = []; #dgUnknownLogged = false;
   #incomingUni = []; #incomingBi = [];
@@ -268,7 +272,11 @@ export class DraftWebTransport {
     const maxIdleTimeout = wtEnvNum("WC_WT_IDLE_MS", 10e3);
     wtLog("connect options", { keepAliveInterval, maxIdleTimeout, congestionControl: options.congestionControl ?? "default" });
     this.ready = new Promise((r, x) => { this.#readyResolve = r; this.#reject = x; });
-    this.closed = new Promise((r) => { this.#closedResolve = r; });
+    // Chrome's WebTransport.closed resolves with close info on a clean close
+    // and REJECTS on an abnormal one. The glue has separate then/catch paths;
+    // resolving with null on every failure made the engine treat a dropped
+    // transport as a normal shutdown, so it never retried.
+    this.closed = new Promise((r, x) => { this.#closedResolve = r; this.#closedReject = x; });
     const u = new URL(url);
     const pumpExit = (name, why, detail) => {
       console.error(`[draft02] ${name} pump EXIT`, "elapsed", elapsed(), "why", why,
@@ -285,8 +293,8 @@ export class DraftWebTransport {
       wtLog("connectQuic returned", elapsed());
       this.#conn = conn;
       conn.closed.then(
-        (v) => { console.error("[draft02] conn.closed RESOLVED", "elapsed", elapsed(), "value", wtDescribe(v)); this.#closedResolve(v); },
-        (e) => { console.error("[draft02] conn.closed REJECTED", "elapsed", elapsed(), "reason", wtDescribe(e)); this.#closedResolve(null); },
+        (v) => { console.error("[draft02] conn.closed RESOLVED", "elapsed", elapsed(), "value", wtDescribe(v)); this.#finishClosed(v, null); },
+        (e) => { console.error("[draft02] conn.closed REJECTED", "elapsed", elapsed(), "reason", wtDescribe(e)); this.#finishClosed(null, e); },
       );
 
       // control stream: SETTINGS
@@ -305,7 +313,10 @@ export class DraftWebTransport {
       const bw = bidi.writable.getWriter();
       await bw.write(frame(FRAME_HEADERS, headers));
       bw.releaseLock();
-      const resp = await readFrame(new BufReader(bidi.readable));
+      // Keep this reader: draft-02 terminates the session when the CONNECT
+      // stream closes or carries a CLOSE_WEBTRANSPORT_SESSION capsule.
+      const connectBr = new BufReader(bidi.readable);
+      const resp = await readFrame(connectBr);
       const rh = decodeHeaders(resp.body);
       console.error("[draft02] CONNECT", JSON.stringify(rh));
       if (!String(rh[":status"] ?? "").startsWith("2")) throw new Error("CONNECT " + rh[":status"]);
@@ -317,6 +328,30 @@ export class DraftWebTransport {
       this.#maxDG = Math.max(0, conn.maxDatagramSize - sidBuf.length);
       console.error("[draft02] sessionId", String(this.#sessionId), "maxDG", this.#maxDG);
       this.#readyResolve();
+
+      // Keep consuming the CONNECT stream for the life of the session. If we
+      // stop after the response frame, the stream's reader lock is held
+      // forever and any server CLOSE capsule / FIN is never observed.
+      (async () => {
+        try {
+          while (true) {
+            const f = await readFrame(connectBr);
+            if (f.type === CLOSE_WEBTRANSPORT_SESSION) {
+              if (f.body.length < 4) throw new Error("short CLOSE_WEBTRANSPORT_SESSION");
+              const code = new DataView(f.body.buffer, f.body.byteOffset, 4).getUint32(0, false);
+              const reason = dec.decode(f.body.subarray(4));
+              console.error("[draft02] CLOSE_WEBTRANSPORT_SESSION", "code", code, "reason", reason, "elapsed", elapsed());
+              this.#finishClosed({ closeCode: code, reason }, null);
+              return;
+            }
+            wtLog("CONNECT frame", String(f.type), "len", f.body.length, "elapsed", elapsed());
+          }
+        } catch (e) {
+          console.error("[draft02] CONNECT stream ended", "elapsed", elapsed(), wtDescribe(e));
+          // A FIN without a capsule is a clean close with code 0 (draft-02 §5).
+          this.#finishClosed({ closeCode: 0, reason: "" }, null);
+        }
+      })().catch((e) => console.error("[draft02] CONNECT pump failed", wtDescribe(e)));
 
       // ONE reader for all incoming uni streams: control / QPACK / WT.
       (async () => {
@@ -397,7 +432,17 @@ export class DraftWebTransport {
       return conn;
     };
     this._promise = doConnect().catch((e) => { this.#reject(e); console.error("[draft02] connect failed", e?.stack?.slice?.(0, 400) ?? String(e)); throw e; });
-    this._promise.catch(() => this.#closedResolve(null));
+    this._promise.catch((e) => this.#finishClosed(null, e));
+  }
+
+  /** First terminal event wins: a clean capsule close, CONNECT FIN, or a QUIC
+   *  failure. Clean closes resolve like Chrome; abnormal ones reject so the
+   *  engine's connectError path can run. */
+  #finishClosed(info, err) {
+    if (this.#closedDone) return;
+    this.#closedDone = true;
+    if (err) this.#closedReject(err);
+    else this.#closedResolve(info ?? { closeCode: 0, reason: "" });
   }
 
   getStats() { return Promise.resolve({}); }
