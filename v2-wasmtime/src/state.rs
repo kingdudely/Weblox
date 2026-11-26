@@ -1,0 +1,155 @@
+//! Per-instance state and guest-memory helpers.
+use std::collections::HashMap;
+
+use wasmtime::{Caller, Instance, SharedMemory};
+
+pub const CANVAS_W: u32 = 1280;
+pub const CANVAS_H: u32 = 720;
+
+pub struct St {
+    pub mem: SharedMemory,
+    pub inst: Option<Instance>,
+    pub engine: Option<wasmtime::Engine>,
+    pub module: Option<wasmtime::Module>,
+    pub base: String,
+    pub place: i64,
+    /// rbx_fs_register_asset: path -> declared size
+    pub assets: HashMap<String, u32>,
+    /// rbx_fs_add_file: path -> bytes
+    pub files: HashMap<String, Vec<u8>>,
+    /// rbx_fs_preload_asset: path -> bytes
+    pub preload: HashMap<String, Vec<u8>>,
+    pub binds: std::collections::HashMap<String, (u32, u32, String)>,
+    pub exited: bool,
+    pub is_main: bool,
+    pub gm_calls: u32,
+    pub main_ptr: Option<u32>,
+    pub rt: Option<crate::fibre::Rt>,
+    pub cur: u32,
+    /// id of this thread root fibre
+    pub root: u32,
+    pub in_drain: bool,
+    pub in_rna: bool,
+    pub mbx_task: bool,
+    /// this thread's mailbox word, once armed
+    pub mbx_ptr: Option<u32>,
+    /// this thread called `schedule_main_loop`
+    pub main_loop: bool,
+    pub mk_calls: u32,
+    pub turn_depth: u32,
+    /// embind type id -> kind, from _embind_register_*
+    pub types: HashMap<u32, String>,
+    /// fetch handle -> raw response header block
+    pub fetch_hdrs: HashMap<u32, Vec<u8>>,
+    /// .ROBLOSECURITY for roblox.com requests
+    pub cookie: Option<String>,
+    /// the guest created a GL context
+    pub gl_ctx: bool,
+    pub asm_last: u32,
+    pub imp_last: &'static str,
+    /// Crash-report attributes from `set_crash_attribute` (JS `ye` map).
+    pub crash_attrs: HashMap<String, String>,
+    /// Reason/type/value recorded by `report_crash` (JS `Af` -> `kf`).
+    pub crash_reason: Option<String>,
+    /// Bytes staged by the DOM text input for `copy_pending_text` (JS `l.pendingBytes`).
+    pub pending_bytes: Option<Vec<u8>>,
+    /// Which text input the glue selected (JS `l.currentInput`).
+    pub current_input_kind: Option<String>,
+    /// Guest pointer reserved for the glue's key-event struct (JS `h.keyEvent`).
+    pub key_event_ptr: Option<u32>,
+    /// Pointer-source tracking (`l.lastPointerType`): 0 mouse, 1 touch, 2 pen.
+    pub pointer_type: u8,
+    /// JS `l.penFiresTouchEvents`: None until decided by the glue.
+    pub pen_fires_touch_events: Option<bool>,
+    /// JS `l.penContactActive`.
+    pub pen_contact_active: bool,
+}
+
+impl St {
+    pub fn new(mem: SharedMemory) -> Self {
+        St {
+            mem,
+            inst: None,
+            engine: None,
+            module: None,
+            base: String::new(),
+            place: 0,
+            assets: HashMap::new(),
+            files: HashMap::new(),
+            preload: HashMap::new(),
+            binds: Default::default(),
+            exited: false,
+            is_main: false,
+            gm_calls: 0,
+            main_ptr: None,
+            rt: None,
+            cur: 0,
+            root: 0,
+            in_drain: false,
+            in_rna: false,
+            mbx_task: false,
+            mbx_ptr: None,
+            main_loop: false,
+            mk_calls: 0,
+            turn_depth: 0,
+            types: Default::default(),
+            fetch_hdrs: Default::default(),
+            cookie: None,
+            gl_ctx: false,
+            asm_last: 0,
+            imp_last: "",
+            crash_attrs: HashMap::new(),
+            crash_reason: None,
+            pending_bytes: None,
+            current_input_kind: None,
+            key_event_ptr: None,
+            pointer_type: 0,
+            pen_fires_touch_events: None,
+            pen_contact_active: false,
+        }
+    }
+}
+
+/// Read a NUL-terminated guest string.
+pub fn rstr(c: &Caller<'_, St>, p: u32) -> String {
+    if p == 0 {
+        return String::new();
+    }
+    let d = c.data().mem.data();
+    let mut out = Vec::new();
+    for i in p as usize.. {
+        if i >= d.len() {
+            break;
+        }
+        let b = unsafe { *d[i].get() };
+        if b == 0 {
+            break;
+        }
+        out.push(b);
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+pub fn rbytes(c: &Caller<'_, St>, p: u32, len: u32) -> Vec<u8> {
+    let d = c.data().mem.data();
+    (0..len as usize)
+        .map(|i| unsafe { *d[p as usize + i].get() })
+        .collect()
+}
+
+pub fn wbytes(c: &mut Caller<'_, St>, p: u32, src: &[u8]) {
+    let d = c.data().mem.data();
+    for (i, b) in src.iter().enumerate() {
+        unsafe { *d[p as usize + i].get() = *b };
+    }
+}
+
+/// Write a NUL-terminated string, truncating to `cap`.
+pub fn wstr(c: &mut Caller<'_, St>, p: u32, s: &str, cap: u32) {
+    if cap == 0 {
+        return;
+    }
+    let n = s.len().min(cap as usize - 1);
+    wbytes(c, p, &s.as_bytes()[..n]);
+    unsafe { *c.data().mem.data()[p as usize + n].get() = 0 };
+}

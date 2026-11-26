@@ -1,0 +1,342 @@
+name	params	results	jssig
+HaveOffsetConverter	-	i32	i
+RBX_restoreWasmStackTraceLimit	f64	-	vd
+RBX_setFullWasmStackTrace	-	f64	d
+__assert_fail	i32,i32,i32,i32	-	
+__asyncjs__create_suspended_fiber_js	i32,i32,i32,i32,i32	i32	iiiiii
+__asyncjs__fiber_transfer_js	i32,i32	i32	iii
+__asyncjs__rbxFutexWaitMainJspi	i32,i32,f64	i32	iiid
+__asyncjs__rbx_opfs_clear	-	i32	i
+__asyncjs__rbx_opfs_contains	i32	i32	ii
+__asyncjs__rbx_opfs_file_size	i32	i32	ii
+__asyncjs__rbx_opfs_get	i32,i32	i32	iii
+__asyncjs__rbx_opfs_get_buffer	i32,i32,i32	i32	iiii
+__asyncjs__rbx_opfs_get_buffer_offset	i32,i32,i32,i32,i32	i32	iiiiii
+__asyncjs__rbx_opfs_get_offset	i32,i32,i32,i32	i32	iiiii
+__asyncjs__rbx_opfs_list	i32,i32	i32	iii
+__asyncjs__rbx_opfs_list_sized	i32,i32	i32	iii
+__asyncjs__rbx_opfs_open	i32,i32	-	vii
+__asyncjs__rbx_opfs_remove	i32	i32	ii
+__asyncjs__rbx_opfs_remove_batch	i32	i32	ii
+__asyncjs__rbx_opfs_set	i32,i32,i32	i32	iiii
+__call_sighandler	i32,i32	-	
+__pthread_create_js	i32,i32,i32,i32	i32	
+__syscall_getegid32	-	i32	
+__syscall_geteuid32	-	i32	
+__syscall_getgid32	-	i32	
+__syscall_getuid32	-	i32	
+_abort_js	-	-	
+_embind_register_bigint	i32,i32,i32,i64,i64	-	
+_embind_register_bool	i32,i32,i32,i32	-	
+_embind_register_emval	i32	-	
+_embind_register_float	i32,i32,i32	-	
+_embind_register_function	i32,i32,i32,i32,i32,i32,i32,i32	-	
+_embind_register_integer	i32,i32,i32,i32,i32	-	
+_embind_register_memory_view	i32,i32,i32	-	
+_embind_register_std_string	i32,i32	-	
+_embind_register_std_wstring	i32,i32,i32	-	
+_embind_register_void	i32,i32	-	
+_emscripten_fetch_get_response_headers	i32,i32,i32	i32	
+_emscripten_fetch_get_response_headers_length	i32	i32	
+_emscripten_init_main_thread_js	i32	-	
+_emscripten_log_formatted	i32,i32	-	
+_emscripten_notify_mailbox_postmessage	i32,i32	-	
+_emscripten_receive_on_main_thread_js	i32,i32,i32,i32,i32,i32,i32	f64	
+_emscripten_runtime_keepalive_clear	-	-	
+_emscripten_thread_cleanup	i32	-	
+_emscripten_thread_mailbox_await	i32	-	
+_emscripten_thread_set_strongref	i32	-	
+_gmtime_js	i64,i32	i32	
+_localtime_js	i64,i32	i32	
+_mktime_js	i32	i64	
+_msync_js	i32,i32,i32,i32,i32,i64	i32	
+_tzset_js	i32,i32,i32,i32	-	
+applyPendingBrowserCanvasResize	-	-	v
+applyPendingCanvasResize	i32,i32	i32	iii
+blur_text_input	-	-	v
+choose_current_text_input	i32,i32,i32	-	viii
+clock_time_get	i32,i64,i32	i32	
+copy_pending_text	i32	-	vi
+emscripten_asm_const_async_on_main_thread	i32,i32,i32	-	
+emscripten_asm_const_double	i32,i32,i32	f64	
+emscripten_asm_const_int	i32,i32,i32	i32	
+emscripten_asm_const_int_sync_on_main_thread	i32,i32,i32	i32	
+emscripten_async_call	i32,i32,i32	-	
+emscripten_check_blocking_allowed	-	-	
+emscripten_console_error	i32	-	
+emscripten_console_log	i32	-	
+emscripten_console_warn	i32	-	
+emscripten_date_now	-	f64	
+emscripten_errn	i32,i32	-	
+emscripten_exit_pointerlock	-	i32	
+emscripten_exit_with_live_runtime	-	-	
+emscripten_fetch_free	i32	-	
+emscripten_get_canvas_element_size	i32,i32,i32	i32	
+emscripten_get_device_pixel_ratio	-	f64	
+emscripten_get_element_css_size	i32,i32,i32	i32	
+emscripten_get_gamepad_status	i32,i32	i32	
+emscripten_get_heap_max	-	i32	
+emscripten_get_now	-	f64	
+emscripten_get_num_gamepads	-	i32	
+emscripten_num_logical_cores	-	i32	
+emscripten_outn	i32,i32	-	
+emscripten_pc_get_function	i32	i32	
+emscripten_request_pointerlock	i32,i32	i32	
+emscripten_resize_heap	i32	i32	
+emscripten_runtime_keepalive_push	-	-	
+emscripten_sample_gamepad_data	-	i32	
+emscripten_set_blur_callback_on_thread	i32,i32,i32,i32,i32	i32	
+emscripten_set_canvas_element_size	i32,i32,i32	i32	
+emscripten_set_focus_callback_on_thread	i32,i32,i32,i32,i32	i32	
+emscripten_set_gamepadconnected_callback_on_thread	i32,i32,i32,i32	i32	
+emscripten_set_gamepaddisconnected_callback_on_thread	i32,i32,i32,i32	i32	
+emscripten_set_keydown_callback_on_thread	i32,i32,i32,i32,i32	i32	
+emscripten_set_keyup_callback_on_thread	i32,i32,i32,i32,i32	i32	
+emscripten_set_mousedown_callback_on_thread	i32,i32,i32,i32,i32	i32	
+emscripten_set_mouseenter_callback_on_thread	i32,i32,i32,i32,i32	i32	
+emscripten_set_mouseleave_callback_on_thread	i32,i32,i32,i32,i32	i32	
+emscripten_set_mousemove_callback_on_thread	i32,i32,i32,i32,i32	i32	
+emscripten_set_mouseup_callback_on_thread	i32,i32,i32,i32,i32	i32	
+emscripten_set_pointerlockerror_callback_on_thread	i32,i32,i32,i32,i32	i32	
+emscripten_set_touchcancel_callback_on_thread	i32,i32,i32,i32,i32	i32	
+emscripten_set_touchend_callback_on_thread	i32,i32,i32,i32,i32	i32	
+emscripten_set_touchmove_callback_on_thread	i32,i32,i32,i32,i32	i32	
+emscripten_set_touchstart_callback_on_thread	i32,i32,i32,i32,i32	i32	
+emscripten_set_wheel_callback_on_thread	i32,i32,i32,i32,i32	i32	
+emscripten_stack_snapshot	-	i32	
+emscripten_stack_unwind_buffer	i32,i32,i32	i32	
+emscripten_start_fetch	i32	-	
+emscripten_unwind_to_js_event_loop	-	-	
+emscripten_webgl_create_context	i32,i32	i32	
+emscripten_webgl_destroy_context	i32	i32	
+emscripten_webgl_get_context_attributes	i32,i32	i32	
+emscripten_webgl_make_context_current	i32	i32	
+emscripten_webgpu_get_device	-	i32	
+emscripten_websocket_close	i32,i32,i32	i32	
+emscripten_websocket_delete	i32	i32	
+emscripten_websocket_new	i32	i32	
+emscripten_websocket_send_binary	i32,i32,i32	i32	
+emscripten_websocket_send_utf8_text	i32,i32	i32	
+emscripten_websocket_set_onclose_callback_on_thread	i32,i32,i32,i32	i32	
+emscripten_websocket_set_onerror_callback_on_thread	i32,i32,i32,i32	i32	
+emscripten_websocket_set_onmessage_callback_on_thread	i32,i32,i32,i32	i32	
+emscripten_websocket_set_onopen_callback_on_thread	i32,i32,i32,i32	i32	
+emwgpuBufferGetConstMappedRange	i32,i32,i32	i32	
+emwgpuBufferMapAsync	i32,i64,i64,i32,i32	-	
+emwgpuBufferUnmap	i32	-	
+emwgpuDelete	i32	-	
+emwgpuDeviceCreateBuffer	i32,i32,i32	i32	
+emwgpuDeviceCreateShaderModule	i32,i32,i32	-	
+emwgpuDeviceDestroy	i32	-	
+emwgpuGetPreferredFormat	-	i32	
+emwgpuShaderModuleGetCompilationInfo	i32,i64,i32	-	
+environ_get	i32,i32	i32	
+environ_sizes_get	i32,i32	i32	
+exit	i32	-	
+fd_pread	i32,i32,i32,i64,i32	i32	
+fiber_destroy_js	i32	-	vi
+focus_text_input	-	-	v
+getWebGpuTimestampInterval	-	i32	i
+get_effective_device_pixel_ratio	-	f64	d
+get_hardware_concurrency	-	i32	i
+glActiveTexture	i32	-	
+glAttachShader	i32,i32	-	
+glBindAttribLocation	i32,i32,i32	-	
+glBindBuffer	i32,i32	-	
+glBindBufferBase	i32,i32,i32	-	
+glBindBufferRange	i32,i32,i32,i32,i32	-	
+glBindFramebuffer	i32,i32	-	
+glBindRenderbuffer	i32,i32	-	
+glBindTexture	i32,i32	-	
+glBindVertexArray	i32	-	
+glBlendFunc	i32,i32	-	
+glBlendFuncSeparate	i32,i32,i32,i32	-	
+glBlitFramebuffer	i32,i32,i32,i32,i32,i32,i32,i32,i32,i32	-	
+glBufferData	i32,i32,i32,i32	-	
+glBufferSubData	i32,i32,i32,i32	-	
+glCheckFramebufferStatus	i32	i32	
+glClear	i32	-	
+glClearBufferfi	i32,i32,f32,i32	-	
+glClearBufferfv	i32,i32,i32	-	
+glClearBufferiv	i32,i32,i32	-	
+glClearColor	f32,f32,f32,f32	-	
+glClearDepthf	f32	-	
+glClearStencil	i32	-	
+glClientWaitSync	i32,i32,i64	i32	
+glClipControlEXT	i32,i32	-	
+glColorMask	i32,i32,i32,i32	-	
+glCompileShader	i32	-	
+glCompressedTexImage2D	i32,i32,i32,i32,i32,i32,i32,i32	-	
+glCompressedTexImage3D	i32,i32,i32,i32,i32,i32,i32,i32,i32	-	
+glCompressedTexSubImage2D	i32,i32,i32,i32,i32,i32,i32,i32,i32	-	
+glCompressedTexSubImage3D	i32,i32,i32,i32,i32,i32,i32,i32,i32,i32,i32	-	
+glCopyTexSubImage2D	i32,i32,i32,i32,i32,i32,i32,i32	-	
+glCreateProgram	-	i32	
+glCreateShader	i32	i32	
+glCullFace	i32	-	
+glDeleteBuffers	i32,i32	-	
+glDeleteFramebuffers	i32,i32	-	
+glDeleteProgram	i32	-	
+glDeleteRenderbuffers	i32,i32	-	
+glDeleteShader	i32	-	
+glDeleteSync	i32	-	
+glDeleteTextures	i32,i32	-	
+glDeleteVertexArrays	i32,i32	-	
+glDepthFunc	i32	-	
+glDepthMask	i32	-	
+glDisable	i32	-	
+glDisableVertexAttribArray	i32	-	
+glDrawArrays	i32,i32,i32	-	
+glDrawArraysInstanced	i32,i32,i32,i32	-	
+glDrawBuffers	i32,i32	-	
+glDrawElements	i32,i32,i32,i32	-	
+glDrawElementsInstanced	i32,i32,i32,i32,i32	-	
+glEnable	i32	-	
+glEnableVertexAttribArray	i32	-	
+glFenceSync	i32,i32	i32	
+glFramebufferRenderbuffer	i32,i32,i32,i32	-	
+glFramebufferTexture2D	i32,i32,i32,i32,i32	-	
+glFramebufferTextureLayer	i32,i32,i32,i32,i32	-	
+glGenBuffers	i32,i32	-	
+glGenFramebuffers	i32,i32	-	
+glGenRenderbuffers	i32,i32	-	
+glGenTextures	i32,i32	-	
+glGenVertexArrays	i32,i32	-	
+glGenerateMipmap	i32	-	
+glGetActiveUniform	i32,i32,i32,i32,i32,i32,i32	-	
+glGetActiveUniformBlockiv	i32,i32,i32,i32	-	
+glGetError	-	i32	
+glGetIntegerv	i32,i32	-	
+glGetProgramInfoLog	i32,i32,i32,i32	-	
+glGetProgramiv	i32,i32,i32	-	
+glGetShaderInfoLog	i32,i32,i32,i32	-	
+glGetShaderiv	i32,i32,i32	-	
+glGetString	i32	i32	
+glGetUniformBlockIndex	i32,i32	i32	
+glGetUniformLocation	i32,i32	i32	
+glInvalidateFramebuffer	i32,i32,i32	-	
+glLinkProgram	i32	-	
+glMapBufferRange	i32,i32,i32,i32	i32	
+glPixelStorei	i32,i32	-	
+glPolygonOffset	f32,f32	-	
+glReadPixels	i32,i32,i32,i32,i32,i32,i32	-	
+glRenderbufferStorage	i32,i32,i32,i32	-	
+glRenderbufferStorageMultisample	i32,i32,i32,i32,i32	-	
+glScissor	i32,i32,i32,i32	-	
+glShaderSource	i32,i32,i32,i32	-	
+glStencilFunc	i32,i32,i32	-	
+glStencilMask	i32	-	
+glStencilOp	i32,i32,i32	-	
+glTexImage2D	i32,i32,i32,i32,i32,i32,i32,i32,i32	-	
+glTexImage3D	i32,i32,i32,i32,i32,i32,i32,i32,i32,i32	-	
+glTexParameterf	i32,i32,f32	-	
+glTexParameterfv	i32,i32,i32	-	
+glTexParameteri	i32,i32,i32	-	
+glTexStorage2D	i32,i32,i32,i32,i32	-	
+glTexStorage3D	i32,i32,i32,i32,i32,i32	-	
+glTexSubImage2D	i32,i32,i32,i32,i32,i32,i32,i32,i32	-	
+glTexSubImage3D	i32,i32,i32,i32,i32,i32,i32,i32,i32,i32,i32	-	
+glUniform1i	i32,i32	-	
+glUniformBlockBinding	i32,i32,i32	-	
+glUnmapBuffer	i32	i32	
+glUseProgram	i32	-	
+glVertexAttribPointer	i32,i32,i32,i32,i32,i32	-	
+glViewport	i32,i32,i32,i32	-	
+has_keyboard	-	i32	i
+has_mouse	-	i32	i
+install_pointer_source_tracking	-	-	v
+is_mobile_browser	-	i32	i
+is_mouse_sourced_event	-	i32	i
+is_touch_mobile	-	i32	i
+is_touch_screen_device	-	i32	i
+js_copy_keyboard_layout_key	i32,i32,i32	-	viii
+js_external_content_sharing_deliver	i32,i32	-	vii
+js_fetch_file	i32,i32,i32	i32	
+js_keyboard_layout_status	-	i32	i
+js_linking_open_url	i32,i32	i32	iii
+js_request_keyboard_layout	-	-	v
+js_web_client_ms_since_navigation	-	f64	d
+js_web_client_page_visible	-	i32	i
+js_web_client_wasm_cache_state	-	i32	i
+preallocate_emscripten_key_event_buffer	i32	-	vi
+presentBrowserFrame	i32,i32,i32	-	viii
+proc_exit	i32	-	
+random_get	i32,i32	i32	
+rbx_opfs_close	i32	-	vi
+rbx_opfs_free	i32	-	vi
+rbx_opfs_install_helpers	i32,i32	-	vii
+rbx_opfs_read_sync_if_cached	i32,i32,i32,i32	i32	iiiii
+rbx_wasm_rna_close_js	i32	-	vi
+rbx_wasm_rna_connect_js	i32,i32,i32,i32,i32,i32,i32,i32,i32,i32,i32,i32,i32,i32	-	viiiiiiiiiiiiii
+rbx_wasm_rna_is_supported_js	-	i32	i
+rbx_wasm_rna_open_stream_js	i32,i32	-	vii
+rbx_wasm_rna_pause_stream_read_js	i32,i32	-	vii
+rbx_wasm_rna_receive_ring_consumed_js	i32,i32,i32	-	viii
+rbx_wasm_rna_resume_stream_read_js	i32,i32	-	vii
+rbx_wasm_rna_send_connection_close_js	i32	-	vi
+rbx_wasm_rna_send_datagram_js	i32,i32,i32,i32,i32	-	viiiii
+rbx_wasm_rna_shutdown_stream_read_js	i32,i32	-	vii
+rbx_wasm_rna_shutdown_stream_write_js	i32,i32	-	vii
+rbx_wasm_rna_write_stream_js	i32,i32,i32,i32	-	viiii
+read_host_info_int	i32	i32	ii
+read_host_info_string	i32,i32,i32	-	viii
+report_crash	i32,i32,i32,i32,i32	-	
+reset_current_text_input	-	-	v
+schedule_main_loop	-	-	v
+set_crash_attribute	i32,i32	-	
+set_text_box_horiz_alignment	i32	-	vi
+set_text_box_overlay	i32	-	vi
+set_text_box_vert_alignment	i32	-	vi
+set_text_color	f32,f32,f32,f32	-	vffff
+setup_font	i32,i32,i32,f32,i32,i32	-	viiifii
+shift_canvas	f32	-	vf
+sync_text_and_pos	i32,i32,i32	-	viii
+update_text_box_rect	f32,f32,f32,f32	-	vffff
+wgpuBufferGetSize	i32	i64	
+wgpuCommandEncoderBeginComputePass	i32,i32	i32	
+wgpuCommandEncoderBeginRenderPass	i32,i32	i32	
+wgpuCommandEncoderCopyBufferToBuffer	i32,i32,i64,i32,i64,i64	-	
+wgpuCommandEncoderCopyTextureToBuffer	i32,i32,i32,i32	-	
+wgpuCommandEncoderCopyTextureToTexture	i32,i32,i32,i32	-	
+wgpuCommandEncoderFinish	i32,i32	i32	
+wgpuCommandEncoderPopDebugGroup	i32	-	
+wgpuCommandEncoderPushDebugGroup	i32,i32	-	
+wgpuCommandEncoderResolveQuerySet	i32,i32,i32,i32,i32,i64	-	
+wgpuComputePassEncoderDispatchWorkgroups	i32,i32,i32,i32	-	
+wgpuComputePassEncoderEnd	i32	-	
+wgpuComputePassEncoderPopDebugGroup	i32	-	
+wgpuComputePassEncoderPushDebugGroup	i32,i32	-	
+wgpuComputePassEncoderSetBindGroup	i32,i32,i32,i32,i32	-	
+wgpuComputePassEncoderSetPipeline	i32,i32	-	
+wgpuDeviceCreateBindGroup	i32,i32	i32	
+wgpuDeviceCreateBindGroupLayout	i32,i32	i32	
+wgpuDeviceCreateCommandEncoder	i32,i32	i32	
+wgpuDeviceCreateComputePipeline	i32,i32	i32	
+wgpuDeviceCreatePipelineLayout	i32,i32	i32	
+wgpuDeviceCreateQuerySet	i32,i32	i32	
+wgpuDeviceCreateRenderPipeline	i32,i32	i32	
+wgpuDeviceCreateSampler	i32,i32	i32	
+wgpuDeviceCreateTexture	i32,i32	i32	
+wgpuDeviceGetLimits	i32,i32	i32	
+wgpuDeviceHasFeature	i32,i32	i32	
+wgpuInstanceCreateSurface	i32,i32	i32	
+wgpuQueueSubmit	i32,i32,i32	-	
+wgpuQueueWriteBuffer	i32,i32,i64,i32,i32	-	
+wgpuQueueWriteTexture	i32,i32,i32,i32,i32,i32	-	
+wgpuRenderPassEncoderDraw	i32,i32,i32,i32,i32	-	
+wgpuRenderPassEncoderDrawIndexed	i32,i32,i32,i32,i32,i32	-	
+wgpuRenderPassEncoderEnd	i32	-	
+wgpuRenderPassEncoderPopDebugGroup	i32	-	
+wgpuRenderPassEncoderPushDebugGroup	i32,i32	-	
+wgpuRenderPassEncoderSetBindGroup	i32,i32,i32,i32,i32	-	
+wgpuRenderPassEncoderSetIndexBuffer	i32,i32,i32,i64,i64	-	
+wgpuRenderPassEncoderSetPipeline	i32,i32	-	
+wgpuRenderPassEncoderSetScissorRect	i32,i32,i32,i32,i32	-	
+wgpuRenderPassEncoderSetStencilReference	i32,i32	-	
+wgpuRenderPassEncoderSetVertexBuffer	i32,i32,i32,i64,i64	-	
+wgpuRenderPassEncoderSetViewport	i32,f32,f32,f32,f32,f32,f32	-	
+wgpuSurfaceConfigure	i32,i32	-	
+wgpuTextureCreateView	i32,i32	i32	
+wgpuTextureGetDepthOrArrayLayers	i32	i32	
+wgpuTextureGetDimension	i32	i32	
+wgpuTextureGetUsage	i32	i64	

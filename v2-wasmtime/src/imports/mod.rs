@@ -1,0 +1,40 @@
+/// The host-side UDP/RakNet seam lives at the crate root; expose it here so
+/// the HTTP join hook and `main` can reach the same API.
+pub(crate) use crate::raknet;
+
+pub mod boot;
+pub mod embind;
+pub mod fetch;
+pub mod futex;
+pub mod gl;
+pub mod http;
+pub mod input;
+pub mod mailbox;
+pub mod opfs;
+pub mod rna;
+pub mod stubs;
+pub mod thread;
+pub mod webgpu;
+pub mod wgt;
+pub mod ws;
+
+/// Every host side module, in one place: the main store, each worker and the
+/// completions thread all need the same set.
+pub fn register_all(l: &mut wasmtime::Linker<crate::state::St>) -> anyhow::Result<()> {
+    embind::register(l)?;
+    boot::register(l)?;
+    fetch::register(l)?;
+    http::register(l)?;
+    input::register(l)?;
+    crate::fibre::register(l)?;
+    futex::register(l)?;
+    mailbox::register(l)?;
+    gl::register(l)?;
+    opfs::register(l)?;
+    rna::register(l)?;
+    stubs::register(l)?;
+    webgpu::register(l)?;
+    ws::register(l)?;
+    thread::register(l)?;
+    Ok(())
+}
