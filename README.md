@@ -1,8 +1,12 @@
 # alcohol
 
-Run Roblox's web client in a native window on a raw Deno host (no DOM, no
-Electron). Roblox's own `WebClient.wasm` generates the entire protocol; this
-repo only supplies the window, WebGPU surface, threads, and browser-shaped shims.
+Run Roblox's web client in a native window on a raw Deno host — no DOM, no
+Electron, no browser. Roblox's own `WebClient.wasm` generates the entire
+protocol; this repo only supplies the window, WebGPU surface, threads, and
+browser-shaped shims.
+
+The engine connects over **WebTransport draft-02** (QUIC/HTTP/3). Everything
+runs locally; no wasm patching is required.
 
 ## Run
 
@@ -11,36 +15,59 @@ cd client
 WC_COOKIE_FILE=/path/to/cookie.txt ./client/client 189707
 ```
 
-Defaults: cookie `/home/john/mizg.txt`, place `189707` (both are in `main.ts`).
-The `jebus` account cookie is known-good for place 189707:
-`/tmp/opencode/jebus.txt`. Only one client should be joined at a time.
+- Place **189707** is the known-good test place (reports `#players = 21`).
+- The cookie must be a valid `.ROBLOSECURITY` value. A stale cookie hangs at
+  `[pthread] thread #1 created` with heartbeats still running — that is not a
+  code bug. Only one client should be joined at a time.
+- If a run stalls at startup, retry the identical command; the engine has an
+  intermittent early-init flake.
 
-The binary must be built with `--unstable-net` so `Deno.connectQuic` is baked
-in. See [client/README.md](client/README.md) for the build command.
+Defaults and optional overrides:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `WC_COOKIE_FILE` | `main.ts` default | path to `.ROBLOSECURITY` |
+| `WC_WASM_PAGES` | `16384` | guest memory pages (1 GiB) |
+| `WC_PLACE` | positional arg | place to join |
+| `WC_NATIVE_JOIN_UA=1` | off | A/B: use native gamejoin identity but keep WebTransport and `gameFqdn` derivation |
+
+## Build
+
+The binary must be built with `--unstable-net` so `Deno.connectQuic` is baked in:
+
+```sh
+cd client
+deno desktop -A --unstable-net --include page --include mirror main.ts
+```
+
+Stop when `Bundle client` appears. The launcher is `client/client`, the
+embedded app is `client/client.so`.
 
 ## Layout
 
-| dir | what it is |
+| path | what it is |
 | --- | --- |
-| `client/` | **the product** — Deno raw host, WebGPU + draft-02 WebTransport/QUIC |
-| `v2-wasmtime/` | parked research host: real wasm under wasmtime |
-| `v3-wasm2c/` | parked research host: wasm2c translation of the same module |
-| `docs/` | original engine snapshots, import surface, native RE notes |
+| `client/` | **the product** — Deno host, WebGPU, draft-02 WebTransport, shims |
+| `docs/` | engine snapshots, import surface, and the [research archive](docs/ARCHIVE.md) |
+| `REGENERATING.md` | how to recreate the gitignored engine mirror and captures |
+| `client/INVESTIGATION.md` | historical pre-fix record — **outdated**, see the banner |
 
-Generated artifacts (engine mirror, wasmtime cache, wasm2c translation,
-captures) are **not** in git. [REGENERATING.md](REGENERATING.md) says how to
-recreate each. [client/INVESTIGATION.md](client/INVESTIGATION.md) is the
-pre-fix investigation record — keep it, but do not re-run its ruled-out
-hypotheses.
+Generated artifacts (engine mirror, caches, captures, `.har` files) are not in
+git. Recreate them with [REGENERATING.md](REGENERATING.md).
+
+Archived host experiments live on local `experiment/*` branches, not in the
+working tree. See [docs/ARCHIVE.md](docs/ARCHIVE.md) for what they contain and
+why they were retired.
 
 ## Two facts worth keeping
 
-- Public places require `rbx-user-agent: Roblox/Darwin` on the join POST
-  (`Roblox/Web` gets HTTP 200 / `status: 12`, "Not authorized"). The browser UA
-  stays Chrome. When the server returns `gameFqdn: null`, the browser route is
-  derived from the token/IP/port with the UDMUX last octet +1.
+- The join identity matters: `rbx-user-agent: Roblox/Darwin` on the gamejoin POST
+  with the browser `User-Agent` gives a usable reply and a derived `gameFqdn`.
+  The engine's own `...Browser/Chromium/...` value gets **status 12,
+  "Playtesters Only"**. The old "session gate" theory was this, not a protocol
+  limitation.
 - Roblox/qdmux uses **WebTransport draft-02**. Deno's built-in WebTransport
-  cannot send the `sec-webtransport-http3-draft02: 1` CONNECT header, so
-  `client/page/draftwt.ts` implements that header over raw QUIC. All four
-  alternative transport libraries tried during the investigation failed
-  identically — do not re-add them.
+  cannot send `sec-webtransport-http3-draft02: 1`, so
+  `client/page/draftwt.ts` implements that header over raw QUIC. Four
+  alternative transport libraries failed identically during investigation —
+  do not re-add them.
