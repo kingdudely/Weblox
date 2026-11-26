@@ -31,13 +31,13 @@ table.cpp: gen_table.py $(WASM)
 runtime_data.cpp runtime_data.h: gen_runtime_data.py $(WASM)
 	python3 gen_runtime_data.py --wasm $(WASM) --out-dir .
 
-demo: main.cpp vmctx.cpp imports.cpp rna_bridge.cpp wt.cpp route.cpp \
+demo: main.cpp vmctx.cpp unwind.cpp imports.cpp rna_bridge.cpp wt.cpp route.cpp \
       prepare.cpp runtime_data.cpp table.cpp \
-      vmctx.h imports.h rna_bridge.h wt.h route.h prepare.h \
+      vmctx.h unwind.h imports.h rna_bridge.h wt.h route.h prepare.h \
       vmctx_offsets.h runtime_data.h table.h
-	$(CXX) $(CXXFLAGS) -o $@ main.cpp vmctx.cpp imports.cpp rna_bridge.cpp \
-		wt.cpp route.cpp prepare.cpp runtime_data.cpp table.cpp $(WASM_OBJ) \
-		$(LDFLAGS)
+	$(CXX) $(CXXFLAGS) -o $@ main.cpp vmctx.cpp unwind.cpp imports.cpp \
+		rna_bridge.cpp wt.cpp route.cpp prepare.cpp runtime_data.cpp table.cpp \
+		$(WASM_OBJ) $(LDFLAGS)
 
 # Regenerate the ABI header from wasmtime-environ 50.0.2 (needs the wasm file).
 offsets:

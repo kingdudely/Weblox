@@ -2,6 +2,7 @@
 // memory, builtin libcalls, import stubs and trap-to-error signal handling.
 #define _GNU_SOURCE 1
 #include "vmctx.h"
+#include "unwind.h"
 #include "imports.h"
 #include "runtime_data.h"
 #include "table.h"
@@ -181,13 +182,35 @@ extern "C" uint64_t builtin_memory_atomic_wait32(void*, uint64_t memidx, uint64_
   return 2; // "timed out" immediately: never blocks the smoke test
 }
 
-// DRC exception propagation needs a native unwinder this host does not have.
-// Returning false ("not caught") lets the generated try_call fall through to
-// its trap path, which the signal handler converts into a controlled error.
-extern "C" uint32_t builtin_throw_ref(void*, uint64_t exnref) {
-  TRACEF("throw_ref", 8, "throw_ref exnref=%#llx -> not caught\n",
+// A throwing libcall never returns on the successful path: the Cranelift
+// try_call site that called the trampoline has a landing pad recorded in
+// .wasmtime.exceptions.  unwind_throw walks the guest FP chain and resumes
+// directly into that pad with rax = exnref (the Cranelift exception payload).
+// Returning false means no handler was found; the trampoline then calls the
+// raise builtin and the signal handler converts that into a controlled trap.
+extern "C" uint32_t builtin_throw_ref(void* vmctx, uint64_t exnref) {
+  TRACEF("throw_ref", 8, "throw_ref exnref=%#llx\n",
          static_cast<unsigned long long>(exnref));
-  note_error("throw_ref called (exception propagation not implemented)");
+  // Bounded evidence dump of the exception object (VMGcHeader + DRC header +
+  // payload).  The tag/instance fields are written by generated code.
+  if (g_gc_heap_base && exnref >= 8 && exnref + 40 <= g_gc_heap_size) {
+    const unsigned char* obj = g_gc_heap_base + exnref;
+    TRACEF("exn_object", 4,
+           "exnref=%#llx words: %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x\n",
+           static_cast<unsigned long long>(exnref),
+           *reinterpret_cast<const uint32_t*>(obj + 0), *reinterpret_cast<const uint32_t*>(obj + 4),
+           *reinterpret_cast<const uint32_t*>(obj + 8), *reinterpret_cast<const uint32_t*>(obj + 12),
+           *reinterpret_cast<const uint32_t*>(obj + 16), *reinterpret_cast<const uint32_t*>(obj + 20),
+           *reinterpret_cast<const uint32_t*>(obj + 24), *reinterpret_cast<const uint32_t*>(obj + 28),
+           *reinterpret_cast<const uint32_t*>(obj + 32), *reinterpret_cast<const uint32_t*>(obj + 36));
+  }
+  if (exnref <= std::numeric_limits<uint32_t>::max()) {
+    if (unwind_throw(vmctx, static_cast<uint32_t>(exnref))) {
+      // unreachable: unwind_throw resumed into the guest handler
+      return 1;
+    }
+  }
+  note_error("throw_ref: no guest handler found");
   return 0; // false = not caught
 }
 
@@ -320,6 +343,10 @@ bool setup(HostState& state) {
   static_assert(VMCTX_NUM_DEFINED_TABLES == 1);
 
   g_state = &state;
+  // Load the serialized Cranelift exception table from the running executable
+  // once, before wasm starts.  Failure is only reported (throw_ref then takes
+  // the honest trap path); it does not prevent the rest of the bootstrap.
+  unwind_init();
   // VMContext is followed by one runtime-data base pointer and one length
   // per wasm data segment.  Wasmtime's generated code indexes them directly
   // (segment 0 is the TLS image copied by __wasm_init_tls).
