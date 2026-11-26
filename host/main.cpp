@@ -9,6 +9,50 @@
 #include <string>
 #include <dlfcn.h>
 
+// wasm function indices from the module export section (first defined
+// function index is 341, so _wasm_function_N == wasm index N + 341):
+//   _emscripten_thread_init = 151421 -> _wasm_function_151080
+//   _emscripten_tls_init    = 149940 -> _wasm_function_149599
+//   pthread_self           = 150209 -> _wasm_function_149868
+// These are global symbols in out.full.o but the linked executable makes
+// them local, so dlsym(RTLD_DEFAULT) cannot see them: call them directly.
+extern "C" {
+uint32_t _wasm_function_149599(void*, void*);
+uint32_t _wasm_function_149868(void*, void*);
+void wb_call_thread_init(void*, uint32_t);
+}
+
+// Wasmtime's wasm-call ABI is callee-pops for stack arguments (`ret $16`),
+// unlike the SysV C ABI.  Calling a 6-arg wasm function through a C prototype
+// corrupts rsp, so use a tiny asm shim that matches the wasm convention.
+asm(
+    ".text\n"
+    ".globl wb_call_thread_init\n"
+    "wb_call_thread_init:\n"
+    "  push %rbp\n"
+    "  mov %rsp, %rbp\n"
+    "  mov %rdi, %rax\n"          // callee vmctx
+    "  mov %esi, %edx\n"          // wasm arg 0: pthread_ptr
+    "  mov %rax, %rsi\n"          // caller vmctx
+    "  mov %rax, %rdi\n"          // callee vmctx
+    "  mov $1, %ecx\n"            // wasm arg 1: is_main
+    "  mov $1, %r8d\n"            // wasm arg 2
+    "  mov $1, %r9d\n"            // wasm arg 3: atomics
+    "  pushq $0\n"                // wasm arg 5
+    "  pushq $262144\n"           // wasm arg 4: stack size
+    "  call _wasm_function_151080\n"  // callee pops the 16 bytes above
+    "  mov %rbp, %rsp\n"
+    "  pop %rbp\n"
+    "  ret\n");
+
+static void main_thread_init(void* vmctx, uint32_t ptr) {
+  std::fprintf(stderr, "[pthr] guest thread_init(ptr=%#x) + tls_init\n", ptr);
+  wb_call_thread_init(vmctx, ptr);
+  _wasm_function_149599(vmctx, vmctx);
+  const uint32_t me = _wasm_function_149868(vmctx, vmctx);
+  if (me) wb::imports_set_main_thread(me);
+}
+
 // Emscripten pthread worker entry: re-enter the wasm function named by the
 // table index `start` with a per-thread VMContext.  This is the hook the
 // ported __pthread_create_js import requires.
@@ -17,7 +61,7 @@ static void* g_main_vmctx = nullptr;
 static void thread_entry(uint32_t start, uint32_t arg, uint32_t pthread_ptr) {
   char sym[64];
   std::snprintf(sym, sizeof(sym), "_wasm_function_%u", start - 341u);
-  using WasmFn = void (*)(void*, uint32_t);
+  using WasmFn = void (*)(void*, void*, uint32_t);
   auto* fn = reinterpret_cast<WasmFn>(dlsym(RTLD_DEFAULT, sym));
   if (!fn) {
     std::fprintf(stderr, "[pthr] no wasm symbol for start=%u (%s)\n", start, sym);
@@ -35,7 +79,7 @@ static void thread_entry(uint32_t start, uint32_t arg, uint32_t pthread_ptr) {
     std::memcpy(static_cast<uint8_t*>(*store) + 24, &limit, sizeof(limit));
   }
   std::fprintf(stderr, "[pthr] re-enter start=%u (%s) arg=%u ptr=%#x\n", start, sym, arg, pthread_ptr);
-  fn(vm, arg);
+  fn(vm, vm, arg);
   std::free(vm);
 }
 
@@ -51,6 +95,7 @@ int main(int argc, char** argv) {
   }
   g_main_vmctx = state.vmctx;
   wb::imports_set_thread_entry(&thread_entry);
+  wb::imports_set_main_thread_init(&main_thread_init);
   std::printf("[wasm-host] vmctx=%p size=%u memory=%p length=%zu imports=%u builtins=%u\n",
               static_cast<void*>(state.vmctx), VMCTX_SIZE_OF_VMCTX,
               static_cast<void*>(state.memory_base), state.memory_def_storage.current_length,

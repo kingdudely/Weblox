@@ -3,6 +3,7 @@
 #define _GNU_SOURCE 1
 #include "vmctx.h"
 #include "imports.h"
+#include "runtime_data.h"
 
 #include <csignal>
 #include <setjmp.h>
@@ -99,33 +100,19 @@ bool install_signal_handlers() {
   return true;
 }
 
-VMMemoryDefinition* memory_of(void* vmctx) {
-  auto* imp = reinterpret_cast<VMMemoryImport*>(at(vmctx, VMCTX_OFF_IMPORTED_MEMORIES));
-  return imp->from;
-}
-
-bool in_bounds(VMMemoryDefinition* mem, uint64_t addr, uint64_t len) {
-  return mem && addr <= mem->current_length && len <= mem->current_length - addr;
-}
-
 // ---- the eight builtins actually referenced by out.full.o -----------------
 
-extern "C" void builtin_memory_copy(void* vmctx, uint64_t dst, uint64_t src, uint64_t len) {
-  auto* mem = memory_of(vmctx);
-  if (!in_bounds(mem, dst, len) || !in_bounds(mem, src, len)) {
-    note_error("memory.copy out of bounds");
-    return;
-  }
-  std::memmove(mem->base + dst, mem->base + src, static_cast<size_t>(len));
+// Wasmtime builtins take absolute host pointers, already bounds-checked by
+// Cranelift (see wasmtime-environ's builtin.rs).  A data-segment source is a
+// host pointer, not an offset into linear memory.
+extern "C" void builtin_memory_copy(void*, uint64_t dst, uint64_t src, uint64_t len) {
+  std::memmove(reinterpret_cast<void*>(dst), reinterpret_cast<const void*>(src),
+               static_cast<size_t>(len));
 }
 
-extern "C" void builtin_memory_fill(void* vmctx, uint64_t dst, uint64_t val, uint64_t len) {
-  auto* mem = memory_of(vmctx);
-  if (!in_bounds(mem, dst, len)) {
-    note_error("memory.fill out of bounds");
-    return;
-  }
-  std::memset(mem->base + dst, static_cast<int>(val & 0xff), static_cast<size_t>(len));
+extern "C" void builtin_memory_fill(void*, uint64_t dst, uint64_t val, uint64_t len) {
+  std::memset(reinterpret_cast<void*>(dst), static_cast<int>(val & 0xff),
+              static_cast<size_t>(len));
 }
 
 extern "C" uint64_t builtin_memory_atomic_notify(void*, uint64_t memidx, uint64_t addr,
@@ -208,10 +195,22 @@ bool setup(HostState& state) {
   static_assert(VMCTX_NUM_DEFINED_TABLES == 1);
 
   g_state = &state;
-  state.vmctx = static_cast<uint8_t*>(std::calloc(VMCTX_SIZE_OF_VMCTX, 1));
+  // VMContext is followed by one runtime-data base pointer and one length
+  // per wasm data segment.  Wasmtime's generated code indexes them directly
+  // (segment 0 is the TLS image copied by __wasm_init_tls).
+  constexpr size_t kRtCount = WB_RUNTIME_DATA_COUNT;
+  constexpr size_t kVmctxAlloc = VMCTX_SIZE_OF_VMCTX + kRtCount * 8 + kRtCount * 4;
+  state.vmctx = static_cast<uint8_t*>(std::calloc(kVmctxAlloc, 1));
   if (!state.vmctx) {
     std::fprintf(stderr, "[wasm-host] vmctx allocation failed\n");
     return false;
+  }
+  auto** rt_bases = reinterpret_cast<void**>(
+      state.vmctx + VMCTX_OFF_RUNTIME_DATA_BASES);
+  auto* rt_lengths = reinterpret_cast<uint32_t*>(rt_bases + kRtCount);
+  for (size_t i = 0; i < kRtCount; ++i) {
+    rt_bases[i] = const_cast<unsigned char*>(wb_runtime_data + wb_runtime_data_offsets[i]);
+    rt_lengths[i] = wb_runtime_data_lengths[i];
   }
 
   // Host-owned shared linear memory: 4 GiB reservation + guard pages. The
@@ -233,6 +232,21 @@ bool setup(HostState& state) {
     return false;
   }
   state.memory_def_storage = {state.memory_base, kMemSize};
+
+  // Initialise linear memory from the wasm data segments (Wasmtime's
+  // __wasm_init_memory normally does this).  Passive segments are TLS/table
+  // images and are exposed through the runtime-data bases instead.
+  for (size_t i = 0; i < WB_RUNTIME_DATA_COUNT; ++i) {
+    const uint32_t dst = wb_runtime_data_dests[i];
+    if (dst == 0xFFFFFFFFu) continue;
+    const size_t n = wb_runtime_data_lengths[i];
+    if (static_cast<size_t>(dst) > kMemSize || n > kMemSize - dst) {
+      note_error("data segment out of bounds");
+      continue;
+    }
+    if (n) std::memcpy(state.memory_base + dst,
+                       wb_runtime_data + wb_runtime_data_offsets[i], n);
+  }
 
   // VMStoreContext: a generous stack limit (smaller than any real rsp), no
   // epoch/fuel interrupts, no async guard range.
@@ -306,7 +320,11 @@ bool setup(HostState& state) {
 int call_ctors(HostState& state) {
   if (sigsetjmp(g_trap_jmp, 1) != 0) return g_trap_signal;
   g_in_wasm = 1;
-  _wasm_function_0(state.vmctx);
+  // The module's wasm start function (index 344) initialises passive data
+  // segments (TLS/thread-registry images) via memory.init.  __wasm_call_ctors
+  // assumes it has already run.
+  _wasm_function_3(state.vmctx, state.vmctx);
+  _wasm_function_0(state.vmctx, state.vmctx);
   g_in_wasm = 0;
   return 0;
 }
@@ -318,7 +336,7 @@ uint32_t call_malloc(HostState& state, uint32_t size, int& trap_signal) {
     return 0;
   }
   g_in_wasm = 1;
-  result = _wasm_function_149984(state.vmctx, size);
+  result = _wasm_function_149984(state.vmctx, state.vmctx, size);
   g_in_wasm = 0;
   trap_signal = 0;
   return result;
@@ -329,21 +347,21 @@ int call_stack_roundtrip(HostState& state, uint32_t* base_out, uint32_t* end_out
   constexpr uint32_t kEnd = 0x12346000u;
   if (sigsetjmp(g_trap_jmp, 1) != 0) return g_trap_signal;
   g_in_wasm = 1;
-  _wasm_function_150011(state.vmctx, 0, kBase, kEnd);
-  uint32_t base = _wasm_function_499(state.vmctx);
-  uint32_t end = _wasm_function_500(state.vmctx);
+  _wasm_function_150011(state.vmctx, state.vmctx, kBase, kEnd);
+  uint32_t base = _wasm_function_499(state.vmctx, state.vmctx);
+  uint32_t end = _wasm_function_500(state.vmctx, state.vmctx);
   g_in_wasm = 0;
   *base_out = base;
   *end_out = end;
   // Restore the defaults so later calls see a clean VMContext.
-  _wasm_function_150011(state.vmctx, 0, 0, 0);
+  _wasm_function_150011(state.vmctx, state.vmctx, 0, 0);
   return (base == kBase && end == kEnd) ? 0 : -1;
 }
 
 int call_trap_test(HostState& state) {
   if (sigsetjmp(g_trap_jmp, 1) != 0) return g_trap_signal;
   g_in_wasm = 1;
-  _wasm_function_2(state.vmctx);
+  _wasm_function_2(state.vmctx, state.vmctx);
   g_in_wasm = 0;
   return 0;
 }

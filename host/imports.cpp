@@ -18,6 +18,8 @@
 #include <unordered_set>
 #include <vector>
 
+#include <execinfo.h>
+
 #include <curl/curl.h>
 
 namespace wb {
@@ -724,6 +726,38 @@ void import_log_first(std::uint32_t slot) {
     std::fprintf(stderr, "[import] first call slot=%u %s.%s\n", slot, d.module, d.name);
   }
 }
+bool trace_enabled() {
+  static const bool on = [] {
+    const char* e = std::getenv("HOST_TRACE");
+    return e && *e && std::strcmp(e, "0") != 0;
+  }();
+  return on;
+}
+void trace_import_args(std::uint32_t slot, const std::uint64_t* args,
+                       unsigned nargs) {
+  if (slot && slot <= kImportCount &&
+      !g_seen[slot].exchange(true, std::memory_order_relaxed)) {
+    const ImportDesc& d = g_descs[slot - 1];
+    std::fprintf(stderr, "[import] first call slot=%u %s.%s args=", slot,
+                 d.module, d.name);
+    for (unsigned i = 0; i < nargs; ++i) {
+      std::fprintf(stderr, "%s%#llx", i ? "," : "",
+                   static_cast<unsigned long long>(args[i]));
+    }
+    std::fprintf(stderr, "\n");
+    void* frames[10];
+    const int n = backtrace(frames, 10);
+    char** syms = backtrace_symbols(frames, n);
+    if (syms) {
+      for (int i = 1; i < n; ++i) {
+        if (std::strstr(syms[i], "_wasm_function_")) {
+          std::fprintf(stderr, "[import]   frame[%d] %s\n", i, syms[i]);
+        }
+      }
+      std::free(syms);
+    }
+  }
+}
 }  // namespace wb
 
 // --- generated stubs: log once, return a safe zero ----------------------
@@ -735,48 +769,62 @@ void import_log_first(std::uint32_t slot) {
 // slot   5: __asyncjs__rbxFutexWaitMainJspi -- hand-written below
 // slot   6: emscripten_asm_const_async_on_main_thread -- hand-written below
 // slot   7: emscripten_asm_const_int -- hand-written below
-extern "C" void wasm_import_008_schedule_main_loop(void* vmctx) {
+extern "C" void wasm_import_008_schedule_main_loop(void* vmctx, void* caller_vmctx) {
   (void)vmctx;
+  (void)caller_vmctx;
+  WB_TRACE_IMPORT(8);
   wb::import_log_first(8);
 }
 
-extern "C" void wasm_import_009_emscripten_exit_with_live_runtime(void* vmctx) {
+extern "C" void wasm_import_009_emscripten_exit_with_live_runtime(void* vmctx, void* caller_vmctx) {
   (void)vmctx;
+  (void)caller_vmctx;
+  WB_TRACE_IMPORT(9);
   wb::import_log_first(9);
 }
 
-extern "C" int32_t wasm_import_010_emscripten_request_pointerlock(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_010_emscripten_request_pointerlock(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(10);
   wb::import_log_first(10);
   return 0;
 }
 
-extern "C" int32_t wasm_import_011_emscripten_exit_pointerlock(void* vmctx) {
+extern "C" int32_t wasm_import_011_emscripten_exit_pointerlock(void* vmctx, void* caller_vmctx) {
   (void)vmctx;
+  (void)caller_vmctx;
+  WB_TRACE_IMPORT(11);
   wb::import_log_first(11);
   return 0;
 }
 
-extern "C" int32_t wasm_import_012_is_mouse_sourced_event(void* vmctx) {
+extern "C" int32_t wasm_import_012_is_mouse_sourced_event(void* vmctx, void* caller_vmctx) {
   (void)vmctx;
+  (void)caller_vmctx;
+  WB_TRACE_IMPORT(12);
   wb::import_log_first(12);
   return 0;
 }
 
 // slot  13: emscripten_asm_const_double -- hand-written below
-extern "C" void wasm_import_014_preallocate_emscripten_key_event_buffer(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_014_preallocate_emscripten_key_event_buffer(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(14);
   wb::import_log_first(14);
 }
 
-extern "C" int32_t wasm_import_015_emscripten_get_element_css_size(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" int32_t wasm_import_015_emscripten_get_element_css_size(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(15);
   wb::import_log_first(15);
   return 0;
 }
@@ -785,172 +833,204 @@ extern "C" int32_t wasm_import_015_emscripten_get_element_css_size(void* vmctx, 
 // slot  17: emscripten_set_canvas_element_size -- hand-written below
 // slot  18: emscripten_get_device_pixel_ratio -- hand-written below
 // slot  19: is_mobile_browser -- hand-written below
-extern "C" void wasm_import_020_install_pointer_source_tracking(void* vmctx) {
+extern "C" void wasm_import_020_install_pointer_source_tracking(void* vmctx, void* caller_vmctx) {
   (void)vmctx;
+  (void)caller_vmctx;
+  WB_TRACE_IMPORT(20);
   wb::import_log_first(20);
 }
 
-extern "C" int32_t wasm_import_021_emscripten_set_mousedown_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+extern "C" int32_t wasm_import_021_emscripten_set_mousedown_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(21);
   wb::import_log_first(21);
   return 0;
 }
 
-extern "C" int32_t wasm_import_022_emscripten_set_mouseup_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+extern "C" int32_t wasm_import_022_emscripten_set_mouseup_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(22);
   wb::import_log_first(22);
   return 0;
 }
 
-extern "C" int32_t wasm_import_023_emscripten_set_mousemove_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+extern "C" int32_t wasm_import_023_emscripten_set_mousemove_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(23);
   wb::import_log_first(23);
   return 0;
 }
 
-extern "C" int32_t wasm_import_024_emscripten_set_keydown_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+extern "C" int32_t wasm_import_024_emscripten_set_keydown_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(24);
   wb::import_log_first(24);
   return 0;
 }
 
-extern "C" int32_t wasm_import_025_emscripten_set_keyup_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+extern "C" int32_t wasm_import_025_emscripten_set_keyup_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(25);
   wb::import_log_first(25);
   return 0;
 }
 
-extern "C" int32_t wasm_import_026_emscripten_set_touchstart_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+extern "C" int32_t wasm_import_026_emscripten_set_touchstart_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(26);
   wb::import_log_first(26);
   return 0;
 }
 
-extern "C" int32_t wasm_import_027_emscripten_set_touchend_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+extern "C" int32_t wasm_import_027_emscripten_set_touchend_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(27);
   wb::import_log_first(27);
   return 0;
 }
 
-extern "C" int32_t wasm_import_028_emscripten_set_touchmove_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+extern "C" int32_t wasm_import_028_emscripten_set_touchmove_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(28);
   wb::import_log_first(28);
   return 0;
 }
 
-extern "C" int32_t wasm_import_029_emscripten_set_touchcancel_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+extern "C" int32_t wasm_import_029_emscripten_set_touchcancel_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(29);
   wb::import_log_first(29);
   return 0;
 }
 
-extern "C" int32_t wasm_import_030_emscripten_set_wheel_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+extern "C" int32_t wasm_import_030_emscripten_set_wheel_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(30);
   wb::import_log_first(30);
   return 0;
 }
 
-extern "C" int32_t wasm_import_031_emscripten_set_mouseleave_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+extern "C" int32_t wasm_import_031_emscripten_set_mouseleave_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(31);
   wb::import_log_first(31);
   return 0;
 }
 
-extern "C" int32_t wasm_import_032_emscripten_set_mouseenter_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+extern "C" int32_t wasm_import_032_emscripten_set_mouseenter_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(32);
   wb::import_log_first(32);
   return 0;
 }
 
-extern "C" int32_t wasm_import_033_emscripten_set_pointerlockerror_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+extern "C" int32_t wasm_import_033_emscripten_set_pointerlockerror_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(33);
   wb::import_log_first(33);
   return 0;
 }
 
-extern "C" int32_t wasm_import_034_emscripten_set_blur_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+extern "C" int32_t wasm_import_034_emscripten_set_blur_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(34);
   wb::import_log_first(34);
   return 0;
 }
 
-extern "C" int32_t wasm_import_035_emscripten_set_focus_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+extern "C" int32_t wasm_import_035_emscripten_set_focus_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(35);
   wb::import_log_first(35);
   return 0;
 }
@@ -974,300 +1054,381 @@ extern "C" int32_t wasm_import_035_emscripten_set_focus_callback_on_thread(void*
 // slot  52: emscripten_console_error -- hand-written below
 // slot  53: emscripten_asm_const_int_sync_on_main_thread -- hand-written below
 // slot  54: js_web_client_page_visible -- hand-written below
-extern "C" double wasm_import_055_js_web_client_ms_since_navigation(void* vmctx) {
+extern "C" double wasm_import_055_js_web_client_ms_since_navigation(void* vmctx, void* caller_vmctx) {
   (void)vmctx;
+  (void)caller_vmctx;
+  WB_TRACE_IMPORT(55);
   wb::import_log_first(55);
   return 0.0;
 }
 
-extern "C" int32_t wasm_import_056_js_web_client_wasm_cache_state(void* vmctx) {
+extern "C" int32_t wasm_import_056_js_web_client_wasm_cache_state(void* vmctx, void* caller_vmctx) {
   (void)vmctx;
+  (void)caller_vmctx;
+  WB_TRACE_IMPORT(56);
   wb::import_log_first(56);
   return 0;
 }
 
-extern "C" void wasm_import_057_sync_text_and_pos(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" void wasm_import_057_sync_text_and_pos(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(57);
   wb::import_log_first(57);
 }
 
-extern "C" void wasm_import_058_setup_font(void* vmctx, int32_t a0, int32_t a1, int32_t a2, float a3, int32_t a4, int32_t a5) {
+extern "C" void wasm_import_058_setup_font(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, float a3, int32_t a4, int32_t a5) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
   (void)a5;
+  WB_TRACE_IMPORT(58);
   wb::import_log_first(58);
 }
 
-extern "C" void wasm_import_059_set_text_box_horiz_alignment(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_059_set_text_box_horiz_alignment(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(59);
   wb::import_log_first(59);
 }
 
-extern "C" void wasm_import_060_set_text_box_vert_alignment(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_060_set_text_box_vert_alignment(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(60);
   wb::import_log_first(60);
 }
 
-extern "C" void wasm_import_061_set_text_color(void* vmctx, float a0, float a1, float a2, float a3) {
+extern "C" void wasm_import_061_set_text_color(void* vmctx, void* caller_vmctx, float a0, float a1, float a2, float a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(61);
   wb::import_log_first(61);
 }
 
-extern "C" void wasm_import_062_blur_text_input(void* vmctx) {
+extern "C" void wasm_import_062_blur_text_input(void* vmctx, void* caller_vmctx) {
   (void)vmctx;
+  (void)caller_vmctx;
+  WB_TRACE_IMPORT(62);
   wb::import_log_first(62);
 }
 
-extern "C" void wasm_import_063_reset_current_text_input(void* vmctx) {
+extern "C" void wasm_import_063_reset_current_text_input(void* vmctx, void* caller_vmctx) {
   (void)vmctx;
+  (void)caller_vmctx;
+  WB_TRACE_IMPORT(63);
   wb::import_log_first(63);
 }
 
-extern "C" void wasm_import_064_copy_pending_text(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_064_copy_pending_text(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(64);
   wb::import_log_first(64);
 }
 
-extern "C" void wasm_import_065_choose_current_text_input(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" void wasm_import_065_choose_current_text_input(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(65);
   wb::import_log_first(65);
 }
 
-extern "C" void wasm_import_066_update_text_box_rect(void* vmctx, float a0, float a1, float a2, float a3) {
+extern "C" void wasm_import_066_update_text_box_rect(void* vmctx, void* caller_vmctx, float a0, float a1, float a2, float a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(66);
   wb::import_log_first(66);
 }
 
-extern "C" void wasm_import_067_set_text_box_overlay(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_067_set_text_box_overlay(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(67);
   wb::import_log_first(67);
 }
 
-extern "C" void wasm_import_068_focus_text_input(void* vmctx) {
+extern "C" void wasm_import_068_focus_text_input(void* vmctx, void* caller_vmctx) {
   (void)vmctx;
+  (void)caller_vmctx;
+  WB_TRACE_IMPORT(68);
   wb::import_log_first(68);
 }
 
-extern "C" void wasm_import_069_shift_canvas(void* vmctx, float a0) {
+extern "C" void wasm_import_069_shift_canvas(void* vmctx, void* caller_vmctx, float a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(69);
   wb::import_log_first(69);
 }
 
-extern "C" int32_t wasm_import_070_emscripten_sample_gamepad_data(void* vmctx) {
+extern "C" int32_t wasm_import_070_emscripten_sample_gamepad_data(void* vmctx, void* caller_vmctx) {
   (void)vmctx;
+  (void)caller_vmctx;
+  WB_TRACE_IMPORT(70);
   wb::import_log_first(70);
   return 0;
 }
 
-extern "C" int32_t wasm_import_071_emscripten_get_gamepad_status(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_071_emscripten_get_gamepad_status(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(71);
   wb::import_log_first(71);
   return 0;
 }
 
-extern "C" int32_t wasm_import_072_emscripten_set_gamepadconnected_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+extern "C" int32_t wasm_import_072_emscripten_set_gamepadconnected_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(72);
   wb::import_log_first(72);
   return 0;
 }
 
-extern "C" int32_t wasm_import_073_emscripten_set_gamepaddisconnected_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+extern "C" int32_t wasm_import_073_emscripten_set_gamepaddisconnected_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(73);
   wb::import_log_first(73);
   return 0;
 }
 
-extern "C" int32_t wasm_import_074_emscripten_get_num_gamepads(void* vmctx) {
+extern "C" int32_t wasm_import_074_emscripten_get_num_gamepads(void* vmctx, void* caller_vmctx) {
   (void)vmctx;
+  (void)caller_vmctx;
+  WB_TRACE_IMPORT(74);
   wb::import_log_first(74);
   return 0;
 }
 
-extern "C" void wasm_import_075_js_external_content_sharing_deliver(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_075_js_external_content_sharing_deliver(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(75);
   wb::import_log_first(75);
 }
 
-extern "C" int32_t wasm_import_076___asyncjs__fiber_transfer_js(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_076___asyncjs__fiber_transfer_js(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(76);
   wb::import_log_first(76);
   return 0;
 }
 
-extern "C" void wasm_import_077_fiber_destroy_js(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_077_fiber_destroy_js(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(77);
   wb::import_log_first(77);
 }
 
-extern "C" int32_t wasm_import_078___asyncjs__create_suspended_fiber_js(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+extern "C" int32_t wasm_import_078___asyncjs__create_suspended_fiber_js(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(78);
   wb::import_log_first(78);
   return 0;
 }
 
-extern "C" void wasm_import_079_report_crash(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+extern "C" void wasm_import_079_report_crash(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(79);
   wb::import_log_first(79);
 }
 
-extern "C" void wasm_import_080_set_crash_attribute(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_080_set_crash_attribute(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(80);
   wb::import_log_first(80);
 }
 
-extern "C" void wasm_import_081_js_request_keyboard_layout(void* vmctx) {
+extern "C" void wasm_import_081_js_request_keyboard_layout(void* vmctx, void* caller_vmctx) {
   (void)vmctx;
+  (void)caller_vmctx;
+  WB_TRACE_IMPORT(81);
   wb::import_log_first(81);
 }
 
-extern "C" int32_t wasm_import_082_js_keyboard_layout_status(void* vmctx) {
+extern "C" int32_t wasm_import_082_js_keyboard_layout_status(void* vmctx, void* caller_vmctx) {
   (void)vmctx;
+  (void)caller_vmctx;
+  WB_TRACE_IMPORT(82);
   wb::import_log_first(82);
   return 0;
 }
 
-extern "C" void wasm_import_083_js_copy_keyboard_layout_key(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" void wasm_import_083_js_copy_keyboard_layout_key(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(83);
   wb::import_log_first(83);
 }
 
 // slot  84: exit -- hand-written below
-extern "C" void wasm_import_085_emscripten_async_call(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" void wasm_import_085_emscripten_async_call(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(85);
   wb::import_log_first(85);
 }
 
-extern "C" void wasm_import_086_rbx_wasm_rna_send_connection_close_js(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_086_rbx_wasm_rna_send_connection_close_js(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(86);
   wb::import_log_first(86);
 }
 
-extern "C" void wasm_import_087_rbx_wasm_rna_write_stream_js(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+extern "C" void wasm_import_087_rbx_wasm_rna_write_stream_js(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(87);
   wb::import_log_first(87);
 }
 
-extern "C" void wasm_import_088_rbx_wasm_rna_open_stream_js(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_088_rbx_wasm_rna_open_stream_js(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(88);
   wb::import_log_first(88);
 }
 
-extern "C" void wasm_import_089_rbx_wasm_rna_receive_ring_consumed_js(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" void wasm_import_089_rbx_wasm_rna_receive_ring_consumed_js(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(89);
   wb::import_log_first(89);
 }
 
-extern "C" void wasm_import_090_rbx_wasm_rna_close_js(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_090_rbx_wasm_rna_close_js(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(90);
   wb::import_log_first(90);
 }
 
-extern "C" void wasm_import_091_rbx_wasm_rna_shutdown_stream_write_js(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_091_rbx_wasm_rna_shutdown_stream_write_js(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(91);
   wb::import_log_first(91);
 }
 
-extern "C" void wasm_import_092_rbx_wasm_rna_shutdown_stream_read_js(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_092_rbx_wasm_rna_shutdown_stream_read_js(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(92);
   wb::import_log_first(92);
 }
 
-extern "C" void wasm_import_093_rbx_wasm_rna_pause_stream_read_js(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_093_rbx_wasm_rna_pause_stream_read_js(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(93);
   wb::import_log_first(93);
 }
 
-extern "C" void wasm_import_094_rbx_wasm_rna_send_datagram_js(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+extern "C" void wasm_import_094_rbx_wasm_rna_send_datagram_js(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(94);
   wb::import_log_first(94);
 }
 
-extern "C" int32_t wasm_import_095_rbx_wasm_rna_is_supported_js(void* vmctx) {
+extern "C" int32_t wasm_import_095_rbx_wasm_rna_is_supported_js(void* vmctx, void* caller_vmctx) {
   (void)vmctx;
+  (void)caller_vmctx;
+  WB_TRACE_IMPORT(95);
   wb::import_log_first(95);
   return 0;
 }
 
-extern "C" void wasm_import_096_rbx_wasm_rna_connect_js(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8, int32_t a9, int32_t a10, int32_t a11, int32_t a12, int32_t a13) {
+extern "C" void wasm_import_096_rbx_wasm_rna_connect_js(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8, int32_t a9, int32_t a10, int32_t a11, int32_t a12, int32_t a13) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
@@ -1282,55 +1443,69 @@ extern "C" void wasm_import_096_rbx_wasm_rna_connect_js(void* vmctx, int32_t a0,
   (void)a11;
   (void)a12;
   (void)a13;
+  WB_TRACE_IMPORT(96);
   wb::import_log_first(96);
 }
 
-extern "C" void wasm_import_097_rbx_wasm_rna_resume_stream_read_js(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_097_rbx_wasm_rna_resume_stream_read_js(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(97);
   wb::import_log_first(97);
 }
 
-extern "C" void wasm_import_098_glScissor(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+extern "C" void wasm_import_098_glScissor(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(98);
   wb::import_log_first(98);
 }
 
-extern "C" void wasm_import_099_glInvalidateFramebuffer(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" void wasm_import_099_glInvalidateFramebuffer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(99);
   wb::import_log_first(99);
 }
 
-extern "C" void wasm_import_100_glBindFramebuffer(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_100_glBindFramebuffer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(100);
   wb::import_log_first(100);
 }
 
-extern "C" void wasm_import_101_glActiveTexture(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_101_glActiveTexture(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(101);
   wb::import_log_first(101);
 }
 
-extern "C" void wasm_import_102_glBindTexture(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_102_glBindTexture(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(102);
   wb::import_log_first(102);
 }
 
-extern "C" void wasm_import_103_glCopyTexSubImage2D(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7) {
+extern "C" void wasm_import_103_glCopyTexSubImage2D(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
@@ -1339,21 +1514,25 @@ extern "C" void wasm_import_103_glCopyTexSubImage2D(void* vmctx, int32_t a0, int
   (void)a5;
   (void)a6;
   (void)a7;
+  WB_TRACE_IMPORT(103);
   wb::import_log_first(103);
 }
 
-extern "C" void wasm_import_104_glBindBufferRange(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+extern "C" void wasm_import_104_glBindBufferRange(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(104);
   wb::import_log_first(104);
 }
 
-extern "C" void wasm_import_105_glBlitFramebuffer(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8, int32_t a9) {
+extern "C" void wasm_import_105_glBlitFramebuffer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8, int32_t a9) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
@@ -1364,521 +1543,659 @@ extern "C" void wasm_import_105_glBlitFramebuffer(void* vmctx, int32_t a0, int32
   (void)a7;
   (void)a8;
   (void)a9;
+  WB_TRACE_IMPORT(105);
   wb::import_log_first(105);
 }
 
-extern "C" void wasm_import_106_glDisable(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_106_glDisable(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(106);
   wb::import_log_first(106);
 }
 
-extern "C" void wasm_import_107_glEnable(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_107_glEnable(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(107);
   wb::import_log_first(107);
 }
 
-extern "C" void wasm_import_108_glCullFace(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_108_glCullFace(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(108);
   wb::import_log_first(108);
 }
 
-extern "C" void wasm_import_109_glPolygonOffset(void* vmctx, float a0, float a1) {
+extern "C" void wasm_import_109_glPolygonOffset(void* vmctx, void* caller_vmctx, float a0, float a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(109);
   wb::import_log_first(109);
 }
 
-extern "C" void wasm_import_110_glColorMask(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+extern "C" void wasm_import_110_glColorMask(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(110);
   wb::import_log_first(110);
 }
 
-extern "C" void wasm_import_111_glBlendFunc(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_111_glBlendFunc(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(111);
   wb::import_log_first(111);
 }
 
-extern "C" void wasm_import_112_glBlendFuncSeparate(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+extern "C" void wasm_import_112_glBlendFuncSeparate(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(112);
   wb::import_log_first(112);
 }
 
-extern "C" void wasm_import_113_glDepthFunc(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_113_glDepthFunc(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(113);
   wb::import_log_first(113);
 }
 
-extern "C" void wasm_import_114_glDepthMask(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_114_glDepthMask(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(114);
   wb::import_log_first(114);
 }
 
-extern "C" void wasm_import_115_glStencilFunc(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" void wasm_import_115_glStencilFunc(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(115);
   wb::import_log_first(115);
 }
 
-extern "C" void wasm_import_116_glStencilOp(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" void wasm_import_116_glStencilOp(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(116);
   wb::import_log_first(116);
 }
 
-extern "C" void wasm_import_117_glUseProgram(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_117_glUseProgram(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(117);
   wb::import_log_first(117);
 }
 
-extern "C" void wasm_import_118_glStencilMask(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_118_glStencilMask(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(118);
   wb::import_log_first(118);
 }
 
-extern "C" void wasm_import_119_glClearBufferfv(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" void wasm_import_119_glClearBufferfv(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(119);
   wb::import_log_first(119);
 }
 
-extern "C" void wasm_import_120_glClearBufferfi(void* vmctx, int32_t a0, int32_t a1, float a2, int32_t a3) {
+extern "C" void wasm_import_120_glClearBufferfi(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, float a2, int32_t a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(120);
   wb::import_log_first(120);
 }
 
-extern "C" void wasm_import_121_glClearBufferiv(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" void wasm_import_121_glClearBufferiv(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(121);
   wb::import_log_first(121);
 }
 
-extern "C" void wasm_import_122_glClearColor(void* vmctx, float a0, float a1, float a2, float a3) {
+extern "C" void wasm_import_122_glClearColor(void* vmctx, void* caller_vmctx, float a0, float a1, float a2, float a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(122);
   wb::import_log_first(122);
 }
 
-extern "C" void wasm_import_123_glClearDepthf(void* vmctx, float a0) {
+extern "C" void wasm_import_123_glClearDepthf(void* vmctx, void* caller_vmctx, float a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(123);
   wb::import_log_first(123);
 }
 
-extern "C" void wasm_import_124_glClearStencil(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_124_glClearStencil(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(124);
   wb::import_log_first(124);
 }
 
-extern "C" void wasm_import_125_glClear(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_125_glClear(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(125);
   wb::import_log_first(125);
 }
 
-extern "C" void wasm_import_126_glBindBufferBase(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" void wasm_import_126_glBindBufferBase(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(126);
   wb::import_log_first(126);
 }
 
-extern "C" void wasm_import_127_glViewport(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+extern "C" void wasm_import_127_glViewport(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(127);
   wb::import_log_first(127);
 }
 
-extern "C" void wasm_import_128_glDrawBuffers(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_128_glDrawBuffers(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(128);
   wb::import_log_first(128);
 }
 
-extern "C" void wasm_import_129_glGenerateMipmap(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_129_glGenerateMipmap(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(129);
   wb::import_log_first(129);
 }
 
-extern "C" void wasm_import_130_glGenFramebuffers(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_130_glGenFramebuffers(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(130);
   wb::import_log_first(130);
 }
 
-extern "C" void wasm_import_131_glFramebufferTextureLayer(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+extern "C" void wasm_import_131_glFramebufferTextureLayer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(131);
   wb::import_log_first(131);
 }
 
-extern "C" int32_t wasm_import_132_glCheckFramebufferStatus(void* vmctx, int32_t a0) {
+extern "C" int32_t wasm_import_132_glCheckFramebufferStatus(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(132);
   wb::import_log_first(132);
   return 0;
 }
 
-extern "C" void wasm_import_133_glDeleteFramebuffers(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_133_glDeleteFramebuffers(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(133);
   wb::import_log_first(133);
 }
 
-extern "C" void wasm_import_134_glDeleteBuffers(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_134_glDeleteBuffers(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(134);
   wb::import_log_first(134);
 }
 
-extern "C" void wasm_import_135_glDeleteShader(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_135_glDeleteShader(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(135);
   wb::import_log_first(135);
 }
 
-extern "C" void wasm_import_136_glDeleteProgram(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_136_glDeleteProgram(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(136);
   wb::import_log_first(136);
 }
 
-extern "C" void wasm_import_137_glDeleteTextures(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_137_glDeleteTextures(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(137);
   wb::import_log_first(137);
 }
 
-extern "C" void wasm_import_138_glDeleteRenderbuffers(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_138_glDeleteRenderbuffers(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(138);
   wb::import_log_first(138);
 }
 
-extern "C" void wasm_import_139_glGetProgramiv(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" void wasm_import_139_glGetProgramiv(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(139);
   wb::import_log_first(139);
 }
 
-extern "C" void wasm_import_140_glBindBuffer(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_140_glBindBuffer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(140);
   wb::import_log_first(140);
 }
 
-extern "C" int32_t wasm_import_141_glMapBufferRange(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+extern "C" int32_t wasm_import_141_glMapBufferRange(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(141);
   wb::import_log_first(141);
   return 0;
 }
 
-extern "C" int32_t wasm_import_142_glGetError(void* vmctx) {
+extern "C" int32_t wasm_import_142_glGetError(void* vmctx, void* caller_vmctx) {
   (void)vmctx;
+  (void)caller_vmctx;
+  WB_TRACE_IMPORT(142);
   wb::import_log_first(142);
   return 0;
 }
 
-extern "C" int32_t wasm_import_143_glGetString(void* vmctx, int32_t a0) {
+extern "C" int32_t wasm_import_143_glGetString(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(143);
   wb::import_log_first(143);
   return 0;
 }
 
-extern "C" void wasm_import_144_glGetIntegerv(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_144_glGetIntegerv(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(144);
   wb::import_log_first(144);
 }
 
-extern "C" void wasm_import_145_glGenVertexArrays(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_145_glGenVertexArrays(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(145);
   wb::import_log_first(145);
 }
 
-extern "C" void wasm_import_146_glBindVertexArray(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_146_glBindVertexArray(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(146);
   wb::import_log_first(146);
 }
 
-extern "C" void wasm_import_147_glDeleteVertexArrays(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_147_glDeleteVertexArrays(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(147);
   wb::import_log_first(147);
 }
 
-extern "C" int32_t wasm_import_148_glUnmapBuffer(void* vmctx, int32_t a0) {
+extern "C" int32_t wasm_import_148_glUnmapBuffer(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(148);
   wb::import_log_first(148);
   return 0;
 }
 
-extern "C" void wasm_import_149_glBufferSubData(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+extern "C" void wasm_import_149_glBufferSubData(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(149);
   wb::import_log_first(149);
 }
 
-extern "C" void wasm_import_150_glGenBuffers(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_150_glGenBuffers(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(150);
   wb::import_log_first(150);
 }
 
-extern "C" void wasm_import_151_glBufferData(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+extern "C" void wasm_import_151_glBufferData(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(151);
   wb::import_log_first(151);
 }
 
-extern "C" int32_t wasm_import_152_glClientWaitSync(void* vmctx, int32_t a0, int32_t a1, int64_t a2) {
+extern "C" int32_t wasm_import_152_glClientWaitSync(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int64_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(152);
   wb::import_log_first(152);
   return 0;
 }
 
-extern "C" void wasm_import_153_glDeleteSync(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_153_glDeleteSync(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(153);
   wb::import_log_first(153);
 }
 
-extern "C" int32_t wasm_import_154_glFenceSync(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_154_glFenceSync(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(154);
   wb::import_log_first(154);
   return 0;
 }
 
-extern "C" void wasm_import_155_glFramebufferTexture2D(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+extern "C" void wasm_import_155_glFramebufferTexture2D(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(155);
   wb::import_log_first(155);
 }
 
-extern "C" void wasm_import_156_glFramebufferRenderbuffer(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+extern "C" void wasm_import_156_glFramebufferRenderbuffer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(156);
   wb::import_log_first(156);
 }
 
-extern "C" void wasm_import_157_glEnableVertexAttribArray(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_157_glEnableVertexAttribArray(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(157);
   wb::import_log_first(157);
 }
 
-extern "C" void wasm_import_158_glVertexAttribPointer(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5) {
+extern "C" void wasm_import_158_glVertexAttribPointer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
   (void)a5;
+  WB_TRACE_IMPORT(158);
   wb::import_log_first(158);
 }
 
-extern "C" void wasm_import_159_glDisableVertexAttribArray(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_159_glDisableVertexAttribArray(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(159);
   wb::import_log_first(159);
 }
 
-extern "C" void wasm_import_160_glDrawElements(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+extern "C" void wasm_import_160_glDrawElements(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(160);
   wb::import_log_first(160);
 }
 
-extern "C" void wasm_import_161_glDrawArrays(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" void wasm_import_161_glDrawArrays(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(161);
   wb::import_log_first(161);
 }
 
-extern "C" void wasm_import_162_glDrawElementsInstanced(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+extern "C" void wasm_import_162_glDrawElementsInstanced(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(162);
   wb::import_log_first(162);
 }
 
-extern "C" void wasm_import_163_glDrawArraysInstanced(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+extern "C" void wasm_import_163_glDrawArraysInstanced(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(163);
   wb::import_log_first(163);
 }
 
-extern "C" int32_t wasm_import_164_glGetUniformLocation(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_164_glGetUniformLocation(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(164);
   wb::import_log_first(164);
   return 0;
 }
 
-extern "C" int32_t wasm_import_165_glCreateProgram(void* vmctx) {
+extern "C" int32_t wasm_import_165_glCreateProgram(void* vmctx, void* caller_vmctx) {
   (void)vmctx;
+  (void)caller_vmctx;
+  WB_TRACE_IMPORT(165);
   wb::import_log_first(165);
   return 0;
 }
 
-extern "C" void wasm_import_166_glAttachShader(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_166_glAttachShader(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(166);
   wb::import_log_first(166);
 }
 
-extern "C" void wasm_import_167_glBindAttribLocation(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" void wasm_import_167_glBindAttribLocation(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(167);
   wb::import_log_first(167);
 }
 
-extern "C" void wasm_import_168_glLinkProgram(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_168_glLinkProgram(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(168);
   wb::import_log_first(168);
 }
 
-extern "C" void wasm_import_169_glGetProgramInfoLog(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+extern "C" void wasm_import_169_glGetProgramInfoLog(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(169);
   wb::import_log_first(169);
 }
 
-extern "C" void wasm_import_170_glUniform1i(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_170_glUniform1i(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(170);
   wb::import_log_first(170);
 }
 
-extern "C" int32_t wasm_import_171_glGetUniformBlockIndex(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_171_glGetUniformBlockIndex(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(171);
   wb::import_log_first(171);
   return 0;
 }
 
-extern "C" void wasm_import_172_glUniformBlockBinding(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" void wasm_import_172_glUniformBlockBinding(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(172);
   wb::import_log_first(172);
 }
 
-extern "C" void wasm_import_173_glGetActiveUniformBlockiv(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+extern "C" void wasm_import_173_glGetActiveUniformBlockiv(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(173);
   wb::import_log_first(173);
 }
 
-extern "C" void wasm_import_174_glGetActiveUniform(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6) {
+extern "C" void wasm_import_174_glGetActiveUniform(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
@@ -1886,78 +2203,96 @@ extern "C" void wasm_import_174_glGetActiveUniform(void* vmctx, int32_t a0, int3
   (void)a4;
   (void)a5;
   (void)a6;
+  WB_TRACE_IMPORT(174);
   wb::import_log_first(174);
 }
 
-extern "C" int32_t wasm_import_175_glCreateShader(void* vmctx, int32_t a0) {
+extern "C" int32_t wasm_import_175_glCreateShader(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(175);
   wb::import_log_first(175);
   return 0;
 }
 
-extern "C" void wasm_import_176_glShaderSource(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+extern "C" void wasm_import_176_glShaderSource(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(176);
   wb::import_log_first(176);
 }
 
-extern "C" void wasm_import_177_glCompileShader(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_177_glCompileShader(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(177);
   wb::import_log_first(177);
 }
 
-extern "C" void wasm_import_178_glGetShaderiv(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" void wasm_import_178_glGetShaderiv(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(178);
   wb::import_log_first(178);
 }
 
-extern "C" void wasm_import_179_glGetShaderInfoLog(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+extern "C" void wasm_import_179_glGetShaderInfoLog(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(179);
   wb::import_log_first(179);
 }
 
-extern "C" void wasm_import_180_glGenTextures(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_180_glGenTextures(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(180);
   wb::import_log_first(180);
 }
 
-extern "C" void wasm_import_181_glTexStorage3D(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5) {
+extern "C" void wasm_import_181_glTexStorage3D(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
   (void)a5;
+  WB_TRACE_IMPORT(181);
   wb::import_log_first(181);
 }
 
-extern "C" void wasm_import_182_glTexStorage2D(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+extern "C" void wasm_import_182_glTexStorage2D(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(182);
   wb::import_log_first(182);
 }
 
-extern "C" void wasm_import_183_glCompressedTexImage3D(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8) {
+extern "C" void wasm_import_183_glCompressedTexImage3D(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
@@ -1967,11 +2302,13 @@ extern "C" void wasm_import_183_glCompressedTexImage3D(void* vmctx, int32_t a0, 
   (void)a6;
   (void)a7;
   (void)a8;
+  WB_TRACE_IMPORT(183);
   wb::import_log_first(183);
 }
 
-extern "C" void wasm_import_184_glCompressedTexImage2D(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7) {
+extern "C" void wasm_import_184_glCompressedTexImage2D(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
@@ -1980,11 +2317,13 @@ extern "C" void wasm_import_184_glCompressedTexImage2D(void* vmctx, int32_t a0, 
   (void)a5;
   (void)a6;
   (void)a7;
+  WB_TRACE_IMPORT(184);
   wb::import_log_first(184);
 }
 
-extern "C" void wasm_import_185_glTexImage3D(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8, int32_t a9) {
+extern "C" void wasm_import_185_glTexImage3D(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8, int32_t a9) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
@@ -1995,11 +2334,13 @@ extern "C" void wasm_import_185_glTexImage3D(void* vmctx, int32_t a0, int32_t a1
   (void)a7;
   (void)a8;
   (void)a9;
+  WB_TRACE_IMPORT(185);
   wb::import_log_first(185);
 }
 
-extern "C" void wasm_import_186_glTexImage2D(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8) {
+extern "C" void wasm_import_186_glTexImage2D(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
@@ -2009,26 +2350,32 @@ extern "C" void wasm_import_186_glTexImage2D(void* vmctx, int32_t a0, int32_t a1
   (void)a6;
   (void)a7;
   (void)a8;
+  WB_TRACE_IMPORT(186);
   wb::import_log_first(186);
 }
 
-extern "C" void wasm_import_187_glTexParameteri(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" void wasm_import_187_glTexParameteri(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(187);
   wb::import_log_first(187);
 }
 
-extern "C" void wasm_import_188_glPixelStorei(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_188_glPixelStorei(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(188);
   wb::import_log_first(188);
 }
 
-extern "C" void wasm_import_189_glReadPixels(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6) {
+extern "C" void wasm_import_189_glReadPixels(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
@@ -2036,44 +2383,54 @@ extern "C" void wasm_import_189_glReadPixels(void* vmctx, int32_t a0, int32_t a1
   (void)a4;
   (void)a5;
   (void)a6;
+  WB_TRACE_IMPORT(189);
   wb::import_log_first(189);
 }
 
-extern "C" void wasm_import_190_glGenRenderbuffers(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_190_glGenRenderbuffers(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(190);
   wb::import_log_first(190);
 }
 
-extern "C" void wasm_import_191_glBindRenderbuffer(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_191_glBindRenderbuffer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(191);
   wb::import_log_first(191);
 }
 
-extern "C" void wasm_import_192_glRenderbufferStorageMultisample(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+extern "C" void wasm_import_192_glRenderbufferStorageMultisample(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(192);
   wb::import_log_first(192);
 }
 
-extern "C" void wasm_import_193_glRenderbufferStorage(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+extern "C" void wasm_import_193_glRenderbufferStorage(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(193);
   wb::import_log_first(193);
 }
 
-extern "C" void wasm_import_194_glCompressedTexSubImage3D(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8, int32_t a9, int32_t a10) {
+extern "C" void wasm_import_194_glCompressedTexSubImage3D(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8, int32_t a9, int32_t a10) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
@@ -2085,11 +2442,13 @@ extern "C" void wasm_import_194_glCompressedTexSubImage3D(void* vmctx, int32_t a
   (void)a8;
   (void)a9;
   (void)a10;
+  WB_TRACE_IMPORT(194);
   wb::import_log_first(194);
 }
 
-extern "C" void wasm_import_195_glCompressedTexSubImage2D(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8) {
+extern "C" void wasm_import_195_glCompressedTexSubImage2D(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
@@ -2099,11 +2458,13 @@ extern "C" void wasm_import_195_glCompressedTexSubImage2D(void* vmctx, int32_t a
   (void)a6;
   (void)a7;
   (void)a8;
+  WB_TRACE_IMPORT(195);
   wb::import_log_first(195);
 }
 
-extern "C" void wasm_import_196_glTexSubImage3D(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8, int32_t a9, int32_t a10) {
+extern "C" void wasm_import_196_glTexSubImage3D(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8, int32_t a9, int32_t a10) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
@@ -2115,11 +2476,13 @@ extern "C" void wasm_import_196_glTexSubImage3D(void* vmctx, int32_t a0, int32_t
   (void)a8;
   (void)a9;
   (void)a10;
+  WB_TRACE_IMPORT(196);
   wb::import_log_first(196);
 }
 
-extern "C" void wasm_import_197_glTexSubImage2D(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8) {
+extern "C" void wasm_import_197_glTexSubImage2D(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
@@ -2129,298 +2492,370 @@ extern "C" void wasm_import_197_glTexSubImage2D(void* vmctx, int32_t a0, int32_t
   (void)a6;
   (void)a7;
   (void)a8;
+  WB_TRACE_IMPORT(197);
   wb::import_log_first(197);
 }
 
-extern "C" void wasm_import_198_glTexParameterfv(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" void wasm_import_198_glTexParameterfv(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(198);
   wb::import_log_first(198);
 }
 
-extern "C" void wasm_import_199_glTexParameterf(void* vmctx, int32_t a0, int32_t a1, float a2) {
+extern "C" void wasm_import_199_glTexParameterf(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, float a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(199);
   wb::import_log_first(199);
 }
 
-extern "C" void wasm_import_200_glClipControlEXT(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_200_glClipControlEXT(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(200);
   wb::import_log_first(200);
 }
 
-extern "C" int32_t wasm_import_201_applyPendingCanvasResize(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_201_applyPendingCanvasResize(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(201);
   wb::import_log_first(201);
   return 0;
 }
 
-extern "C" int32_t wasm_import_202_emscripten_webgl_make_context_current(void* vmctx, int32_t a0) {
+extern "C" int32_t wasm_import_202_emscripten_webgl_make_context_current(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(202);
   wb::import_log_first(202);
   return 0;
 }
 
-extern "C" int32_t wasm_import_203_emscripten_webgl_create_context(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_203_emscripten_webgl_create_context(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(203);
   wb::import_log_first(203);
   return 0;
 }
 
-extern "C" int32_t wasm_import_204_emscripten_webgl_destroy_context(void* vmctx, int32_t a0) {
+extern "C" int32_t wasm_import_204_emscripten_webgl_destroy_context(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(204);
   wb::import_log_first(204);
   return 0;
 }
 
-extern "C" int32_t wasm_import_205_emscripten_webgl_get_context_attributes(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_205_emscripten_webgl_get_context_attributes(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(205);
   wb::import_log_first(205);
   return 0;
 }
 
 // slot 206: emscripten_get_canvas_element_size -- hand-written below
-extern "C" void wasm_import_207_wgpuQueueSubmit(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" void wasm_import_207_wgpuQueueSubmit(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(207);
   wb::import_log_first(207);
 }
 
-extern "C" int32_t wasm_import_208_emscripten_webgpu_get_device(void* vmctx) {
+extern "C" int32_t wasm_import_208_emscripten_webgpu_get_device(void* vmctx, void* caller_vmctx) {
   (void)vmctx;
+  (void)caller_vmctx;
+  WB_TRACE_IMPORT(208);
   wb::import_log_first(208);
   return 0;
 }
 
-extern "C" int32_t wasm_import_209_wgpuDeviceCreateBindGroupLayout(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_209_wgpuDeviceCreateBindGroupLayout(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(209);
   wb::import_log_first(209);
   return 0;
 }
 
-extern "C" int32_t wasm_import_210_wgpuDeviceCreatePipelineLayout(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_210_wgpuDeviceCreatePipelineLayout(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(210);
   wb::import_log_first(210);
   return 0;
 }
 
-extern "C" int32_t wasm_import_211_wgpuDeviceCreateRenderPipeline(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_211_wgpuDeviceCreateRenderPipeline(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(211);
   wb::import_log_first(211);
   return 0;
 }
 
-extern "C" int32_t wasm_import_212_wgpuDeviceCreateTexture(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_212_wgpuDeviceCreateTexture(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(212);
   wb::import_log_first(212);
   return 0;
 }
 
-extern "C" void wasm_import_213_wgpuQueueWriteTexture(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5) {
+extern "C" void wasm_import_213_wgpuQueueWriteTexture(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
   (void)a5;
+  WB_TRACE_IMPORT(213);
   wb::import_log_first(213);
 }
 
-extern "C" int32_t wasm_import_214_wgpuTextureCreateView(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_214_wgpuTextureCreateView(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(214);
   wb::import_log_first(214);
   return 0;
 }
 
-extern "C" void wasm_import_215_wgpuComputePassEncoderSetPipeline(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_215_wgpuComputePassEncoderSetPipeline(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(215);
   wb::import_log_first(215);
 }
 
-extern "C" void wasm_import_216_wgpuComputePassEncoderDispatchWorkgroups(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+extern "C" void wasm_import_216_wgpuComputePassEncoderDispatchWorkgroups(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(216);
   wb::import_log_first(216);
 }
 
-extern "C" void wasm_import_217_wgpuComputePassEncoderSetBindGroup(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+extern "C" void wasm_import_217_wgpuComputePassEncoderSetBindGroup(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(217);
   wb::import_log_first(217);
 }
 
-extern "C" void wasm_import_218_wgpuRenderPassEncoderPushDebugGroup(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_218_wgpuRenderPassEncoderPushDebugGroup(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(218);
   wb::import_log_first(218);
 }
 
-extern "C" void wasm_import_219_wgpuCommandEncoderPushDebugGroup(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_219_wgpuCommandEncoderPushDebugGroup(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(219);
   wb::import_log_first(219);
 }
 
-extern "C" void wasm_import_220_wgpuComputePassEncoderPushDebugGroup(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_220_wgpuComputePassEncoderPushDebugGroup(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(220);
   wb::import_log_first(220);
 }
 
-extern "C" int32_t wasm_import_221_wgpuCommandEncoderBeginRenderPass(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_221_wgpuCommandEncoderBeginRenderPass(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(221);
   wb::import_log_first(221);
   return 0;
 }
 
-extern "C" void wasm_import_222_wgpuRenderPassEncoderEnd(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_222_wgpuRenderPassEncoderEnd(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(222);
   wb::import_log_first(222);
 }
 
-extern "C" int64_t wasm_import_223_wgpuBufferGetSize(void* vmctx, int32_t a0) {
+extern "C" int64_t wasm_import_223_wgpuBufferGetSize(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(223);
   wb::import_log_first(223);
   return 0;
 }
 
-extern "C" void wasm_import_224_wgpuQueueWriteBuffer(void* vmctx, int32_t a0, int32_t a1, int64_t a2, int32_t a3, int32_t a4) {
+extern "C" void wasm_import_224_wgpuQueueWriteBuffer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int64_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(224);
   wb::import_log_first(224);
 }
 
-extern "C" void wasm_import_225_wgpuRenderPassEncoderSetPipeline(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_225_wgpuRenderPassEncoderSetPipeline(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(225);
   wb::import_log_first(225);
 }
 
-extern "C" void wasm_import_226_wgpuRenderPassEncoderSetBindGroup(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+extern "C" void wasm_import_226_wgpuRenderPassEncoderSetBindGroup(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(226);
   wb::import_log_first(226);
 }
 
-extern "C" void wasm_import_227_wgpuRenderPassEncoderDraw(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+extern "C" void wasm_import_227_wgpuRenderPassEncoderDraw(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(227);
   wb::import_log_first(227);
 }
 
-extern "C" void wasm_import_228_wgpuRenderPassEncoderSetVertexBuffer(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int64_t a3, int64_t a4) {
+extern "C" void wasm_import_228_wgpuRenderPassEncoderSetVertexBuffer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int64_t a3, int64_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(228);
   wb::import_log_first(228);
 }
 
-extern "C" void wasm_import_229_wgpuRenderPassEncoderSetIndexBuffer(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int64_t a3, int64_t a4) {
+extern "C" void wasm_import_229_wgpuRenderPassEncoderSetIndexBuffer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int64_t a3, int64_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(229);
   wb::import_log_first(229);
 }
 
-extern "C" void wasm_import_230_wgpuRenderPassEncoderDrawIndexed(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5) {
+extern "C" void wasm_import_230_wgpuRenderPassEncoderDrawIndexed(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
   (void)a5;
+  WB_TRACE_IMPORT(230);
   wb::import_log_first(230);
 }
 
-extern "C" void wasm_import_231_wgpuRenderPassEncoderSetStencilReference(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_231_wgpuRenderPassEncoderSetStencilReference(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(231);
   wb::import_log_first(231);
 }
 
-extern "C" void wasm_import_232_wgpuCommandEncoderCopyTextureToTexture(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+extern "C" void wasm_import_232_wgpuCommandEncoderCopyTextureToTexture(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(232);
   wb::import_log_first(232);
 }
 
-extern "C" int32_t wasm_import_233_wgpuDeviceCreateBindGroup(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_233_wgpuDeviceCreateBindGroup(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(233);
   wb::import_log_first(233);
   return 0;
 }
 
-extern "C" void wasm_import_234_wgpuRenderPassEncoderSetViewport(void* vmctx, int32_t a0, float a1, float a2, float a3, float a4, float a5, float a6) {
+extern "C" void wasm_import_234_wgpuRenderPassEncoderSetViewport(void* vmctx, void* caller_vmctx, int32_t a0, float a1, float a2, float a3, float a4, float a5, float a6) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
@@ -2428,471 +2863,590 @@ extern "C" void wasm_import_234_wgpuRenderPassEncoderSetViewport(void* vmctx, in
   (void)a4;
   (void)a5;
   (void)a6;
+  WB_TRACE_IMPORT(234);
   wb::import_log_first(234);
 }
 
-extern "C" void wasm_import_235_wgpuRenderPassEncoderSetScissorRect(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+extern "C" void wasm_import_235_wgpuRenderPassEncoderSetScissorRect(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(235);
   wb::import_log_first(235);
 }
 
-extern "C" void wasm_import_236_wgpuComputePassEncoderPopDebugGroup(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_236_wgpuComputePassEncoderPopDebugGroup(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(236);
   wb::import_log_first(236);
 }
 
-extern "C" void wasm_import_237_wgpuComputePassEncoderEnd(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_237_wgpuComputePassEncoderEnd(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(237);
   wb::import_log_first(237);
 }
 
-extern "C" void wasm_import_238_wgpuRenderPassEncoderPopDebugGroup(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_238_wgpuRenderPassEncoderPopDebugGroup(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(238);
   wb::import_log_first(238);
 }
 
-extern "C" int32_t wasm_import_239_wgpuCommandEncoderFinish(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_239_wgpuCommandEncoderFinish(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(239);
   wb::import_log_first(239);
   return 0;
 }
 
-extern "C" int32_t wasm_import_240_wgpuCommandEncoderBeginComputePass(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_240_wgpuCommandEncoderBeginComputePass(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(240);
   wb::import_log_first(240);
   return 0;
 }
 
-extern "C" int32_t wasm_import_241_wgpuDeviceGetLimits(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_241_wgpuDeviceGetLimits(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(241);
   wb::import_log_first(241);
   return 0;
 }
 
-extern "C" void wasm_import_242_wgpuCommandEncoderPopDebugGroup(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_242_wgpuCommandEncoderPopDebugGroup(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(242);
   wb::import_log_first(242);
 }
 
-extern "C" void wasm_import_243_presentBrowserFrame(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" void wasm_import_243_presentBrowserFrame(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(243);
   wb::import_log_first(243);
 }
 
-extern "C" void wasm_import_244_wgpuCommandEncoderCopyBufferToBuffer(void* vmctx, int32_t a0, int32_t a1, int64_t a2, int32_t a3, int64_t a4, int64_t a5) {
+extern "C" void wasm_import_244_wgpuCommandEncoderCopyBufferToBuffer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int64_t a2, int32_t a3, int64_t a4, int64_t a5) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
   (void)a5;
+  WB_TRACE_IMPORT(244);
   wb::import_log_first(244);
 }
 
-extern "C" int32_t wasm_import_245_wgpuDeviceCreateCommandEncoder(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_245_wgpuDeviceCreateCommandEncoder(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(245);
   wb::import_log_first(245);
   return 0;
 }
 
-extern "C" int32_t wasm_import_246_wgpuDeviceHasFeature(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_246_wgpuDeviceHasFeature(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(246);
   wb::import_log_first(246);
   return 0;
 }
 
-extern "C" int32_t wasm_import_247_wgpuInstanceCreateSurface(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_247_wgpuInstanceCreateSurface(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(247);
   wb::import_log_first(247);
   return 0;
 }
 
-extern "C" void wasm_import_248_wgpuSurfaceConfigure(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_248_wgpuSurfaceConfigure(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(248);
   wb::import_log_first(248);
 }
 
-extern "C" void wasm_import_249_applyPendingBrowserCanvasResize(void* vmctx) {
+extern "C" void wasm_import_249_applyPendingBrowserCanvasResize(void* vmctx, void* caller_vmctx) {
   (void)vmctx;
+  (void)caller_vmctx;
+  WB_TRACE_IMPORT(249);
   wb::import_log_first(249);
 }
 
-extern "C" void wasm_import_250_wgpuCommandEncoderResolveQuerySet(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int64_t a5) {
+extern "C" void wasm_import_250_wgpuCommandEncoderResolveQuerySet(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int64_t a5) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
   (void)a5;
+  WB_TRACE_IMPORT(250);
   wb::import_log_first(250);
 }
 
-extern "C" int32_t wasm_import_251_getWebGpuTimestampInterval(void* vmctx) {
+extern "C" int32_t wasm_import_251_getWebGpuTimestampInterval(void* vmctx, void* caller_vmctx) {
   (void)vmctx;
+  (void)caller_vmctx;
+  WB_TRACE_IMPORT(251);
   wb::import_log_first(251);
   return 0;
 }
 
-extern "C" int32_t wasm_import_252_wgpuDeviceCreateQuerySet(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_252_wgpuDeviceCreateQuerySet(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(252);
   wb::import_log_first(252);
   return 0;
 }
 
-extern "C" int32_t wasm_import_253_wgpuDeviceCreateComputePipeline(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_253_wgpuDeviceCreateComputePipeline(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(253);
   wb::import_log_first(253);
   return 0;
 }
 
-extern "C" int32_t wasm_import_254_wgpuDeviceCreateSampler(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_254_wgpuDeviceCreateSampler(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(254);
   wb::import_log_first(254);
   return 0;
 }
 
-extern "C" void wasm_import_255_wgpuCommandEncoderCopyTextureToBuffer(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+extern "C" void wasm_import_255_wgpuCommandEncoderCopyTextureToBuffer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(255);
   wb::import_log_first(255);
 }
 
-extern "C" int32_t wasm_import_256_wgpuTextureGetDepthOrArrayLayers(void* vmctx, int32_t a0) {
+extern "C" int32_t wasm_import_256_wgpuTextureGetDepthOrArrayLayers(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(256);
   wb::import_log_first(256);
   return 0;
 }
 
-extern "C" int32_t wasm_import_257_wgpuTextureGetDimension(void* vmctx, int32_t a0) {
+extern "C" int32_t wasm_import_257_wgpuTextureGetDimension(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(257);
   wb::import_log_first(257);
   return 0;
 }
 
-extern "C" int64_t wasm_import_258_wgpuTextureGetUsage(void* vmctx, int32_t a0) {
+extern "C" int64_t wasm_import_258_wgpuTextureGetUsage(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(258);
   wb::import_log_first(258);
   return 0;
 }
 
-extern "C" int32_t wasm_import_259_emwgpuGetPreferredFormat(void* vmctx) {
+extern "C" int32_t wasm_import_259_emwgpuGetPreferredFormat(void* vmctx, void* caller_vmctx) {
   (void)vmctx;
+  (void)caller_vmctx;
+  WB_TRACE_IMPORT(259);
   wb::import_log_first(259);
   return 0;
 }
 
-extern "C" int32_t wasm_import_260_emwgpuDeviceCreateBuffer(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" int32_t wasm_import_260_emwgpuDeviceCreateBuffer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(260);
   wb::import_log_first(260);
   return 0;
 }
 
-extern "C" void wasm_import_261_emwgpuDelete(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_261_emwgpuDelete(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(261);
   wb::import_log_first(261);
 }
 
-extern "C" void wasm_import_262_emwgpuDeviceDestroy(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_262_emwgpuDeviceDestroy(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(262);
   wb::import_log_first(262);
 }
 
-extern "C" void wasm_import_263_emwgpuBufferUnmap(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_263_emwgpuBufferUnmap(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(263);
   wb::import_log_first(263);
 }
 
-extern "C" void wasm_import_264_emwgpuDeviceCreateShaderModule(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" void wasm_import_264_emwgpuDeviceCreateShaderModule(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(264);
   wb::import_log_first(264);
 }
 
-extern "C" int32_t wasm_import_265_emwgpuBufferGetConstMappedRange(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" int32_t wasm_import_265_emwgpuBufferGetConstMappedRange(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(265);
   wb::import_log_first(265);
   return 0;
 }
 
-extern "C" void wasm_import_266_emwgpuShaderModuleGetCompilationInfo(void* vmctx, int32_t a0, int64_t a1, int32_t a2) {
+extern "C" void wasm_import_266_emwgpuShaderModuleGetCompilationInfo(void* vmctx, void* caller_vmctx, int32_t a0, int64_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(266);
   wb::import_log_first(266);
 }
 
-extern "C" void wasm_import_267_emwgpuBufferMapAsync(void* vmctx, int32_t a0, int64_t a1, int64_t a2, int32_t a3, int32_t a4) {
+extern "C" void wasm_import_267_emwgpuBufferMapAsync(void* vmctx, void* caller_vmctx, int32_t a0, int64_t a1, int64_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(267);
   wb::import_log_first(267);
 }
 
 // slot 268: emscripten_runtime_keepalive_push -- hand-written below
-extern "C" int32_t wasm_import_269_emscripten_websocket_close(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" int32_t wasm_import_269_emscripten_websocket_close(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(269);
   wb::import_log_first(269);
   return 0;
 }
 
-extern "C" int32_t wasm_import_270_emscripten_websocket_delete(void* vmctx, int32_t a0) {
+extern "C" int32_t wasm_import_270_emscripten_websocket_delete(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(270);
   wb::import_log_first(270);
   return 0;
 }
 
-extern "C" int32_t wasm_import_271_emscripten_websocket_send_binary(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" int32_t wasm_import_271_emscripten_websocket_send_binary(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(271);
   wb::import_log_first(271);
   return 0;
 }
 
-extern "C" int32_t wasm_import_272_emscripten_websocket_send_utf8_text(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_272_emscripten_websocket_send_utf8_text(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(272);
   wb::import_log_first(272);
   return 0;
 }
 
-extern "C" int32_t wasm_import_273_emscripten_websocket_new(void* vmctx, int32_t a0) {
+extern "C" int32_t wasm_import_273_emscripten_websocket_new(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(273);
   wb::import_log_first(273);
   return 0;
 }
 
-extern "C" int32_t wasm_import_274_emscripten_websocket_set_onopen_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+extern "C" int32_t wasm_import_274_emscripten_websocket_set_onopen_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(274);
   wb::import_log_first(274);
   return 0;
 }
 
-extern "C" int32_t wasm_import_275_emscripten_websocket_set_onmessage_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+extern "C" int32_t wasm_import_275_emscripten_websocket_set_onmessage_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(275);
   wb::import_log_first(275);
   return 0;
 }
 
-extern "C" int32_t wasm_import_276_emscripten_websocket_set_onerror_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+extern "C" int32_t wasm_import_276_emscripten_websocket_set_onerror_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(276);
   wb::import_log_first(276);
   return 0;
 }
 
-extern "C" int32_t wasm_import_277_emscripten_websocket_set_onclose_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+extern "C" int32_t wasm_import_277_emscripten_websocket_set_onclose_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(277);
   wb::import_log_first(277);
   return 0;
 }
 
-extern "C" void wasm_import_278_rbx_opfs_close(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_278_rbx_opfs_close(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(278);
   wb::import_log_first(278);
 }
 
-extern "C" void wasm_import_279_rbx_opfs_free(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_279_rbx_opfs_free(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(279);
   wb::import_log_first(279);
 }
 
-extern "C" void wasm_import_280_rbx_opfs_install_helpers(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_280_rbx_opfs_install_helpers(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(280);
   wb::import_log_first(280);
 }
 
-extern "C" int32_t wasm_import_281___asyncjs__rbx_opfs_set(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" int32_t wasm_import_281___asyncjs__rbx_opfs_set(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(281);
   wb::import_log_first(281);
   return 0;
 }
 
-extern "C" int32_t wasm_import_282_rbx_opfs_read_sync_if_cached(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+extern "C" int32_t wasm_import_282_rbx_opfs_read_sync_if_cached(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(282);
   wb::import_log_first(282);
   return 0;
 }
 
-extern "C" int32_t wasm_import_283___asyncjs__rbx_opfs_get_buffer(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" int32_t wasm_import_283___asyncjs__rbx_opfs_get_buffer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(283);
   wb::import_log_first(283);
   return 0;
 }
 
-extern "C" void wasm_import_284___asyncjs__rbx_opfs_open(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_284___asyncjs__rbx_opfs_open(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(284);
   wb::import_log_first(284);
 }
 
-extern "C" int32_t wasm_import_285___asyncjs__rbx_opfs_clear(void* vmctx) {
+extern "C" int32_t wasm_import_285___asyncjs__rbx_opfs_clear(void* vmctx, void* caller_vmctx) {
   (void)vmctx;
+  (void)caller_vmctx;
+  WB_TRACE_IMPORT(285);
   wb::import_log_first(285);
   return 0;
 }
 
-extern "C" int32_t wasm_import_286___asyncjs__rbx_opfs_get_offset(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+extern "C" int32_t wasm_import_286___asyncjs__rbx_opfs_get_offset(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
+  WB_TRACE_IMPORT(286);
   wb::import_log_first(286);
   return 0;
 }
 
-extern "C" int32_t wasm_import_287___asyncjs__rbx_opfs_contains(void* vmctx, int32_t a0) {
+extern "C" int32_t wasm_import_287___asyncjs__rbx_opfs_contains(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(287);
   wb::import_log_first(287);
   return 0;
 }
 
-extern "C" int32_t wasm_import_288___asyncjs__rbx_opfs_remove(void* vmctx, int32_t a0) {
+extern "C" int32_t wasm_import_288___asyncjs__rbx_opfs_remove(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(288);
   wb::import_log_first(288);
   return 0;
 }
 
-extern "C" int32_t wasm_import_289___asyncjs__rbx_opfs_get_buffer_offset(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+extern "C" int32_t wasm_import_289___asyncjs__rbx_opfs_get_buffer_offset(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(289);
   wb::import_log_first(289);
   return 0;
 }
 
-extern "C" int32_t wasm_import_290___asyncjs__rbx_opfs_file_size(void* vmctx, int32_t a0) {
+extern "C" int32_t wasm_import_290___asyncjs__rbx_opfs_file_size(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(290);
   wb::import_log_first(290);
   return 0;
 }
 
-extern "C" int32_t wasm_import_291___asyncjs__rbx_opfs_get(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_291___asyncjs__rbx_opfs_get(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(291);
   wb::import_log_first(291);
   return 0;
 }
 
-extern "C" int32_t wasm_import_292___asyncjs__rbx_opfs_list(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_292___asyncjs__rbx_opfs_list(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(292);
   wb::import_log_first(292);
   return 0;
 }
 
-extern "C" int32_t wasm_import_293___asyncjs__rbx_opfs_list_sized(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_293___asyncjs__rbx_opfs_list_sized(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(293);
   wb::import_log_first(293);
   return 0;
 }
 
-extern "C" int32_t wasm_import_294___asyncjs__rbx_opfs_remove_batch(void* vmctx, int32_t a0) {
+extern "C" int32_t wasm_import_294___asyncjs__rbx_opfs_remove_batch(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(294);
   wb::import_log_first(294);
   return 0;
 }
@@ -2902,32 +3456,40 @@ extern "C" int32_t wasm_import_294___asyncjs__rbx_opfs_remove_batch(void* vmctx,
 // slot 297: read_host_info_int -- hand-written below
 // slot 298: read_host_info_string -- hand-written below
 // slot 299: get_hardware_concurrency -- hand-written below
-extern "C" int32_t wasm_import_300_emscripten_stack_snapshot(void* vmctx) {
+extern "C" int32_t wasm_import_300_emscripten_stack_snapshot(void* vmctx, void* caller_vmctx) {
   (void)vmctx;
+  (void)caller_vmctx;
+  WB_TRACE_IMPORT(300);
   wb::import_log_first(300);
   return 0;
 }
 
-extern "C" int32_t wasm_import_301_emscripten_stack_unwind_buffer(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" int32_t wasm_import_301_emscripten_stack_unwind_buffer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
+  WB_TRACE_IMPORT(301);
   wb::import_log_first(301);
   return 0;
 }
 
 // slot 302: HaveOffsetConverter -- hand-written below
-extern "C" int32_t wasm_import_303_emscripten_pc_get_function(void* vmctx, int32_t a0) {
+extern "C" int32_t wasm_import_303_emscripten_pc_get_function(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(303);
   wb::import_log_first(303);
   return 0;
 }
 
-extern "C" void wasm_import_304_emscripten_start_fetch(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_304_emscripten_start_fetch(void* vmctx, void* caller_vmctx, int32_t a0) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
+  WB_TRACE_IMPORT(304);
   wb::import_log_first(304);
 }
 
@@ -2955,25 +3517,29 @@ extern "C" void wasm_import_304_emscripten_start_fetch(void* vmctx, int32_t a0) 
 // slot 326: _mktime_js -- hand-written below
 // slot 327: _localtime_js -- hand-written below
 // slot 328: _gmtime_js -- hand-written below
-extern "C" int32_t wasm_import_329__msync_js(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int64_t a5) {
+extern "C" int32_t wasm_import_329__msync_js(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int64_t a5) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
   (void)a5;
+  WB_TRACE_IMPORT(329);
   wb::import_log_first(329);
   return 0;
 }
 
-extern "C" int32_t wasm_import_330_fd_pread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int64_t a3, int32_t a4) {
+extern "C" int32_t wasm_import_330_fd_pread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int64_t a3, int32_t a4) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
   (void)a2;
   (void)a3;
   (void)a4;
+  WB_TRACE_IMPORT(330);
   wb::import_log_first(330);
   return 0;
 }
@@ -2984,10 +3550,12 @@ extern "C" int32_t wasm_import_330_fd_pread(void* vmctx, int32_t a0, int32_t a1,
 // slot 334: _emscripten_thread_cleanup -- hand-written below
 // slot 335: emscripten_unwind_to_js_event_loop -- hand-written below
 // slot 336: _emscripten_runtime_keepalive_clear -- hand-written below
-extern "C" void wasm_import_337___call_sighandler(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_337___call_sighandler(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
   (void)vmctx;
+  (void)caller_vmctx;
   (void)a0;
   (void)a1;
+  WB_TRACE_IMPORT(337);
   wb::import_log_first(337);
 }
 
@@ -3296,6 +3864,7 @@ std::shared_ptr<Mailbox> mailbox_for(uint32_t ptr) {
 
 ThreadEntry g_thread_entry = nullptr;
 WasmCallback g_wasm_cb = nullptr;
+MainThreadInit g_main_thread_init = nullptr;
 uint32_t g_main_thread = 0;
 std::atomic<uint32_t> g_keepalive{0};
 
@@ -3500,6 +4069,7 @@ const char* embind_type(uint32_t id) {
 void imports_set_thread_entry(ThreadEntry entry) { g_thread_entry = entry; }
 void imports_set_wasm_callback(WasmCallback cb) { g_wasm_cb = cb; }
 void imports_set_main_thread(uint32_t pthread_ptr) { g_main_thread = pthread_ptr; }
+void imports_set_main_thread_init(MainThreadInit fn) { g_main_thread_init = fn; }
 
 void imports_store_headers(uint32_t fetch, const char* text) {
   store_headers(fetch, text ? text : "");
@@ -3531,27 +4101,33 @@ uint32_t imports_futex_notify(uint32_t addr, uint32_t count) {
 // ---------------------------------------------------------------------------
 
 // slot 1 / 2: stdout and stderr byte sinks ----------------------------------
-extern "C" void wasm_import_001_emscripten_outn(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_001_emscripten_outn(void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2) {
+  WB_TRACE_IMPORT(1);
+  (void)caller_vmctx;
   (void)vmctx;
-  if (const uint8_t* p = wb::mem_ptr(a0, a1); p && a1 > 0) {
-    std::fwrite(p, 1, a1, stdout);
+  if (const uint8_t* p = wb::mem_ptr(a1, a2); p && a2 > 0) {
+    std::fwrite(p, 1, a2, stdout);
     std::fflush(stdout);
   }
 }
-extern "C" void wasm_import_002_emscripten_errn(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" void wasm_import_002_emscripten_errn(void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2) {
+  WB_TRACE_IMPORT(2);
+  (void)caller_vmctx;
   (void)vmctx;
-  if (const uint8_t* p = wb::mem_ptr(a0, a1); p && a1 > 0) {
-    std::fwrite(p, 1, a1, stderr);
+  if (const uint8_t* p = wb::mem_ptr(a1, a2); p && a2 > 0) {
+    std::fwrite(p, 1, a2, stderr);
     std::fflush(stderr);
   }
 }
 
 // slot 3: js_fetch_file -- local asset mirror, libcurl fallback -------------
-extern "C" int32_t wasm_import_003_js_fetch_file(void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+extern "C" int32_t wasm_import_003_js_fetch_file(void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2, int32_t a3) {
+  WB_TRACE_IMPORT(3);
+  (void)caller_vmctx;
   (void)vmctx;
-  const std::string url = wb::mem_cstr(a0);
-  const uint32_t dst = static_cast<uint32_t>(a1);
-  const uint32_t want = static_cast<uint32_t>(a2);
+  const std::string url = wb::mem_cstr(a1);
+  const uint32_t dst = static_cast<uint32_t>(a2);
+  const uint32_t want = static_cast<uint32_t>(a3);
   wb::note_once("[fetch] first js_fetch_file: " + url);
   if (url.empty()) return static_cast<int32_t>(-1);
 
@@ -3573,17 +4149,21 @@ extern "C" int32_t wasm_import_003_js_fetch_file(void* vmctx, int32_t a0, int32_
 }
 
 // slot 4: engine performance clock -----------------------------------------
-extern "C" double wasm_import_004_emscripten_get_now(void* vmctx) {
+extern "C" double wasm_import_004_emscripten_get_now(void* vmctx, void* caller_vmctx) {
+  WB_TRACE_IMPORT(4);
+  (void)caller_vmctx;
   (void)vmctx;
   return wb::steady_ms();
 }
 
 // slot 5: Atomics.waitAsync -- host futex with notify hook ------------------
 extern "C" int32_t wasm_import_005___asyncjs__rbxFutexWaitMainJspi(
-    void* vmctx, int32_t a0, int32_t a1, double a2) {
+    void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2, double a3) {
+  WB_TRACE_IMPORT(5);
+  (void)caller_vmctx;
   (void)vmctx;
-  const uint32_t addr = static_cast<uint32_t>(a0);
-  const uint32_t expected = static_cast<uint32_t>(a1);
+  const uint32_t addr = static_cast<uint32_t>(a1);
+  const uint32_t expected = static_cast<uint32_t>(a2);
   const uint8_t* word = wb::mem_ptr(addr, 4);
   if (!word) return 1;
   uint32_t cur = 0;
@@ -3592,11 +4172,11 @@ extern "C" int32_t wasm_import_005___asyncjs__rbxFutexWaitMainJspi(
 
   const auto w = wb::waiter_for(addr);
   auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2);
-  const bool bounded = a2 > 0.0 && a2 < 1e12;
+  const bool bounded = a3 > 0.0 && a3 < 1e12;
   if (bounded) {
     deadline = std::chrono::steady_clock::now() +
                std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                   std::chrono::duration<double, std::milli>(a2));
+                   std::chrono::duration<double, std::milli>(a3));
   } else {
     wb::note_once("[futex] unbounded wait: polling in 2 ms slices");
   }
@@ -3620,163 +4200,237 @@ extern "C" int32_t wasm_import_005___asyncjs__rbxFutexWaitMainJspi(
 
 // slots 6 / 7 / 13 / 53: EM_ASM key decoding -------------------------------
 extern "C" void wasm_import_006_emscripten_asm_const_async_on_main_thread(
-    void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+    void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2, int32_t a3) {
+  WB_TRACE_IMPORT(6);
+  (void)caller_vmctx;
   (void)vmctx;
-  (void)wb::eval_asm(static_cast<uint32_t>(a0), static_cast<uint32_t>(a1),
-                     static_cast<uint32_t>(a2));
+  (void)wb::eval_asm(static_cast<uint32_t>(a1), static_cast<uint32_t>(a2),
+                     static_cast<uint32_t>(a3));
 }
 extern "C" int32_t wasm_import_007_emscripten_asm_const_int(
-    void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+    void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2, int32_t a3) {
+  WB_TRACE_IMPORT(7);
+  (void)caller_vmctx;
   (void)vmctx;
-  const double r = wb::eval_asm(a0, a1, a2);
+  const double r = wb::eval_asm(a1, a2, a3);
   return static_cast<int32_t>(static_cast<uint32_t>(static_cast<int64_t>(r)));
 }
 extern "C" double wasm_import_013_emscripten_asm_const_double(
-    void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+    void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2, int32_t a3) {
+  WB_TRACE_IMPORT(13);
+  (void)caller_vmctx;
   (void)vmctx;
-  return wb::eval_asm(a0, a1, a2);
+  return wb::eval_asm(a1, a2, a3);
 }
 extern "C" int32_t wasm_import_053_emscripten_asm_const_int_sync_on_main_thread(
-    void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
-  return wasm_import_007_emscripten_asm_const_int(vmctx, a0, a1, a2);
+    void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2, int32_t a3) {
+  WB_TRACE_IMPORT(53);
+  (void)caller_vmctx;
+  return wasm_import_007_emscripten_asm_const_int(vmctx, caller_vmctx, a1, a2, a3);
 }
 
 // slots 16 / 17 / 18 / 19 / 36 / 37 / 38 / 39 / 54: browser facts ----------
-extern "C" double wasm_import_016_get_effective_device_pixel_ratio(void* vmctx) {
+extern "C" double wasm_import_016_get_effective_device_pixel_ratio(void* vmctx, void* caller_vmctx) {
+  WB_TRACE_IMPORT(16);
+  (void)caller_vmctx;
   (void)vmctx; return 1.0;
 }
 extern "C" int32_t wasm_import_017_emscripten_set_canvas_element_size(
-    void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
-  (void)vmctx; (void)a0; (void)a1; (void)a2;
+    void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2, int32_t a3) {
+  WB_TRACE_IMPORT(17);
+  (void)caller_vmctx;
+  (void)vmctx; (void)a1; (void)a2; (void)a3;
   wb::note_once("[canvas] set_canvas_element_size ignored (fixed 1280x720)");
   return 0;
 }
-extern "C" double wasm_import_018_emscripten_get_device_pixel_ratio(void* vmctx) {
+extern "C" double wasm_import_018_emscripten_get_device_pixel_ratio(void* vmctx, void* caller_vmctx) {
+  WB_TRACE_IMPORT(18);
+  (void)caller_vmctx;
   (void)vmctx; return 1.0;
 }
-extern "C" int32_t wasm_import_019_is_mobile_browser(void* vmctx) { (void)vmctx; return 0; }
-extern "C" int32_t wasm_import_036_is_touch_mobile(void* vmctx) { (void)vmctx; return 0; }
-extern "C" int32_t wasm_import_037_is_touch_screen_device(void* vmctx) { (void)vmctx; return 0; }
-extern "C" int32_t wasm_import_038_has_keyboard(void* vmctx) { (void)vmctx; return 1; }
-extern "C" int32_t wasm_import_039_has_mouse(void* vmctx) { (void)vmctx; return 1; }
-extern "C" int32_t wasm_import_054_js_web_client_page_visible(void* vmctx) { (void)vmctx; return 1; }
+extern "C" int32_t wasm_import_019_is_mobile_browser(void* vmctx, void* caller_vmctx) {
+  WB_TRACE_IMPORT(19);
+  (void)caller_vmctx; (void)vmctx; return 0; }
+extern "C" int32_t wasm_import_036_is_touch_mobile(void* vmctx, void* caller_vmctx) {
+  WB_TRACE_IMPORT(36);
+  (void)caller_vmctx; (void)vmctx; return 0; }
+extern "C" int32_t wasm_import_037_is_touch_screen_device(void* vmctx, void* caller_vmctx) {
+  WB_TRACE_IMPORT(37);
+  (void)caller_vmctx; (void)vmctx; return 0; }
+extern "C" int32_t wasm_import_038_has_keyboard(void* vmctx, void* caller_vmctx) {
+  WB_TRACE_IMPORT(38);
+  (void)caller_vmctx; (void)vmctx; return 1; }
+extern "C" int32_t wasm_import_039_has_mouse(void* vmctx, void* caller_vmctx) {
+  WB_TRACE_IMPORT(39);
+  (void)caller_vmctx; (void)vmctx; return 1; }
+extern "C" int32_t wasm_import_054_js_web_client_page_visible(void* vmctx, void* caller_vmctx) {
+  WB_TRACE_IMPORT(54);
+  (void)caller_vmctx; (void)vmctx; return 1; }
 
 // slots 40..50: embind registration ----------------------------------------
 extern "C" void wasm_import_040__embind_register_function(
-    void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3,
-    int32_t a4, int32_t a5, int32_t a6, int32_t a7) {
-  (void)vmctx; (void)a2; (void)a6; (void)a7;
-  wb::add_binding(wb::mem_cstr(a0), wb::mem_cstr(a3),
-                  static_cast<uint32_t>(a1), static_cast<uint32_t>(a4),
-                  static_cast<uint32_t>(a5));
+    void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2, int32_t a3, int32_t a4,
+    int32_t a5, int32_t a6, int32_t a7, int32_t a8) {
+  WB_TRACE_IMPORT(40);
+  (void)caller_vmctx;
+  (void)vmctx; (void)a3; (void)a7; (void)a8;
+  wb::add_binding(wb::mem_cstr(a1), wb::mem_cstr(a4),
+                  static_cast<uint32_t>(a2), static_cast<uint32_t>(a5),
+                  static_cast<uint32_t>(a6));
   wb::note_once("[bind] first _embind_register_function");
 }
-extern "C" void wasm_import_042__embind_register_void(void* vmctx, int32_t a0, int32_t a1) {
-  (void)vmctx; (void)a1; wb::bind_type(a0, "void");
+extern "C" void wasm_import_042__embind_register_void(void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2) {
+  WB_TRACE_IMPORT(42);
+  (void)caller_vmctx;
+  (void)vmctx; (void)a2; wb::bind_type(a1, "void");
 }
 extern "C" void wasm_import_043__embind_register_bool(
-    void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
-  (void)vmctx; (void)a1; (void)a2; (void)a3; wb::bind_type(a0, "bool");
+    void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+  WB_TRACE_IMPORT(43);
+  (void)caller_vmctx;
+  (void)vmctx; (void)a2; (void)a3; (void)a4; wb::bind_type(a1, "bool");
 }
 extern "C" void wasm_import_044__embind_register_integer(
-    void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
-  (void)vmctx; (void)a1; (void)a3; (void)a4;
-  wb::bind_type(a0, a2 == 8 ? "i64" : "i32");
+    void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5) {
+  WB_TRACE_IMPORT(44);
+  (void)caller_vmctx;
+  (void)vmctx; (void)a2; (void)a4; (void)a5;
+  wb::bind_type(a1, a3 == 8 ? "i64" : "i32");
 }
 extern "C" void wasm_import_045__embind_register_bigint(
-    void* vmctx, int32_t a0, int32_t a1, int32_t a2, int64_t a3, int64_t a4) {
-  (void)vmctx; (void)a1; (void)a2; (void)a3; (void)a4; wb::bind_type(a0, "i64");
+    void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2, int32_t a3, int64_t a4, int64_t a5) {
+  WB_TRACE_IMPORT(45);
+  (void)caller_vmctx;
+  (void)vmctx; (void)a2; (void)a3; (void)a4; (void)a5; wb::bind_type(a1, "i64");
 }
 extern "C" void wasm_import_046__embind_register_float(
-    void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
-  (void)vmctx; (void)a1; wb::bind_type(a0, a2 == 8 ? "f64" : "f32");
+    void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2, int32_t a3) {
+  WB_TRACE_IMPORT(46);
+  (void)caller_vmctx;
+  (void)vmctx; (void)a2; wb::bind_type(a1, a3 == 8 ? "f64" : "f32");
 }
-extern "C" void wasm_import_047__embind_register_std_string(void* vmctx, int32_t a0, int32_t a1) {
-  (void)vmctx; (void)a1; wb::bind_type(a0, "str");
+extern "C" void wasm_import_047__embind_register_std_string(void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2) {
+  WB_TRACE_IMPORT(47);
+  (void)caller_vmctx;
+  (void)vmctx; (void)a2; wb::bind_type(a1, "str");
 }
 extern "C" void wasm_import_048__embind_register_std_wstring(
-    void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
-  (void)vmctx; (void)a1; (void)a2; wb::bind_type(a0, "str");
+    void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2, int32_t a3) {
+  WB_TRACE_IMPORT(48);
+  (void)caller_vmctx;
+  (void)vmctx; (void)a2; (void)a3; wb::bind_type(a1, "str");
 }
-extern "C" void wasm_import_049__embind_register_emval(void* vmctx, int32_t a0) {
-  (void)vmctx; wb::bind_type(a0, "emval");
+extern "C" void wasm_import_049__embind_register_emval(void* vmctx, void* caller_vmctx, int32_t a1) {
+  WB_TRACE_IMPORT(49);
+  (void)caller_vmctx;
+  (void)vmctx; wb::bind_type(a1, "emval");
 }
 extern "C" void wasm_import_050__embind_register_memory_view(
-    void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
-  (void)vmctx; (void)a1; (void)a2; wb::bind_type(a0, "ptr");
+    void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2, int32_t a3) {
+  WB_TRACE_IMPORT(50);
+  (void)caller_vmctx;
+  (void)vmctx; (void)a2; (void)a3; wb::bind_type(a1, "ptr");
 }
 
 // slot 41 / 51 / 84 / 312: failure and navigation ---------------------------
 extern "C" void wasm_import_041___assert_fail(
-    void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+    void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+  WB_TRACE_IMPORT(41);
+  (void)caller_vmctx;
   (void)vmctx;
   std::fprintf(stderr, "[assert] %s at %s:%d %s\n",
-               wb::mem_cstr(a0).c_str(), wb::mem_cstr(a1).c_str(), a2,
-               wb::mem_cstr(a3).c_str());
+               wb::mem_cstr(a1).c_str(), wb::mem_cstr(a2).c_str(), a3,
+               wb::mem_cstr(a4).c_str());
 }
-extern "C" int32_t wasm_import_051_js_linking_open_url(void* vmctx, int32_t a0, int32_t a1) {
-  (void)vmctx; (void)a1;
-  wb::note_once("[nav] open url: " + wb::mem_cstr(a0));
+extern "C" int32_t wasm_import_051_js_linking_open_url(void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2) {
+  WB_TRACE_IMPORT(51);
+  (void)caller_vmctx;
+  (void)vmctx; (void)a2;
+  wb::note_once("[nav] open url: " + wb::mem_cstr(a1));
   return 0;
 }
-extern "C" void wasm_import_084_exit(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_084_exit(void* vmctx, void* caller_vmctx, int32_t a1) {
+  WB_TRACE_IMPORT(84);
+  (void)caller_vmctx;
   (void)vmctx;
-  std::fprintf(stderr, "[exit] guest requested exit(%d)\n", a0);
+  std::fprintf(stderr, "[exit] guest requested exit(%d)\n", a1);
 }
-extern "C" void wasm_import_312__abort_js(void* vmctx) {
+extern "C" void wasm_import_312__abort_js(void* vmctx, void* caller_vmctx) {
+  WB_TRACE_IMPORT(312);
+  (void)caller_vmctx;
   (void)vmctx;
   wb::note_once("[abort] guest called _abort_js");
 }
 
 // slots 52 / 314 / 315 / 316: console --------------------------------------
-extern "C" void wasm_import_052_emscripten_console_error(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_052_emscripten_console_error(void* vmctx, void* caller_vmctx, int32_t a1) {
+  WB_TRACE_IMPORT(52);
+  (void)caller_vmctx;
   (void)vmctx;
-  std::fprintf(stderr, "[err ] %s\n", wb::mem_cstr(a0).c_str());
+  std::fprintf(stderr, "[err ] %s\n", wb::mem_cstr(a1).c_str());
 }
-extern "C" void wasm_import_314_emscripten_console_log(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_314_emscripten_console_log(void* vmctx, void* caller_vmctx, int32_t a1) {
+  WB_TRACE_IMPORT(314);
+  (void)caller_vmctx;
   (void)vmctx;
-  std::fprintf(stderr, "[log ] %s\n", wb::mem_cstr(a0).c_str());
-}
-extern "C" void wasm_import_315_emscripten_console_warn(void* vmctx, int32_t a0) {
-  (void)vmctx;
-  std::fprintf(stderr, "[warn] %s\n", wb::mem_cstr(a0).c_str());
-}
-extern "C" void wasm_import_316__emscripten_log_formatted(void* vmctx, int32_t a0, int32_t a1) {
-  (void)vmctx; (void)a0;
   std::fprintf(stderr, "[log ] %s\n", wb::mem_cstr(a1).c_str());
+}
+extern "C" void wasm_import_315_emscripten_console_warn(void* vmctx, void* caller_vmctx, int32_t a1) {
+  WB_TRACE_IMPORT(315);
+  (void)caller_vmctx;
+  (void)vmctx;
+  std::fprintf(stderr, "[warn] %s\n", wb::mem_cstr(a1).c_str());
+}
+extern "C" void wasm_import_316__emscripten_log_formatted(void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2) {
+  WB_TRACE_IMPORT(316);
+  (void)caller_vmctx;
+  (void)vmctx; (void)a1;
+  std::fprintf(stderr, "[log ] %s\n", wb::mem_cstr(a2).c_str());
 }
 
 // slot 206: canvas size out-params ------------------------------------------
 extern "C" int32_t wasm_import_206_emscripten_get_canvas_element_size(
-    void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
-  (void)vmctx; (void)a0;
-  wb::mem_st32(a1, 1280);
-  wb::mem_st32(a2, 720);
+    void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2, int32_t a3) {
+  WB_TRACE_IMPORT(206);
+  (void)caller_vmctx;
+  (void)vmctx; (void)a1;
+  wb::mem_st32(a2, 1280);
+  wb::mem_st32(a3, 720);
   return 0;
 }
 
 // slots 268 / 336: runtime keepalive ---------------------------------------
-extern "C" void wasm_import_268_emscripten_runtime_keepalive_push(void* vmctx) {
+extern "C" void wasm_import_268_emscripten_runtime_keepalive_push(void* vmctx, void* caller_vmctx) {
+  WB_TRACE_IMPORT(268);
+  (void)caller_vmctx;
   (void)vmctx;
   wb::g_keepalive.fetch_add(1);
 }
-extern "C" void wasm_import_336__emscripten_runtime_keepalive_clear(void* vmctx) {
+extern "C" void wasm_import_336__emscripten_runtime_keepalive_clear(void* vmctx, void* caller_vmctx) {
+  WB_TRACE_IMPORT(336);
+  (void)caller_vmctx;
   (void)vmctx;
   wb::g_keepalive.store(0);
 }
 
 // slot 295 / 296: stack-trace limit shims -----------------------------------
-extern "C" double wasm_import_295_RBX_setFullWasmStackTrace(void* vmctx) {
+extern "C" double wasm_import_295_RBX_setFullWasmStackTrace(void* vmctx, void* caller_vmctx) {
+  WB_TRACE_IMPORT(295);
+  (void)caller_vmctx;
   (void)vmctx; return -1.0;  // no saved limit on the native host
 }
-extern "C" void wasm_import_296_RBX_restoreWasmStackTraceLimit(void* vmctx, double a0) {
-  (void)vmctx; (void)a0;
+extern "C" void wasm_import_296_RBX_restoreWasmStackTraceLimit(void* vmctx, void* caller_vmctx, double a1) {
+  WB_TRACE_IMPORT(296);
+  (void)caller_vmctx;
+  (void)vmctx; (void)a1;
 }
 
 // slots 297 / 298: read_host_info -------------------------------------------
-extern "C" int32_t wasm_import_297_read_host_info_int(void* vmctx, int32_t a0) {
+extern "C" int32_t wasm_import_297_read_host_info_int(void* vmctx, void* caller_vmctx, int32_t a1) {
+  WB_TRACE_IMPORT(297);
+  (void)caller_vmctx;
   (void)vmctx;
-  const std::string key = wb::mem_cstr(a0);
+  const std::string key = wb::mem_cstr(a1);
   if (key == "cpuLogicalCount") return wb::cpu_count();
   if (key == "hostOS") return 5;
   if (key == "screenWidthDip" || key == "screenWidthPx") return 1280;
@@ -3786,7 +4440,9 @@ extern "C" int32_t wasm_import_297_read_host_info_int(void* vmctx, int32_t a0) {
   return 0;  // mobile and all unknown keys
 }
 extern "C" void wasm_import_298_read_host_info_string(
-    void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+    void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2, int32_t a3) {
+  WB_TRACE_IMPORT(298);
+  (void)caller_vmctx;
   (void)vmctx;
   static const std::unordered_map<std::string, std::string> info = {
       {"hostOS", "5"},           {"osName", "Linux"},
@@ -3798,31 +4454,39 @@ extern "C" void wasm_import_298_read_host_info_string(
       {"dpi", "96"},             {"mobile", "0"},
       {"memoryMB", "2048"},
   };
-  const std::string key = wb::mem_cstr(a0);
+  const std::string key = wb::mem_cstr(a1);
   auto it = info.find(key);
   const std::string value = it == info.end() ? "" : it->second;
-  const std::size_t cap = a2 > 0 ? static_cast<std::size_t>(a2) : 0;
+  const std::size_t cap = a3 > 0 ? static_cast<std::size_t>(a3) : 0;
   if (!cap) return;
   std::vector<char> buf(cap, 0);
   std::memcpy(buf.data(), value.data(), std::min(value.size(), cap - 1));
-  wb::mem_write(a1, buf.data(), cap);
+  wb::mem_write(a2, buf.data(), cap);
 }
 
 // slots 299 / 338: CPU count -------------------------------------------------
-extern "C" int32_t wasm_import_299_get_hardware_concurrency(void* vmctx) {
+extern "C" int32_t wasm_import_299_get_hardware_concurrency(void* vmctx, void* caller_vmctx) {
+  WB_TRACE_IMPORT(299);
+  (void)caller_vmctx;
   (void)vmctx; return wb::cpu_count();
 }
-extern "C" int32_t wasm_import_338_emscripten_num_logical_cores(void* vmctx) {
+extern "C" int32_t wasm_import_338_emscripten_num_logical_cores(void* vmctx, void* caller_vmctx) {
+  WB_TRACE_IMPORT(338);
+  (void)caller_vmctx;
   (void)vmctx; return wb::cpu_count();
 }
 
 // slot 302: HaveOffsetConverter ---------------------------------------------
-extern "C" int32_t wasm_import_302_HaveOffsetConverter(void* vmctx) { (void)vmctx; return 0; }
+extern "C" int32_t wasm_import_302_HaveOffsetConverter(void* vmctx, void* caller_vmctx) {
+  WB_TRACE_IMPORT(302);
+  (void)caller_vmctx; (void)vmctx; return 0; }
 
 // slots 305 / 306 / 307: emscripten_fetch response-header bookkeeping ------
-extern "C" void wasm_import_305_emscripten_fetch_free(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_305_emscripten_fetch_free(void* vmctx, void* caller_vmctx, int32_t a1) {
+  WB_TRACE_IMPORT(305);
+  (void)caller_vmctx;
   (void)vmctx;
-  const uint32_t id = static_cast<uint32_t>(a0);
+  const uint32_t id = static_cast<uint32_t>(a1);
   std::lock_guard<std::mutex> lock(wb::g_headers_mtx);
   wb::g_headers.erase(
       std::remove_if(wb::g_headers.begin(), wb::g_headers.end(),
@@ -3830,73 +4494,96 @@ extern "C" void wasm_import_305_emscripten_fetch_free(void* vmctx, int32_t a0) {
       wb::g_headers.end());
 }
 extern "C" int32_t wasm_import_306__emscripten_fetch_get_response_headers_length(
-    void* vmctx, int32_t a0) {
+    void* vmctx, void* caller_vmctx, int32_t a1) {
+  WB_TRACE_IMPORT(306);
+  (void)caller_vmctx;
   (void)vmctx;
   std::lock_guard<std::mutex> lock(wb::g_headers_mtx);
   for (const wb::HeaderEntry& h : wb::g_headers) {
-    if (h.fetch == static_cast<uint32_t>(a0)) return static_cast<int32_t>(h.text.size());
+    if (h.fetch == static_cast<uint32_t>(a1)) return static_cast<int32_t>(h.text.size());
   }
   return 0;
 }
 extern "C" int32_t wasm_import_307__emscripten_fetch_get_response_headers(
-    void* vmctx, int32_t a0, int32_t a1, int32_t a2) {
+    void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2, int32_t a3) {
+  WB_TRACE_IMPORT(307);
+  (void)caller_vmctx;
   (void)vmctx;
   std::string text;
   {
     std::lock_guard<std::mutex> lock(wb::g_headers_mtx);
     for (const wb::HeaderEntry& h : wb::g_headers) {
-      if (h.fetch == static_cast<uint32_t>(a0)) { text = h.text; break; }
+      if (h.fetch == static_cast<uint32_t>(a1)) { text = h.text; break; }
     }
   }
-  const std::size_t n = std::min<std::size_t>(text.size(), a2 > 0 ? a2 : 0);
-  if (n && wb::mem_write(a1, text.data(), n)) return static_cast<int32_t>(n);
+  const std::size_t n = std::min<std::size_t>(text.size(), a3 > 0 ? a3 : 0);
+  if (n && wb::mem_write(a2, text.data(), n)) return static_cast<int32_t>(n);
   return 0;
 }
 
 // slots 308 / 309 / 310 / 313: WASI-lite ------------------------------------
-extern "C" void wasm_import_308_proc_exit(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_308_proc_exit(void* vmctx, void* caller_vmctx, int32_t a1) {
+  WB_TRACE_IMPORT(308);
+  (void)caller_vmctx;
   (void)vmctx;
-  std::fprintf(stderr, "[wasi] proc_exit(%d) ignored (no unwind ABI)\n", a0);
+  std::fprintf(stderr, "[wasi] proc_exit(%d) ignored (no unwind ABI)\n", a1);
 }
-extern "C" int32_t wasm_import_309_environ_sizes_get(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_309_environ_sizes_get(void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2) {
+  WB_TRACE_IMPORT(309);
+  (void)caller_vmctx;
   (void)vmctx;
-  wb::mem_st32(a0, 0);
   wb::mem_st32(a1, 0);
+  wb::mem_st32(a2, 0);
   return 0;
 }
-extern "C" int32_t wasm_import_310_environ_get(void* vmctx, int32_t a0, int32_t a1) {
-  (void)vmctx; (void)a0; (void)a1; return 0;
+extern "C" int32_t wasm_import_310_environ_get(void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2) {
+  WB_TRACE_IMPORT(310);
+  (void)caller_vmctx;
+  (void)vmctx; (void)a1; (void)a2; return 0;
 }
 extern "C" int32_t wasm_import_313_clock_time_get(
-    void* vmctx, int32_t a0, int64_t a1, int32_t a2) {
-  (void)vmctx; (void)a1;
-  const double ms = a0 == 0 ? wb::wall_ms() : (a0 >= 1 && a0 <= 3 ? wb::steady_ms() : -1.0);
+    void* vmctx, void* caller_vmctx, int32_t a1, int64_t a2, int32_t a3) {
+  WB_TRACE_IMPORT(313);
+  (void)caller_vmctx;
+  (void)vmctx; (void)a2;
+  const double ms = a1 == 0 ? wb::wall_ms() : (a1 >= 1 && a1 <= 3 ? wb::steady_ms() : -1.0);
   if (ms < 0.0) return 28;  // EINVAL
   const uint64_t ns = static_cast<uint64_t>(ms * 1e6);
-  wb::mem_write(a2, &ns, 8);
+  wb::mem_write(a3, &ns, 8);
   return 0;
 }
 
 // slot 317: Date.now --------------------------------------------------------
-extern "C" double wasm_import_317_emscripten_date_now(void* vmctx) {
+extern "C" double wasm_import_317_emscripten_date_now(void* vmctx, void* caller_vmctx) {
+  WB_TRACE_IMPORT(317);
+  (void)caller_vmctx;
   (void)vmctx; return wb::wall_ms();
 }
 
 // slots 318 / 324 / 325 / 333 / 334 / 340: pthreads + mailboxes -------------
-extern "C" void wasm_import_318__emscripten_thread_set_strongref(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_318__emscripten_thread_set_strongref(void* vmctx, void* caller_vmctx, int32_t a1) {
+  WB_TRACE_IMPORT(318);
+  (void)caller_vmctx;
   (void)vmctx;
-  (void)wb::mailbox_for(static_cast<uint32_t>(a0));  // keep the slot addressable
+  (void)wb::mailbox_for(static_cast<uint32_t>(a1));  // keep the slot addressable
 }
-extern "C" void wasm_import_324__emscripten_init_main_thread_js(void* vmctx, int32_t a0) {
-  (void)vmctx;
-  wb::imports_set_main_thread(static_cast<uint32_t>(a0));
-  wb::mem_st32(a0 + 112, 1);  // "mailbox armed", as the glue's Er does
-  wb::note_once("[pthr] main thread armed; guest thread_init/TLS init requires host hook");
+extern "C" void wasm_import_324__emscripten_init_main_thread_js(void* vmctx, void* caller_vmctx, int32_t a1) {
+  WB_TRACE_IMPORT(324);
+  (void)caller_vmctx;
+  const uint32_t ptr = static_cast<uint32_t>(a1);
+  // JS glue calls the guest's own _emscripten_thread_init + TLS init here.
+  if (wb::g_main_thread_init) wb::g_main_thread_init(vmctx, ptr);
+  wb::imports_set_main_thread(ptr);
+  wb::mem_st32(ptr + 112, 1);
+  wb::note_once("[pthr] main thread init hook installed");
 }
-extern "C" void wasm_import_325__emscripten_thread_mailbox_await(void* vmctx, int32_t a0) {
+
+extern "C" void wasm_import_325__emscripten_thread_mailbox_await(void* vmctx, void* caller_vmctx, int32_t a1) {
+  WB_TRACE_IMPORT(325);
+  (void)caller_vmctx;
   (void)vmctx;
-  const auto box = wb::mailbox_for(static_cast<uint32_t>(a0));
-  if (static_cast<uint32_t>(a0) == wb::g_main_thread) {
+  const auto box = wb::mailbox_for(static_cast<uint32_t>(a1));
+  if (static_cast<uint32_t>(a1) == wb::g_main_thread) {
     // The page's Cr arms an async wait and returns immediately; blocking the
     // native main thread would deadlock the loop that posts to this mailbox.
     wb::note_once("[mbx] main-thread await deferred (async waitAsync semantics)");
@@ -3907,11 +4594,13 @@ extern "C" void wasm_import_325__emscripten_thread_mailbox_await(void* vmctx, in
   box->signaled = false;
 }
 extern "C" int32_t wasm_import_333___pthread_create_js(
-    void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
-  (void)vmctx; (void)a1;
-  const uint32_t ptr = static_cast<uint32_t>(a0);
-  const uint32_t start = static_cast<uint32_t>(a2);
-  const uint32_t arg = static_cast<uint32_t>(a3);
+    void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+  WB_TRACE_IMPORT(333);
+  (void)caller_vmctx;
+  (void)vmctx; (void)a2;
+  const uint32_t ptr = static_cast<uint32_t>(a1);
+  const uint32_t start = static_cast<uint32_t>(a3);
+  const uint32_t arg = static_cast<uint32_t>(a4);
   const wb::ThreadEntry entry = wb::g_thread_entry;
   if (!entry) {
     wb::note_once("[pthr] no ThreadEntry hook: worker entry cannot re-enter wasm");
@@ -3924,18 +4613,22 @@ extern "C" int32_t wasm_import_333___pthread_create_js(
   std::fprintf(stderr, "[pthr] spawn ptr=%#x start=%u arg=%u\n", ptr, start, arg);
   return 0;
 }
-extern "C" void wasm_import_334__emscripten_thread_cleanup(void* vmctx, int32_t a0) {
+extern "C" void wasm_import_334__emscripten_thread_cleanup(void* vmctx, void* caller_vmctx, int32_t a1) {
+  WB_TRACE_IMPORT(334);
+  (void)caller_vmctx;
   (void)vmctx;
-  const auto box = wb::mailbox_for(static_cast<uint32_t>(a0));
+  const auto box = wb::mailbox_for(static_cast<uint32_t>(a1));
   std::lock_guard<std::mutex> lock(box->m);
   box->alive = false;
   box->signaled = true;
   box->cv.notify_all();
 }
 extern "C" void wasm_import_340__emscripten_notify_mailbox_postmessage(
-    void* vmctx, int32_t a0, int32_t a1) {
-  (void)vmctx; (void)a1;
-  const auto box = wb::mailbox_for(static_cast<uint32_t>(a0));
+    void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2) {
+  WB_TRACE_IMPORT(340);
+  (void)caller_vmctx;
+  (void)vmctx; (void)a2;
+  const auto box = wb::mailbox_for(static_cast<uint32_t>(a1));
   {
     std::lock_guard<std::mutex> lock(box->m);
     box->signaled = true;
@@ -3944,29 +4637,41 @@ extern "C" void wasm_import_340__emscripten_notify_mailbox_postmessage(
 }
 
 // slots 319 / 321 / 322 / 323: uid/gid shims --------------------------------
-extern "C" int32_t wasm_import_319___syscall_getegid32(void* vmctx) { (void)vmctx; return 0; }
-extern "C" int32_t wasm_import_321___syscall_geteuid32(void* vmctx) { (void)vmctx; return 0; }
-extern "C" int32_t wasm_import_322___syscall_getgid32(void* vmctx) { (void)vmctx; return 0; }
-extern "C" int32_t wasm_import_323___syscall_getuid32(void* vmctx) { (void)vmctx; return 0; }
+extern "C" int32_t wasm_import_319___syscall_getegid32(void* vmctx, void* caller_vmctx) {
+  WB_TRACE_IMPORT(319);
+  (void)caller_vmctx; (void)vmctx; return 0; }
+extern "C" int32_t wasm_import_321___syscall_geteuid32(void* vmctx, void* caller_vmctx) {
+  WB_TRACE_IMPORT(321);
+  (void)caller_vmctx; (void)vmctx; return 0; }
+extern "C" int32_t wasm_import_322___syscall_getgid32(void* vmctx, void* caller_vmctx) {
+  WB_TRACE_IMPORT(322);
+  (void)caller_vmctx; (void)vmctx; return 0; }
+extern "C" int32_t wasm_import_323___syscall_getuid32(void* vmctx, void* caller_vmctx) {
+  WB_TRACE_IMPORT(323);
+  (void)caller_vmctx; (void)vmctx; return 0; }
 
 // slot 320: getrandom --------------------------------------------------------
-extern "C" int32_t wasm_import_320_random_get(void* vmctx, int32_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_320_random_get(void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2) {
+  WB_TRACE_IMPORT(320);
+  (void)caller_vmctx;
   (void)vmctx;
-  uint8_t* dst = wb::mem_mut(a0, a1);
+  uint8_t* dst = wb::mem_mut(a1, a2);
   if (!dst) return -1;
   std::FILE* f = std::fopen("/dev/urandom", "rb");
   if (!f) return -1;
-  const std::size_t got = std::fread(dst, 1, a1, f);
+  const std::size_t got = std::fread(dst, 1, a2, f);
   std::fclose(f);
-  return got == static_cast<std::size_t>(a1) ? 0 : -1;
+  return got == static_cast<std::size_t>(a2) ? 0 : -1;
 }
 
 // slots 311 / 326 / 327 / 328: civil time -----------------------------------
 extern "C" void wasm_import_311__tzset_js(
-    void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3) {
+    void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2, int32_t a3, int32_t a4) {
+  WB_TRACE_IMPORT(311);
+  (void)caller_vmctx;
   (void)vmctx;
-  const uint32_t ptrs[4] = {static_cast<uint32_t>(a0), static_cast<uint32_t>(a1),
-                             static_cast<uint32_t>(a2), static_cast<uint32_t>(a3)};
+  const uint32_t ptrs[4] = {static_cast<uint32_t>(a1), static_cast<uint32_t>(a2),
+                             static_cast<uint32_t>(a3), static_cast<uint32_t>(a4)};
   for (uint32_t p : ptrs) {
     if (p) {
       const char zone[] = "UTC";
@@ -3974,37 +4679,45 @@ extern "C" void wasm_import_311__tzset_js(
     }
   }
 }
-extern "C" int64_t wasm_import_326__mktime_js(void* vmctx, int32_t a0) {
+extern "C" int64_t wasm_import_326__mktime_js(void* vmctx, void* caller_vmctx, int32_t a1) {
+  WB_TRACE_IMPORT(326);
+  (void)caller_vmctx;
   (void)vmctx;
   int64_t w[9] = {};
-  for (int i = 0; i < 9; ++i) w[i] = wb::mem_ld32(a0 + i * 4);
+  for (int i = 0; i < 9; ++i) w[i] = wb::mem_ld32(a1 + i * 4);
   const int64_t y = w[5] + 1900, mo = w[4], d = w[3];
   const int64_t h = w[2], mi = w[1], se = w[0];
   return wb::days_from_civil(y, mo, d) * 86400 + h * 3600 + mi * 60 + se;
 }
-extern "C" int32_t wasm_import_327__localtime_js(void* vmctx, int64_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_327__localtime_js(void* vmctx, void* caller_vmctx, int64_t a1, int32_t a2) {
+  WB_TRACE_IMPORT(327);
+  (void)caller_vmctx;
   (void)vmctx;
-  wb::civil_write(a1, a0);  // native host runs in UTC
-  return a1;
+  wb::civil_write(a2, a1);  // native host runs in UTC
+  return a2;
 }
-extern "C" int32_t wasm_import_328__gmtime_js(void* vmctx, int64_t a0, int32_t a1) {
+extern "C" int32_t wasm_import_328__gmtime_js(void* vmctx, void* caller_vmctx, int64_t a1, int32_t a2) {
+  WB_TRACE_IMPORT(328);
+  (void)caller_vmctx;
   (void)vmctx;
-  wb::civil_write(a1, a0);
-  return a1;
+  wb::civil_write(a2, a1);
+  return a2;
 }
 
 // slot 331: main-thread callbacks dispatched from a worker -------------------
 extern "C" double wasm_import_331__emscripten_receive_on_main_thread_js(
-    void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3,
-    int32_t a4, int32_t a5, int32_t a6) {
-  (void)vmctx; (void)a1; (void)a2;
-  // Glue layout: (id, caller, thread, n, tags, values, result).  `n` is a3
+    void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2, int32_t a3, int32_t a4,
+    int32_t a5, int32_t a6, int32_t a7) {
+  WB_TRACE_IMPORT(331);
+  (void)caller_vmctx;
+  (void)vmctx; (void)a2; (void)a3;
+  // Glue layout: (id, caller, thread, n, tags, values, result).  `n` is a4
   // in the generated signature because vmctx consumes the first slot.
-  const uint32_t n = std::min<uint32_t>(a3, 16);
+  const uint32_t n = std::min<uint32_t>(a4, 16);
   std::vector<double> args(n, 0.0);
   for (uint32_t i = 0; i < n; ++i) {
-    const uint64_t tag = wb::mem_ld64(a4 + i * 8);
-    const uint64_t raw = wb::mem_ld64(a5 + i * 8);
+    const uint64_t tag = wb::mem_ld64(a5 + i * 8);
+    const uint64_t raw = wb::mem_ld64(a6 + i * 8);
     if (tag == 2) {
       double d = 0.0;
       std::memcpy(&d, &raw, 8);
@@ -4015,32 +4728,43 @@ extern "C" double wasm_import_331__emscripten_receive_on_main_thread_js(
   }
   double result = 0.0;
   if (wb::g_wasm_cb) {
-    result = wb::g_wasm_cb(vmctx, static_cast<uint32_t>(a0), args.data(), args.size());
+    result = wb::g_wasm_cb(vmctx, static_cast<uint32_t>(a1), args.data(), args.size());
   } else {
     wb::note_once("[mbx] no WasmCallback hook: main-thread call returned 0");
   }
-  wb::mem_write(a6, &result, 8);  // result out-param
+  wb::mem_write(a7, &result, 8);  // result out-param
   return result;
 }
 
 // slots 332 / 335: blocking/unwind hooks ------------------------------------
-extern "C" void wasm_import_332_emscripten_check_blocking_allowed(void* vmctx) {
+extern "C" void wasm_import_332_emscripten_check_blocking_allowed(void* vmctx, void* caller_vmctx) {
+  WB_TRACE_IMPORT(332);
+  (void)caller_vmctx;
   (void)vmctx;
 }
-extern "C" void wasm_import_335_emscripten_unwind_to_js_event_loop(void* vmctx) {
+extern "C" void wasm_import_335_emscripten_unwind_to_js_event_loop(void* vmctx, void* caller_vmctx) {
+  WB_TRACE_IMPORT(335);
+  (void)caller_vmctx;
   (void)vmctx;
   wb::note_once("[unwind] emscripten_unwind_to_js_event_loop: no guest unwind ABI; returning");
 }
 
 // slots 339 / 341: fixed linear memory --------------------------------------
-extern "C" int32_t wasm_import_339_emscripten_get_heap_max(void* vmctx) {
+extern "C" int32_t wasm_import_339_emscripten_get_heap_max(void* vmctx, void* caller_vmctx) {
+  WB_TRACE_IMPORT(339);
+  (void)caller_vmctx;
   (void)vmctx;
   const std::size_t len = wb::g_mem_len.load(std::memory_order_acquire);
   return static_cast<int32_t>(std::min<std::size_t>(len, 0x7fffffffu));
 }
-extern "C" int32_t wasm_import_341_emscripten_resize_heap(void* vmctx, int32_t a0) {
-  (void)vmctx; (void)a0;
-  wb::note_once("[heap] resize refused: shared memory is fixed-size");
-  return 0;
+extern "C" int32_t wasm_import_341_emscripten_resize_heap(void* vmctx, void* caller_vmctx, int32_t a1) {
+  WB_TRACE_IMPORT(341);
+  (void)caller_vmctx;
+  (void)vmctx; (void)a1;
+  // The host maps a fixed 4 GiB of linear memory up front.  Every request the
+  // guest can make already fits, so report success instead of driving dlmalloc
+  // into its abort path (which jumps through an uninitialised table entry).
+  wb::note_once("[heap] resize acknowledged: memory is already 4 GiB");
+  return 1;
 }
 // === END HANDWRITTEN IMPLEMENTATIONS ===

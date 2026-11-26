@@ -10,16 +10,16 @@
 #include <cstdint>
 
 extern "C" {
-// Raw wasm-ABI exports (vmctx in rdi, wasm args follow in SysV registers).
-void _wasm_function_0(void* vmctx);                       // __wasm_call_ctors
-uint32_t _wasm_function_149984(void* vmctx, uint32_t size); // malloc
-uint32_t _wasm_function_43(void* vmctx);                  // tiny no-op (not exported)
-void _wasm_function_2(void* vmctx);                      // exported __trap (ud2)
-// wasm ABI: arg1 in rsi (ignored by this export), arg2 in rdx -> 0x2b70,
-// arg3 in rcx -> 0x2b60.
-void _wasm_function_150011(void* vmctx, uint32_t ignored, uint32_t base, uint32_t end);
-uint32_t _wasm_function_499(void* vmctx);                 // get_stack_base
-uint32_t _wasm_function_500(void* vmctx);                 // get_stack_end
+// Raw wasm-ABI exports: rdi = callee vmctx, rsi = caller vmctx, wasm args
+// start in rdx (Wasmtime 50 wasm-call ABI).
+void _wasm_function_0(void*, void*);                      // __wasm_call_ctors
+void _wasm_function_3(void*, void*);                      // wasm start / init memory
+uint32_t _wasm_function_149984(void*, void*, uint32_t);   // malloc
+uint32_t _wasm_function_43(void*, void*);                 // tiny no-op (not exported)
+void _wasm_function_2(void*, void*);                      // exported __trap (ud2)
+void _wasm_function_150011(void*, void*, uint32_t, uint32_t); // set_stack_limits
+uint32_t _wasm_function_499(void*, void*);                // get_stack_base
+uint32_t _wasm_function_500(void*, void*);                // get_stack_end
 
 // Builtin trampolines present in out.full.o. The object's trampolines call
 // through the builtins array; these symbols are only declared so that the

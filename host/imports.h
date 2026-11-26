@@ -26,8 +26,10 @@ inline const ImportDesc* import_desc(std::uint32_t slot) {
   return slot >= 1 && slot <= kImportCount ? &import_descs()[slot - 1] : nullptr;
 }
 
-// Raw wasm-call function pointers, indexed by slot - 1.  Each has the
-// hidden vmctx in rdi followed by the wasm arguments in SysV registers.
+// Raw wasm-call function pointers, indexed by slot - 1.  Wasmtime 50's
+// wasm-call ABI passes rdi = import slot vmctx, rsi = caller's vmctx,
+// then the wasm arguments in rdx, rcx, r8, r9, stack (int) and
+// xmm0..xmm7 (float).  Both vmctx parameters are explicit below.
 void* const* import_wasm_calls();
 void* import_wasm_call(std::uint32_t slot);
 
@@ -56,6 +58,30 @@ bool imports_has_memory();
 // Called by every generated stub the first time that slot is invoked.
 void import_log_first(std::uint32_t slot);
 
+// HOST_TRACE=1 diagnostics: log the first call of every import with
+// the raw wasm-call argument registers and a wasm backtrace.
+bool trace_enabled();
+void trace_import_args(std::uint32_t slot, const std::uint64_t* args,
+                       unsigned nargs);
+#if defined(__x86_64__)
+#define WB_TRACE_IMPORT(slot)                                             \
+  do {                                                                      \
+    std::uint64_t wb_trace_a_[5] = {};                                    \
+    __asm__ volatile("movq %%rsi, %0\n\tmovq %%rdx, %1\n\t"             \
+                     "movq %%rcx, %2\n\tmovq %%r8, %3\n\t"             \
+                     "movq %%r9, %4"                                    \
+                     : "=m"(wb_trace_a_[0]), "=m"(wb_trace_a_[1]),      \
+                       "=m"(wb_trace_a_[2]), "=m"(wb_trace_a_[3]),      \
+                       "=m"(wb_trace_a_[4])                              \
+                     : : "memory");                                     \
+    if (wb::trace_enabled()) {                                            \
+      wb::trace_import_args(slot, wb_trace_a_, 5);                        \
+    }                                                                     \
+  } while (0)
+#else
+#define WB_TRACE_IMPORT(slot) ((void)0)
+#endif
+
 // --- import table accessors used by the hand-written implementations ---
 // Fixed-size, process-lifetime storage so pointers stay valid.
 struct Binding {
@@ -80,6 +106,10 @@ using WasmCallback = double (*)(void* vmctx, std::uint32_t table_index,
 void imports_set_thread_entry(ThreadEntry entry);
 void imports_set_wasm_callback(WasmCallback cb);
 void imports_set_main_thread(std::uint32_t pthread_ptr);
+// Called by slot 324 so the host can re-enter _emscripten_thread_init
+// and _emscripten_tls_init before guest code uses TLS/pthread data.
+using MainThreadInit = void (*)(void* vmctx, std::uint32_t pthread_ptr);
+void imports_set_main_thread_init(MainThreadInit fn);
 
 // Wake waiters of a futex word.  Wire the memory.atomic.notify builtin to
 // this so the ported __asyncjs__rbxFutexWaitMainJspi can be notified.
@@ -93,685 +123,685 @@ void imports_store_headers(std::uint32_t fetch, const char* text);
 
 extern "C" {
 // slot   1: env.emscripten_outn  (i32, i32) -> void  (type 1)
-void wasm_import_001_emscripten_outn(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_001_emscripten_outn(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot   2: env.emscripten_errn  (i32, i32) -> void  (type 1)
-void wasm_import_002_emscripten_errn(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_002_emscripten_errn(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot   3: env.js_fetch_file  (i32, i32, i32) -> i32  (type 6)
-int32_t wasm_import_003_js_fetch_file(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+int32_t wasm_import_003_js_fetch_file(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot   4: env.emscripten_get_now  () -> f64  (type 92)
-double wasm_import_004_emscripten_get_now(void* vmctx);
+double wasm_import_004_emscripten_get_now(void* vmctx, void* caller_vmctx);
 // slot   5: env.__asyncjs__rbxFutexWaitMainJspi  (i32, i32, f64) -> i32  (type 112)
-int32_t wasm_import_005___asyncjs__rbxFutexWaitMainJspi(void* vmctx, int32_t a0, int32_t a1, double a2);
+int32_t wasm_import_005___asyncjs__rbxFutexWaitMainJspi(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, double a2);
 // slot   6: env.emscripten_asm_const_async_on_main_thread  (i32, i32, i32) -> void  (type 3)
-void wasm_import_006_emscripten_asm_const_async_on_main_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+void wasm_import_006_emscripten_asm_const_async_on_main_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot   7: env.emscripten_asm_const_int  (i32, i32, i32) -> i32  (type 6)
-int32_t wasm_import_007_emscripten_asm_const_int(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+int32_t wasm_import_007_emscripten_asm_const_int(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot   8: env.schedule_main_loop  () -> void  (type 15)
-void wasm_import_008_schedule_main_loop(void* vmctx);
+void wasm_import_008_schedule_main_loop(void* vmctx, void* caller_vmctx);
 // slot   9: env.emscripten_exit_with_live_runtime  () -> void  (type 15)
-void wasm_import_009_emscripten_exit_with_live_runtime(void* vmctx);
+void wasm_import_009_emscripten_exit_with_live_runtime(void* vmctx, void* caller_vmctx);
 // slot  10: env.emscripten_request_pointerlock  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_010_emscripten_request_pointerlock(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_010_emscripten_request_pointerlock(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot  11: env.emscripten_exit_pointerlock  () -> i32  (type 10)
-int32_t wasm_import_011_emscripten_exit_pointerlock(void* vmctx);
+int32_t wasm_import_011_emscripten_exit_pointerlock(void* vmctx, void* caller_vmctx);
 // slot  12: env.is_mouse_sourced_event  () -> i32  (type 10)
-int32_t wasm_import_012_is_mouse_sourced_event(void* vmctx);
+int32_t wasm_import_012_is_mouse_sourced_event(void* vmctx, void* caller_vmctx);
 // slot  13: env.emscripten_asm_const_double  (i32, i32, i32) -> f64  (type 132)
-double wasm_import_013_emscripten_asm_const_double(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+double wasm_import_013_emscripten_asm_const_double(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot  14: env.preallocate_emscripten_key_event_buffer  (i32) -> void  (type 0)
-void wasm_import_014_preallocate_emscripten_key_event_buffer(void* vmctx, int32_t a0);
+void wasm_import_014_preallocate_emscripten_key_event_buffer(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot  15: env.emscripten_get_element_css_size  (i32, i32, i32) -> i32  (type 6)
-int32_t wasm_import_015_emscripten_get_element_css_size(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+int32_t wasm_import_015_emscripten_get_element_css_size(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot  16: env.get_effective_device_pixel_ratio  () -> f64  (type 92)
-double wasm_import_016_get_effective_device_pixel_ratio(void* vmctx);
+double wasm_import_016_get_effective_device_pixel_ratio(void* vmctx, void* caller_vmctx);
 // slot  17: env.emscripten_set_canvas_element_size  (i32, i32, i32) -> i32  (type 6)
-int32_t wasm_import_017_emscripten_set_canvas_element_size(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+int32_t wasm_import_017_emscripten_set_canvas_element_size(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot  18: env.emscripten_get_device_pixel_ratio  () -> f64  (type 92)
-double wasm_import_018_emscripten_get_device_pixel_ratio(void* vmctx);
+double wasm_import_018_emscripten_get_device_pixel_ratio(void* vmctx, void* caller_vmctx);
 // slot  19: env.is_mobile_browser  () -> i32  (type 10)
-int32_t wasm_import_019_is_mobile_browser(void* vmctx);
+int32_t wasm_import_019_is_mobile_browser(void* vmctx, void* caller_vmctx);
 // slot  20: env.install_pointer_source_tracking  () -> void  (type 15)
-void wasm_import_020_install_pointer_source_tracking(void* vmctx);
+void wasm_import_020_install_pointer_source_tracking(void* vmctx, void* caller_vmctx);
 // slot  21: env.emscripten_set_mousedown_callback_on_thread  (i32, i32, i32, i32, i32) -> i32  (type 7)
-int32_t wasm_import_021_emscripten_set_mousedown_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+int32_t wasm_import_021_emscripten_set_mousedown_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot  22: env.emscripten_set_mouseup_callback_on_thread  (i32, i32, i32, i32, i32) -> i32  (type 7)
-int32_t wasm_import_022_emscripten_set_mouseup_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+int32_t wasm_import_022_emscripten_set_mouseup_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot  23: env.emscripten_set_mousemove_callback_on_thread  (i32, i32, i32, i32, i32) -> i32  (type 7)
-int32_t wasm_import_023_emscripten_set_mousemove_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+int32_t wasm_import_023_emscripten_set_mousemove_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot  24: env.emscripten_set_keydown_callback_on_thread  (i32, i32, i32, i32, i32) -> i32  (type 7)
-int32_t wasm_import_024_emscripten_set_keydown_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+int32_t wasm_import_024_emscripten_set_keydown_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot  25: env.emscripten_set_keyup_callback_on_thread  (i32, i32, i32, i32, i32) -> i32  (type 7)
-int32_t wasm_import_025_emscripten_set_keyup_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+int32_t wasm_import_025_emscripten_set_keyup_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot  26: env.emscripten_set_touchstart_callback_on_thread  (i32, i32, i32, i32, i32) -> i32  (type 7)
-int32_t wasm_import_026_emscripten_set_touchstart_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+int32_t wasm_import_026_emscripten_set_touchstart_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot  27: env.emscripten_set_touchend_callback_on_thread  (i32, i32, i32, i32, i32) -> i32  (type 7)
-int32_t wasm_import_027_emscripten_set_touchend_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+int32_t wasm_import_027_emscripten_set_touchend_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot  28: env.emscripten_set_touchmove_callback_on_thread  (i32, i32, i32, i32, i32) -> i32  (type 7)
-int32_t wasm_import_028_emscripten_set_touchmove_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+int32_t wasm_import_028_emscripten_set_touchmove_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot  29: env.emscripten_set_touchcancel_callback_on_thread  (i32, i32, i32, i32, i32) -> i32  (type 7)
-int32_t wasm_import_029_emscripten_set_touchcancel_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+int32_t wasm_import_029_emscripten_set_touchcancel_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot  30: env.emscripten_set_wheel_callback_on_thread  (i32, i32, i32, i32, i32) -> i32  (type 7)
-int32_t wasm_import_030_emscripten_set_wheel_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+int32_t wasm_import_030_emscripten_set_wheel_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot  31: env.emscripten_set_mouseleave_callback_on_thread  (i32, i32, i32, i32, i32) -> i32  (type 7)
-int32_t wasm_import_031_emscripten_set_mouseleave_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+int32_t wasm_import_031_emscripten_set_mouseleave_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot  32: env.emscripten_set_mouseenter_callback_on_thread  (i32, i32, i32, i32, i32) -> i32  (type 7)
-int32_t wasm_import_032_emscripten_set_mouseenter_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+int32_t wasm_import_032_emscripten_set_mouseenter_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot  33: env.emscripten_set_pointerlockerror_callback_on_thread  (i32, i32, i32, i32, i32) -> i32  (type 7)
-int32_t wasm_import_033_emscripten_set_pointerlockerror_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+int32_t wasm_import_033_emscripten_set_pointerlockerror_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot  34: env.emscripten_set_blur_callback_on_thread  (i32, i32, i32, i32, i32) -> i32  (type 7)
-int32_t wasm_import_034_emscripten_set_blur_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+int32_t wasm_import_034_emscripten_set_blur_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot  35: env.emscripten_set_focus_callback_on_thread  (i32, i32, i32, i32, i32) -> i32  (type 7)
-int32_t wasm_import_035_emscripten_set_focus_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+int32_t wasm_import_035_emscripten_set_focus_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot  36: env.is_touch_mobile  () -> i32  (type 10)
-int32_t wasm_import_036_is_touch_mobile(void* vmctx);
+int32_t wasm_import_036_is_touch_mobile(void* vmctx, void* caller_vmctx);
 // slot  37: env.is_touch_screen_device  () -> i32  (type 10)
-int32_t wasm_import_037_is_touch_screen_device(void* vmctx);
+int32_t wasm_import_037_is_touch_screen_device(void* vmctx, void* caller_vmctx);
 // slot  38: env.has_keyboard  () -> i32  (type 10)
-int32_t wasm_import_038_has_keyboard(void* vmctx);
+int32_t wasm_import_038_has_keyboard(void* vmctx, void* caller_vmctx);
 // slot  39: env.has_mouse  () -> i32  (type 10)
-int32_t wasm_import_039_has_mouse(void* vmctx);
+int32_t wasm_import_039_has_mouse(void* vmctx, void* caller_vmctx);
 // slot  40: env._embind_register_function  (i32, i32, i32, i32, i32, i32, i32, i32) -> void  (type 22)
-void wasm_import_040__embind_register_function(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7);
+void wasm_import_040__embind_register_function(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7);
 // slot  41: env.__assert_fail  (i32, i32, i32, i32) -> void  (type 5)
-void wasm_import_041___assert_fail(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+void wasm_import_041___assert_fail(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot  42: env._embind_register_void  (i32, i32) -> void  (type 1)
-void wasm_import_042__embind_register_void(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_042__embind_register_void(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot  43: env._embind_register_bool  (i32, i32, i32, i32) -> void  (type 5)
-void wasm_import_043__embind_register_bool(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+void wasm_import_043__embind_register_bool(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot  44: env._embind_register_integer  (i32, i32, i32, i32, i32) -> void  (type 9)
-void wasm_import_044__embind_register_integer(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+void wasm_import_044__embind_register_integer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot  45: env._embind_register_bigint  (i32, i32, i32, i64, i64) -> void  (type 187)
-void wasm_import_045__embind_register_bigint(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int64_t a3, int64_t a4);
+void wasm_import_045__embind_register_bigint(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int64_t a3, int64_t a4);
 // slot  46: env._embind_register_float  (i32, i32, i32) -> void  (type 3)
-void wasm_import_046__embind_register_float(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+void wasm_import_046__embind_register_float(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot  47: env._embind_register_std_string  (i32, i32) -> void  (type 1)
-void wasm_import_047__embind_register_std_string(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_047__embind_register_std_string(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot  48: env._embind_register_std_wstring  (i32, i32, i32) -> void  (type 3)
-void wasm_import_048__embind_register_std_wstring(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+void wasm_import_048__embind_register_std_wstring(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot  49: env._embind_register_emval  (i32) -> void  (type 0)
-void wasm_import_049__embind_register_emval(void* vmctx, int32_t a0);
+void wasm_import_049__embind_register_emval(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot  50: env._embind_register_memory_view  (i32, i32, i32) -> void  (type 3)
-void wasm_import_050__embind_register_memory_view(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+void wasm_import_050__embind_register_memory_view(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot  51: env.js_linking_open_url  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_051_js_linking_open_url(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_051_js_linking_open_url(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot  52: env.emscripten_console_error  (i32) -> void  (type 0)
-void wasm_import_052_emscripten_console_error(void* vmctx, int32_t a0);
+void wasm_import_052_emscripten_console_error(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot  53: env.emscripten_asm_const_int_sync_on_main_thread  (i32, i32, i32) -> i32  (type 6)
-int32_t wasm_import_053_emscripten_asm_const_int_sync_on_main_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+int32_t wasm_import_053_emscripten_asm_const_int_sync_on_main_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot  54: env.js_web_client_page_visible  () -> i32  (type 10)
-int32_t wasm_import_054_js_web_client_page_visible(void* vmctx);
+int32_t wasm_import_054_js_web_client_page_visible(void* vmctx, void* caller_vmctx);
 // slot  55: env.js_web_client_ms_since_navigation  () -> f64  (type 92)
-double wasm_import_055_js_web_client_ms_since_navigation(void* vmctx);
+double wasm_import_055_js_web_client_ms_since_navigation(void* vmctx, void* caller_vmctx);
 // slot  56: env.js_web_client_wasm_cache_state  () -> i32  (type 10)
-int32_t wasm_import_056_js_web_client_wasm_cache_state(void* vmctx);
+int32_t wasm_import_056_js_web_client_wasm_cache_state(void* vmctx, void* caller_vmctx);
 // slot  57: env.sync_text_and_pos  (i32, i32, i32) -> void  (type 3)
-void wasm_import_057_sync_text_and_pos(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+void wasm_import_057_sync_text_and_pos(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot  58: env.setup_font  (i32, i32, i32, f32, i32, i32) -> void  (type 140)
-void wasm_import_058_setup_font(void* vmctx, int32_t a0, int32_t a1, int32_t a2, float a3, int32_t a4, int32_t a5);
+void wasm_import_058_setup_font(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, float a3, int32_t a4, int32_t a5);
 // slot  59: env.set_text_box_horiz_alignment  (i32) -> void  (type 0)
-void wasm_import_059_set_text_box_horiz_alignment(void* vmctx, int32_t a0);
+void wasm_import_059_set_text_box_horiz_alignment(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot  60: env.set_text_box_vert_alignment  (i32) -> void  (type 0)
-void wasm_import_060_set_text_box_vert_alignment(void* vmctx, int32_t a0);
+void wasm_import_060_set_text_box_vert_alignment(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot  61: env.set_text_color  (f32, f32, f32, f32) -> void  (type 276)
-void wasm_import_061_set_text_color(void* vmctx, float a0, float a1, float a2, float a3);
+void wasm_import_061_set_text_color(void* vmctx, void* caller_vmctx, float a0, float a1, float a2, float a3);
 // slot  62: env.blur_text_input  () -> void  (type 15)
-void wasm_import_062_blur_text_input(void* vmctx);
+void wasm_import_062_blur_text_input(void* vmctx, void* caller_vmctx);
 // slot  63: env.reset_current_text_input  () -> void  (type 15)
-void wasm_import_063_reset_current_text_input(void* vmctx);
+void wasm_import_063_reset_current_text_input(void* vmctx, void* caller_vmctx);
 // slot  64: env.copy_pending_text  (i32) -> void  (type 0)
-void wasm_import_064_copy_pending_text(void* vmctx, int32_t a0);
+void wasm_import_064_copy_pending_text(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot  65: env.choose_current_text_input  (i32, i32, i32) -> void  (type 3)
-void wasm_import_065_choose_current_text_input(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+void wasm_import_065_choose_current_text_input(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot  66: env.update_text_box_rect  (f32, f32, f32, f32) -> void  (type 276)
-void wasm_import_066_update_text_box_rect(void* vmctx, float a0, float a1, float a2, float a3);
+void wasm_import_066_update_text_box_rect(void* vmctx, void* caller_vmctx, float a0, float a1, float a2, float a3);
 // slot  67: env.set_text_box_overlay  (i32) -> void  (type 0)
-void wasm_import_067_set_text_box_overlay(void* vmctx, int32_t a0);
+void wasm_import_067_set_text_box_overlay(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot  68: env.focus_text_input  () -> void  (type 15)
-void wasm_import_068_focus_text_input(void* vmctx);
+void wasm_import_068_focus_text_input(void* vmctx, void* caller_vmctx);
 // slot  69: env.shift_canvas  (f32) -> void  (type 223)
-void wasm_import_069_shift_canvas(void* vmctx, float a0);
+void wasm_import_069_shift_canvas(void* vmctx, void* caller_vmctx, float a0);
 // slot  70: env.emscripten_sample_gamepad_data  () -> i32  (type 10)
-int32_t wasm_import_070_emscripten_sample_gamepad_data(void* vmctx);
+int32_t wasm_import_070_emscripten_sample_gamepad_data(void* vmctx, void* caller_vmctx);
 // slot  71: env.emscripten_get_gamepad_status  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_071_emscripten_get_gamepad_status(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_071_emscripten_get_gamepad_status(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot  72: env.emscripten_set_gamepadconnected_callback_on_thread  (i32, i32, i32, i32) -> i32  (type 8)
-int32_t wasm_import_072_emscripten_set_gamepadconnected_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+int32_t wasm_import_072_emscripten_set_gamepadconnected_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot  73: env.emscripten_set_gamepaddisconnected_callback_on_thread  (i32, i32, i32, i32) -> i32  (type 8)
-int32_t wasm_import_073_emscripten_set_gamepaddisconnected_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+int32_t wasm_import_073_emscripten_set_gamepaddisconnected_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot  74: env.emscripten_get_num_gamepads  () -> i32  (type 10)
-int32_t wasm_import_074_emscripten_get_num_gamepads(void* vmctx);
+int32_t wasm_import_074_emscripten_get_num_gamepads(void* vmctx, void* caller_vmctx);
 // slot  75: env.js_external_content_sharing_deliver  (i32, i32) -> void  (type 1)
-void wasm_import_075_js_external_content_sharing_deliver(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_075_js_external_content_sharing_deliver(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot  76: env.__asyncjs__fiber_transfer_js  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_076___asyncjs__fiber_transfer_js(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_076___asyncjs__fiber_transfer_js(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot  77: env.fiber_destroy_js  (i32) -> void  (type 0)
-void wasm_import_077_fiber_destroy_js(void* vmctx, int32_t a0);
+void wasm_import_077_fiber_destroy_js(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot  78: env.__asyncjs__create_suspended_fiber_js  (i32, i32, i32, i32, i32) -> i32  (type 7)
-int32_t wasm_import_078___asyncjs__create_suspended_fiber_js(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+int32_t wasm_import_078___asyncjs__create_suspended_fiber_js(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot  79: env.report_crash  (i32, i32, i32, i32, i32) -> void  (type 9)
-void wasm_import_079_report_crash(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+void wasm_import_079_report_crash(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot  80: env.set_crash_attribute  (i32, i32) -> void  (type 1)
-void wasm_import_080_set_crash_attribute(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_080_set_crash_attribute(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot  81: env.js_request_keyboard_layout  () -> void  (type 15)
-void wasm_import_081_js_request_keyboard_layout(void* vmctx);
+void wasm_import_081_js_request_keyboard_layout(void* vmctx, void* caller_vmctx);
 // slot  82: env.js_keyboard_layout_status  () -> i32  (type 10)
-int32_t wasm_import_082_js_keyboard_layout_status(void* vmctx);
+int32_t wasm_import_082_js_keyboard_layout_status(void* vmctx, void* caller_vmctx);
 // slot  83: env.js_copy_keyboard_layout_key  (i32, i32, i32) -> void  (type 3)
-void wasm_import_083_js_copy_keyboard_layout_key(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+void wasm_import_083_js_copy_keyboard_layout_key(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot  84: env.exit  (i32) -> void  (type 0)
-void wasm_import_084_exit(void* vmctx, int32_t a0);
+void wasm_import_084_exit(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot  85: env.emscripten_async_call  (i32, i32, i32) -> void  (type 3)
-void wasm_import_085_emscripten_async_call(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+void wasm_import_085_emscripten_async_call(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot  86: env.rbx_wasm_rna_send_connection_close_js  (i32) -> void  (type 0)
-void wasm_import_086_rbx_wasm_rna_send_connection_close_js(void* vmctx, int32_t a0);
+void wasm_import_086_rbx_wasm_rna_send_connection_close_js(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot  87: env.rbx_wasm_rna_write_stream_js  (i32, i32, i32, i32) -> void  (type 5)
-void wasm_import_087_rbx_wasm_rna_write_stream_js(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+void wasm_import_087_rbx_wasm_rna_write_stream_js(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot  88: env.rbx_wasm_rna_open_stream_js  (i32, i32) -> void  (type 1)
-void wasm_import_088_rbx_wasm_rna_open_stream_js(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_088_rbx_wasm_rna_open_stream_js(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot  89: env.rbx_wasm_rna_receive_ring_consumed_js  (i32, i32, i32) -> void  (type 3)
-void wasm_import_089_rbx_wasm_rna_receive_ring_consumed_js(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+void wasm_import_089_rbx_wasm_rna_receive_ring_consumed_js(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot  90: env.rbx_wasm_rna_close_js  (i32) -> void  (type 0)
-void wasm_import_090_rbx_wasm_rna_close_js(void* vmctx, int32_t a0);
+void wasm_import_090_rbx_wasm_rna_close_js(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot  91: env.rbx_wasm_rna_shutdown_stream_write_js  (i32, i32) -> void  (type 1)
-void wasm_import_091_rbx_wasm_rna_shutdown_stream_write_js(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_091_rbx_wasm_rna_shutdown_stream_write_js(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot  92: env.rbx_wasm_rna_shutdown_stream_read_js  (i32, i32) -> void  (type 1)
-void wasm_import_092_rbx_wasm_rna_shutdown_stream_read_js(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_092_rbx_wasm_rna_shutdown_stream_read_js(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot  93: env.rbx_wasm_rna_pause_stream_read_js  (i32, i32) -> void  (type 1)
-void wasm_import_093_rbx_wasm_rna_pause_stream_read_js(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_093_rbx_wasm_rna_pause_stream_read_js(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot  94: env.rbx_wasm_rna_send_datagram_js  (i32, i32, i32, i32, i32) -> void  (type 9)
-void wasm_import_094_rbx_wasm_rna_send_datagram_js(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+void wasm_import_094_rbx_wasm_rna_send_datagram_js(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot  95: env.rbx_wasm_rna_is_supported_js  () -> i32  (type 10)
-int32_t wasm_import_095_rbx_wasm_rna_is_supported_js(void* vmctx);
+int32_t wasm_import_095_rbx_wasm_rna_is_supported_js(void* vmctx, void* caller_vmctx);
 // slot  96: env.rbx_wasm_rna_connect_js  (i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32) -> void  (type 316)
-void wasm_import_096_rbx_wasm_rna_connect_js(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8, int32_t a9, int32_t a10, int32_t a11, int32_t a12, int32_t a13);
+void wasm_import_096_rbx_wasm_rna_connect_js(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8, int32_t a9, int32_t a10, int32_t a11, int32_t a12, int32_t a13);
 // slot  97: env.rbx_wasm_rna_resume_stream_read_js  (i32, i32) -> void  (type 1)
-void wasm_import_097_rbx_wasm_rna_resume_stream_read_js(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_097_rbx_wasm_rna_resume_stream_read_js(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot  98: env.glScissor  (i32, i32, i32, i32) -> void  (type 5)
-void wasm_import_098_glScissor(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+void wasm_import_098_glScissor(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot  99: env.glInvalidateFramebuffer  (i32, i32, i32) -> void  (type 3)
-void wasm_import_099_glInvalidateFramebuffer(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+void wasm_import_099_glInvalidateFramebuffer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot 100: env.glBindFramebuffer  (i32, i32) -> void  (type 1)
-void wasm_import_100_glBindFramebuffer(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_100_glBindFramebuffer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 101: env.glActiveTexture  (i32) -> void  (type 0)
-void wasm_import_101_glActiveTexture(void* vmctx, int32_t a0);
+void wasm_import_101_glActiveTexture(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 102: env.glBindTexture  (i32, i32) -> void  (type 1)
-void wasm_import_102_glBindTexture(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_102_glBindTexture(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 103: env.glCopyTexSubImage2D  (i32, i32, i32, i32, i32, i32, i32, i32) -> void  (type 22)
-void wasm_import_103_glCopyTexSubImage2D(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7);
+void wasm_import_103_glCopyTexSubImage2D(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7);
 // slot 104: env.glBindBufferRange  (i32, i32, i32, i32, i32) -> void  (type 9)
-void wasm_import_104_glBindBufferRange(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+void wasm_import_104_glBindBufferRange(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot 105: env.glBlitFramebuffer  (i32, i32, i32, i32, i32, i32, i32, i32, i32, i32) -> void  (type 51)
-void wasm_import_105_glBlitFramebuffer(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8, int32_t a9);
+void wasm_import_105_glBlitFramebuffer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8, int32_t a9);
 // slot 106: env.glDisable  (i32) -> void  (type 0)
-void wasm_import_106_glDisable(void* vmctx, int32_t a0);
+void wasm_import_106_glDisable(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 107: env.glEnable  (i32) -> void  (type 0)
-void wasm_import_107_glEnable(void* vmctx, int32_t a0);
+void wasm_import_107_glEnable(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 108: env.glCullFace  (i32) -> void  (type 0)
-void wasm_import_108_glCullFace(void* vmctx, int32_t a0);
+void wasm_import_108_glCullFace(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 109: env.glPolygonOffset  (f32, f32) -> void  (type 494)
-void wasm_import_109_glPolygonOffset(void* vmctx, float a0, float a1);
+void wasm_import_109_glPolygonOffset(void* vmctx, void* caller_vmctx, float a0, float a1);
 // slot 110: env.glColorMask  (i32, i32, i32, i32) -> void  (type 5)
-void wasm_import_110_glColorMask(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+void wasm_import_110_glColorMask(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot 111: env.glBlendFunc  (i32, i32) -> void  (type 1)
-void wasm_import_111_glBlendFunc(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_111_glBlendFunc(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 112: env.glBlendFuncSeparate  (i32, i32, i32, i32) -> void  (type 5)
-void wasm_import_112_glBlendFuncSeparate(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+void wasm_import_112_glBlendFuncSeparate(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot 113: env.glDepthFunc  (i32) -> void  (type 0)
-void wasm_import_113_glDepthFunc(void* vmctx, int32_t a0);
+void wasm_import_113_glDepthFunc(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 114: env.glDepthMask  (i32) -> void  (type 0)
-void wasm_import_114_glDepthMask(void* vmctx, int32_t a0);
+void wasm_import_114_glDepthMask(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 115: env.glStencilFunc  (i32, i32, i32) -> void  (type 3)
-void wasm_import_115_glStencilFunc(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+void wasm_import_115_glStencilFunc(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot 116: env.glStencilOp  (i32, i32, i32) -> void  (type 3)
-void wasm_import_116_glStencilOp(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+void wasm_import_116_glStencilOp(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot 117: env.glUseProgram  (i32) -> void  (type 0)
-void wasm_import_117_glUseProgram(void* vmctx, int32_t a0);
+void wasm_import_117_glUseProgram(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 118: env.glStencilMask  (i32) -> void  (type 0)
-void wasm_import_118_glStencilMask(void* vmctx, int32_t a0);
+void wasm_import_118_glStencilMask(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 119: env.glClearBufferfv  (i32, i32, i32) -> void  (type 3)
-void wasm_import_119_glClearBufferfv(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+void wasm_import_119_glClearBufferfv(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot 120: env.glClearBufferfi  (i32, i32, f32, i32) -> void  (type 60)
-void wasm_import_120_glClearBufferfi(void* vmctx, int32_t a0, int32_t a1, float a2, int32_t a3);
+void wasm_import_120_glClearBufferfi(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, float a2, int32_t a3);
 // slot 121: env.glClearBufferiv  (i32, i32, i32) -> void  (type 3)
-void wasm_import_121_glClearBufferiv(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+void wasm_import_121_glClearBufferiv(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot 122: env.glClearColor  (f32, f32, f32, f32) -> void  (type 276)
-void wasm_import_122_glClearColor(void* vmctx, float a0, float a1, float a2, float a3);
+void wasm_import_122_glClearColor(void* vmctx, void* caller_vmctx, float a0, float a1, float a2, float a3);
 // slot 123: env.glClearDepthf  (f32) -> void  (type 223)
-void wasm_import_123_glClearDepthf(void* vmctx, float a0);
+void wasm_import_123_glClearDepthf(void* vmctx, void* caller_vmctx, float a0);
 // slot 124: env.glClearStencil  (i32) -> void  (type 0)
-void wasm_import_124_glClearStencil(void* vmctx, int32_t a0);
+void wasm_import_124_glClearStencil(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 125: env.glClear  (i32) -> void  (type 0)
-void wasm_import_125_glClear(void* vmctx, int32_t a0);
+void wasm_import_125_glClear(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 126: env.glBindBufferBase  (i32, i32, i32) -> void  (type 3)
-void wasm_import_126_glBindBufferBase(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+void wasm_import_126_glBindBufferBase(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot 127: env.glViewport  (i32, i32, i32, i32) -> void  (type 5)
-void wasm_import_127_glViewport(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+void wasm_import_127_glViewport(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot 128: env.glDrawBuffers  (i32, i32) -> void  (type 1)
-void wasm_import_128_glDrawBuffers(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_128_glDrawBuffers(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 129: env.glGenerateMipmap  (i32) -> void  (type 0)
-void wasm_import_129_glGenerateMipmap(void* vmctx, int32_t a0);
+void wasm_import_129_glGenerateMipmap(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 130: env.glGenFramebuffers  (i32, i32) -> void  (type 1)
-void wasm_import_130_glGenFramebuffers(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_130_glGenFramebuffers(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 131: env.glFramebufferTextureLayer  (i32, i32, i32, i32, i32) -> void  (type 9)
-void wasm_import_131_glFramebufferTextureLayer(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+void wasm_import_131_glFramebufferTextureLayer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot 132: env.glCheckFramebufferStatus  (i32) -> i32  (type 2)
-int32_t wasm_import_132_glCheckFramebufferStatus(void* vmctx, int32_t a0);
+int32_t wasm_import_132_glCheckFramebufferStatus(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 133: env.glDeleteFramebuffers  (i32, i32) -> void  (type 1)
-void wasm_import_133_glDeleteFramebuffers(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_133_glDeleteFramebuffers(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 134: env.glDeleteBuffers  (i32, i32) -> void  (type 1)
-void wasm_import_134_glDeleteBuffers(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_134_glDeleteBuffers(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 135: env.glDeleteShader  (i32) -> void  (type 0)
-void wasm_import_135_glDeleteShader(void* vmctx, int32_t a0);
+void wasm_import_135_glDeleteShader(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 136: env.glDeleteProgram  (i32) -> void  (type 0)
-void wasm_import_136_glDeleteProgram(void* vmctx, int32_t a0);
+void wasm_import_136_glDeleteProgram(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 137: env.glDeleteTextures  (i32, i32) -> void  (type 1)
-void wasm_import_137_glDeleteTextures(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_137_glDeleteTextures(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 138: env.glDeleteRenderbuffers  (i32, i32) -> void  (type 1)
-void wasm_import_138_glDeleteRenderbuffers(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_138_glDeleteRenderbuffers(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 139: env.glGetProgramiv  (i32, i32, i32) -> void  (type 3)
-void wasm_import_139_glGetProgramiv(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+void wasm_import_139_glGetProgramiv(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot 140: env.glBindBuffer  (i32, i32) -> void  (type 1)
-void wasm_import_140_glBindBuffer(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_140_glBindBuffer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 141: env.glMapBufferRange  (i32, i32, i32, i32) -> i32  (type 8)
-int32_t wasm_import_141_glMapBufferRange(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+int32_t wasm_import_141_glMapBufferRange(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot 142: env.glGetError  () -> i32  (type 10)
-int32_t wasm_import_142_glGetError(void* vmctx);
+int32_t wasm_import_142_glGetError(void* vmctx, void* caller_vmctx);
 // slot 143: env.glGetString  (i32) -> i32  (type 2)
-int32_t wasm_import_143_glGetString(void* vmctx, int32_t a0);
+int32_t wasm_import_143_glGetString(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 144: env.glGetIntegerv  (i32, i32) -> void  (type 1)
-void wasm_import_144_glGetIntegerv(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_144_glGetIntegerv(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 145: env.glGenVertexArrays  (i32, i32) -> void  (type 1)
-void wasm_import_145_glGenVertexArrays(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_145_glGenVertexArrays(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 146: env.glBindVertexArray  (i32) -> void  (type 0)
-void wasm_import_146_glBindVertexArray(void* vmctx, int32_t a0);
+void wasm_import_146_glBindVertexArray(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 147: env.glDeleteVertexArrays  (i32, i32) -> void  (type 1)
-void wasm_import_147_glDeleteVertexArrays(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_147_glDeleteVertexArrays(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 148: env.glUnmapBuffer  (i32) -> i32  (type 2)
-int32_t wasm_import_148_glUnmapBuffer(void* vmctx, int32_t a0);
+int32_t wasm_import_148_glUnmapBuffer(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 149: env.glBufferSubData  (i32, i32, i32, i32) -> void  (type 5)
-void wasm_import_149_glBufferSubData(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+void wasm_import_149_glBufferSubData(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot 150: env.glGenBuffers  (i32, i32) -> void  (type 1)
-void wasm_import_150_glGenBuffers(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_150_glGenBuffers(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 151: env.glBufferData  (i32, i32, i32, i32) -> void  (type 5)
-void wasm_import_151_glBufferData(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+void wasm_import_151_glBufferData(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot 152: env.glClientWaitSync  (i32, i32, i64) -> i32  (type 46)
-int32_t wasm_import_152_glClientWaitSync(void* vmctx, int32_t a0, int32_t a1, int64_t a2);
+int32_t wasm_import_152_glClientWaitSync(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int64_t a2);
 // slot 153: env.glDeleteSync  (i32) -> void  (type 0)
-void wasm_import_153_glDeleteSync(void* vmctx, int32_t a0);
+void wasm_import_153_glDeleteSync(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 154: env.glFenceSync  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_154_glFenceSync(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_154_glFenceSync(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 155: env.glFramebufferTexture2D  (i32, i32, i32, i32, i32) -> void  (type 9)
-void wasm_import_155_glFramebufferTexture2D(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+void wasm_import_155_glFramebufferTexture2D(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot 156: env.glFramebufferRenderbuffer  (i32, i32, i32, i32) -> void  (type 5)
-void wasm_import_156_glFramebufferRenderbuffer(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+void wasm_import_156_glFramebufferRenderbuffer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot 157: env.glEnableVertexAttribArray  (i32) -> void  (type 0)
-void wasm_import_157_glEnableVertexAttribArray(void* vmctx, int32_t a0);
+void wasm_import_157_glEnableVertexAttribArray(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 158: env.glVertexAttribPointer  (i32, i32, i32, i32, i32, i32) -> void  (type 11)
-void wasm_import_158_glVertexAttribPointer(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5);
+void wasm_import_158_glVertexAttribPointer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5);
 // slot 159: env.glDisableVertexAttribArray  (i32) -> void  (type 0)
-void wasm_import_159_glDisableVertexAttribArray(void* vmctx, int32_t a0);
+void wasm_import_159_glDisableVertexAttribArray(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 160: env.glDrawElements  (i32, i32, i32, i32) -> void  (type 5)
-void wasm_import_160_glDrawElements(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+void wasm_import_160_glDrawElements(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot 161: env.glDrawArrays  (i32, i32, i32) -> void  (type 3)
-void wasm_import_161_glDrawArrays(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+void wasm_import_161_glDrawArrays(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot 162: env.glDrawElementsInstanced  (i32, i32, i32, i32, i32) -> void  (type 9)
-void wasm_import_162_glDrawElementsInstanced(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+void wasm_import_162_glDrawElementsInstanced(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot 163: env.glDrawArraysInstanced  (i32, i32, i32, i32) -> void  (type 5)
-void wasm_import_163_glDrawArraysInstanced(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+void wasm_import_163_glDrawArraysInstanced(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot 164: env.glGetUniformLocation  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_164_glGetUniformLocation(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_164_glGetUniformLocation(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 165: env.glCreateProgram  () -> i32  (type 10)
-int32_t wasm_import_165_glCreateProgram(void* vmctx);
+int32_t wasm_import_165_glCreateProgram(void* vmctx, void* caller_vmctx);
 // slot 166: env.glAttachShader  (i32, i32) -> void  (type 1)
-void wasm_import_166_glAttachShader(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_166_glAttachShader(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 167: env.glBindAttribLocation  (i32, i32, i32) -> void  (type 3)
-void wasm_import_167_glBindAttribLocation(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+void wasm_import_167_glBindAttribLocation(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot 168: env.glLinkProgram  (i32) -> void  (type 0)
-void wasm_import_168_glLinkProgram(void* vmctx, int32_t a0);
+void wasm_import_168_glLinkProgram(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 169: env.glGetProgramInfoLog  (i32, i32, i32, i32) -> void  (type 5)
-void wasm_import_169_glGetProgramInfoLog(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+void wasm_import_169_glGetProgramInfoLog(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot 170: env.glUniform1i  (i32, i32) -> void  (type 1)
-void wasm_import_170_glUniform1i(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_170_glUniform1i(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 171: env.glGetUniformBlockIndex  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_171_glGetUniformBlockIndex(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_171_glGetUniformBlockIndex(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 172: env.glUniformBlockBinding  (i32, i32, i32) -> void  (type 3)
-void wasm_import_172_glUniformBlockBinding(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+void wasm_import_172_glUniformBlockBinding(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot 173: env.glGetActiveUniformBlockiv  (i32, i32, i32, i32) -> void  (type 5)
-void wasm_import_173_glGetActiveUniformBlockiv(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+void wasm_import_173_glGetActiveUniformBlockiv(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot 174: env.glGetActiveUniform  (i32, i32, i32, i32, i32, i32, i32) -> void  (type 14)
-void wasm_import_174_glGetActiveUniform(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6);
+void wasm_import_174_glGetActiveUniform(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6);
 // slot 175: env.glCreateShader  (i32) -> i32  (type 2)
-int32_t wasm_import_175_glCreateShader(void* vmctx, int32_t a0);
+int32_t wasm_import_175_glCreateShader(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 176: env.glShaderSource  (i32, i32, i32, i32) -> void  (type 5)
-void wasm_import_176_glShaderSource(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+void wasm_import_176_glShaderSource(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot 177: env.glCompileShader  (i32) -> void  (type 0)
-void wasm_import_177_glCompileShader(void* vmctx, int32_t a0);
+void wasm_import_177_glCompileShader(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 178: env.glGetShaderiv  (i32, i32, i32) -> void  (type 3)
-void wasm_import_178_glGetShaderiv(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+void wasm_import_178_glGetShaderiv(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot 179: env.glGetShaderInfoLog  (i32, i32, i32, i32) -> void  (type 5)
-void wasm_import_179_glGetShaderInfoLog(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+void wasm_import_179_glGetShaderInfoLog(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot 180: env.glGenTextures  (i32, i32) -> void  (type 1)
-void wasm_import_180_glGenTextures(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_180_glGenTextures(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 181: env.glTexStorage3D  (i32, i32, i32, i32, i32, i32) -> void  (type 11)
-void wasm_import_181_glTexStorage3D(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5);
+void wasm_import_181_glTexStorage3D(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5);
 // slot 182: env.glTexStorage2D  (i32, i32, i32, i32, i32) -> void  (type 9)
-void wasm_import_182_glTexStorage2D(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+void wasm_import_182_glTexStorage2D(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot 183: env.glCompressedTexImage3D  (i32, i32, i32, i32, i32, i32, i32, i32, i32) -> void  (type 33)
-void wasm_import_183_glCompressedTexImage3D(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8);
+void wasm_import_183_glCompressedTexImage3D(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8);
 // slot 184: env.glCompressedTexImage2D  (i32, i32, i32, i32, i32, i32, i32, i32) -> void  (type 22)
-void wasm_import_184_glCompressedTexImage2D(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7);
+void wasm_import_184_glCompressedTexImage2D(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7);
 // slot 185: env.glTexImage3D  (i32, i32, i32, i32, i32, i32, i32, i32, i32, i32) -> void  (type 51)
-void wasm_import_185_glTexImage3D(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8, int32_t a9);
+void wasm_import_185_glTexImage3D(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8, int32_t a9);
 // slot 186: env.glTexImage2D  (i32, i32, i32, i32, i32, i32, i32, i32, i32) -> void  (type 33)
-void wasm_import_186_glTexImage2D(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8);
+void wasm_import_186_glTexImage2D(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8);
 // slot 187: env.glTexParameteri  (i32, i32, i32) -> void  (type 3)
-void wasm_import_187_glTexParameteri(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+void wasm_import_187_glTexParameteri(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot 188: env.glPixelStorei  (i32, i32) -> void  (type 1)
-void wasm_import_188_glPixelStorei(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_188_glPixelStorei(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 189: env.glReadPixels  (i32, i32, i32, i32, i32, i32, i32) -> void  (type 14)
-void wasm_import_189_glReadPixels(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6);
+void wasm_import_189_glReadPixels(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6);
 // slot 190: env.glGenRenderbuffers  (i32, i32) -> void  (type 1)
-void wasm_import_190_glGenRenderbuffers(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_190_glGenRenderbuffers(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 191: env.glBindRenderbuffer  (i32, i32) -> void  (type 1)
-void wasm_import_191_glBindRenderbuffer(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_191_glBindRenderbuffer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 192: env.glRenderbufferStorageMultisample  (i32, i32, i32, i32, i32) -> void  (type 9)
-void wasm_import_192_glRenderbufferStorageMultisample(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+void wasm_import_192_glRenderbufferStorageMultisample(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot 193: env.glRenderbufferStorage  (i32, i32, i32, i32) -> void  (type 5)
-void wasm_import_193_glRenderbufferStorage(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+void wasm_import_193_glRenderbufferStorage(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot 194: env.glCompressedTexSubImage3D  (i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32) -> void  (type 48)
-void wasm_import_194_glCompressedTexSubImage3D(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8, int32_t a9, int32_t a10);
+void wasm_import_194_glCompressedTexSubImage3D(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8, int32_t a9, int32_t a10);
 // slot 195: env.glCompressedTexSubImage2D  (i32, i32, i32, i32, i32, i32, i32, i32, i32) -> void  (type 33)
-void wasm_import_195_glCompressedTexSubImage2D(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8);
+void wasm_import_195_glCompressedTexSubImage2D(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8);
 // slot 196: env.glTexSubImage3D  (i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32) -> void  (type 48)
-void wasm_import_196_glTexSubImage3D(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8, int32_t a9, int32_t a10);
+void wasm_import_196_glTexSubImage3D(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8, int32_t a9, int32_t a10);
 // slot 197: env.glTexSubImage2D  (i32, i32, i32, i32, i32, i32, i32, i32, i32) -> void  (type 33)
-void wasm_import_197_glTexSubImage2D(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8);
+void wasm_import_197_glTexSubImage2D(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6, int32_t a7, int32_t a8);
 // slot 198: env.glTexParameterfv  (i32, i32, i32) -> void  (type 3)
-void wasm_import_198_glTexParameterfv(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+void wasm_import_198_glTexParameterfv(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot 199: env.glTexParameterf  (i32, i32, f32) -> void  (type 23)
-void wasm_import_199_glTexParameterf(void* vmctx, int32_t a0, int32_t a1, float a2);
+void wasm_import_199_glTexParameterf(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, float a2);
 // slot 200: env.glClipControlEXT  (i32, i32) -> void  (type 1)
-void wasm_import_200_glClipControlEXT(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_200_glClipControlEXT(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 201: env.applyPendingCanvasResize  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_201_applyPendingCanvasResize(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_201_applyPendingCanvasResize(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 202: env.emscripten_webgl_make_context_current  (i32) -> i32  (type 2)
-int32_t wasm_import_202_emscripten_webgl_make_context_current(void* vmctx, int32_t a0);
+int32_t wasm_import_202_emscripten_webgl_make_context_current(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 203: env.emscripten_webgl_create_context  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_203_emscripten_webgl_create_context(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_203_emscripten_webgl_create_context(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 204: env.emscripten_webgl_destroy_context  (i32) -> i32  (type 2)
-int32_t wasm_import_204_emscripten_webgl_destroy_context(void* vmctx, int32_t a0);
+int32_t wasm_import_204_emscripten_webgl_destroy_context(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 205: env.emscripten_webgl_get_context_attributes  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_205_emscripten_webgl_get_context_attributes(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_205_emscripten_webgl_get_context_attributes(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 206: env.emscripten_get_canvas_element_size  (i32, i32, i32) -> i32  (type 6)
-int32_t wasm_import_206_emscripten_get_canvas_element_size(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+int32_t wasm_import_206_emscripten_get_canvas_element_size(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot 207: env.wgpuQueueSubmit  (i32, i32, i32) -> void  (type 3)
-void wasm_import_207_wgpuQueueSubmit(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+void wasm_import_207_wgpuQueueSubmit(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot 208: env.emscripten_webgpu_get_device  () -> i32  (type 10)
-int32_t wasm_import_208_emscripten_webgpu_get_device(void* vmctx);
+int32_t wasm_import_208_emscripten_webgpu_get_device(void* vmctx, void* caller_vmctx);
 // slot 209: env.wgpuDeviceCreateBindGroupLayout  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_209_wgpuDeviceCreateBindGroupLayout(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_209_wgpuDeviceCreateBindGroupLayout(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 210: env.wgpuDeviceCreatePipelineLayout  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_210_wgpuDeviceCreatePipelineLayout(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_210_wgpuDeviceCreatePipelineLayout(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 211: env.wgpuDeviceCreateRenderPipeline  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_211_wgpuDeviceCreateRenderPipeline(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_211_wgpuDeviceCreateRenderPipeline(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 212: env.wgpuDeviceCreateTexture  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_212_wgpuDeviceCreateTexture(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_212_wgpuDeviceCreateTexture(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 213: env.wgpuQueueWriteTexture  (i32, i32, i32, i32, i32, i32) -> void  (type 11)
-void wasm_import_213_wgpuQueueWriteTexture(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5);
+void wasm_import_213_wgpuQueueWriteTexture(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5);
 // slot 214: env.wgpuTextureCreateView  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_214_wgpuTextureCreateView(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_214_wgpuTextureCreateView(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 215: env.wgpuComputePassEncoderSetPipeline  (i32, i32) -> void  (type 1)
-void wasm_import_215_wgpuComputePassEncoderSetPipeline(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_215_wgpuComputePassEncoderSetPipeline(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 216: env.wgpuComputePassEncoderDispatchWorkgroups  (i32, i32, i32, i32) -> void  (type 5)
-void wasm_import_216_wgpuComputePassEncoderDispatchWorkgroups(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+void wasm_import_216_wgpuComputePassEncoderDispatchWorkgroups(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot 217: env.wgpuComputePassEncoderSetBindGroup  (i32, i32, i32, i32, i32) -> void  (type 9)
-void wasm_import_217_wgpuComputePassEncoderSetBindGroup(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+void wasm_import_217_wgpuComputePassEncoderSetBindGroup(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot 218: env.wgpuRenderPassEncoderPushDebugGroup  (i32, i32) -> void  (type 1)
-void wasm_import_218_wgpuRenderPassEncoderPushDebugGroup(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_218_wgpuRenderPassEncoderPushDebugGroup(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 219: env.wgpuCommandEncoderPushDebugGroup  (i32, i32) -> void  (type 1)
-void wasm_import_219_wgpuCommandEncoderPushDebugGroup(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_219_wgpuCommandEncoderPushDebugGroup(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 220: env.wgpuComputePassEncoderPushDebugGroup  (i32, i32) -> void  (type 1)
-void wasm_import_220_wgpuComputePassEncoderPushDebugGroup(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_220_wgpuComputePassEncoderPushDebugGroup(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 221: env.wgpuCommandEncoderBeginRenderPass  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_221_wgpuCommandEncoderBeginRenderPass(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_221_wgpuCommandEncoderBeginRenderPass(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 222: env.wgpuRenderPassEncoderEnd  (i32) -> void  (type 0)
-void wasm_import_222_wgpuRenderPassEncoderEnd(void* vmctx, int32_t a0);
+void wasm_import_222_wgpuRenderPassEncoderEnd(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 223: env.wgpuBufferGetSize  (i32) -> i64  (type 20)
-int64_t wasm_import_223_wgpuBufferGetSize(void* vmctx, int32_t a0);
+int64_t wasm_import_223_wgpuBufferGetSize(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 224: env.wgpuQueueWriteBuffer  (i32, i32, i64, i32, i32) -> void  (type 34)
-void wasm_import_224_wgpuQueueWriteBuffer(void* vmctx, int32_t a0, int32_t a1, int64_t a2, int32_t a3, int32_t a4);
+void wasm_import_224_wgpuQueueWriteBuffer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int64_t a2, int32_t a3, int32_t a4);
 // slot 225: env.wgpuRenderPassEncoderSetPipeline  (i32, i32) -> void  (type 1)
-void wasm_import_225_wgpuRenderPassEncoderSetPipeline(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_225_wgpuRenderPassEncoderSetPipeline(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 226: env.wgpuRenderPassEncoderSetBindGroup  (i32, i32, i32, i32, i32) -> void  (type 9)
-void wasm_import_226_wgpuRenderPassEncoderSetBindGroup(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+void wasm_import_226_wgpuRenderPassEncoderSetBindGroup(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot 227: env.wgpuRenderPassEncoderDraw  (i32, i32, i32, i32, i32) -> void  (type 9)
-void wasm_import_227_wgpuRenderPassEncoderDraw(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+void wasm_import_227_wgpuRenderPassEncoderDraw(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot 228: env.wgpuRenderPassEncoderSetVertexBuffer  (i32, i32, i32, i64, i64) -> void  (type 187)
-void wasm_import_228_wgpuRenderPassEncoderSetVertexBuffer(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int64_t a3, int64_t a4);
+void wasm_import_228_wgpuRenderPassEncoderSetVertexBuffer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int64_t a3, int64_t a4);
 // slot 229: env.wgpuRenderPassEncoderSetIndexBuffer  (i32, i32, i32, i64, i64) -> void  (type 187)
-void wasm_import_229_wgpuRenderPassEncoderSetIndexBuffer(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int64_t a3, int64_t a4);
+void wasm_import_229_wgpuRenderPassEncoderSetIndexBuffer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int64_t a3, int64_t a4);
 // slot 230: env.wgpuRenderPassEncoderDrawIndexed  (i32, i32, i32, i32, i32, i32) -> void  (type 11)
-void wasm_import_230_wgpuRenderPassEncoderDrawIndexed(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5);
+void wasm_import_230_wgpuRenderPassEncoderDrawIndexed(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5);
 // slot 231: env.wgpuRenderPassEncoderSetStencilReference  (i32, i32) -> void  (type 1)
-void wasm_import_231_wgpuRenderPassEncoderSetStencilReference(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_231_wgpuRenderPassEncoderSetStencilReference(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 232: env.wgpuCommandEncoderCopyTextureToTexture  (i32, i32, i32, i32) -> void  (type 5)
-void wasm_import_232_wgpuCommandEncoderCopyTextureToTexture(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+void wasm_import_232_wgpuCommandEncoderCopyTextureToTexture(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot 233: env.wgpuDeviceCreateBindGroup  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_233_wgpuDeviceCreateBindGroup(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_233_wgpuDeviceCreateBindGroup(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 234: env.wgpuRenderPassEncoderSetViewport  (i32, f32, f32, f32, f32, f32, f32) -> void  (type 378)
-void wasm_import_234_wgpuRenderPassEncoderSetViewport(void* vmctx, int32_t a0, float a1, float a2, float a3, float a4, float a5, float a6);
+void wasm_import_234_wgpuRenderPassEncoderSetViewport(void* vmctx, void* caller_vmctx, int32_t a0, float a1, float a2, float a3, float a4, float a5, float a6);
 // slot 235: env.wgpuRenderPassEncoderSetScissorRect  (i32, i32, i32, i32, i32) -> void  (type 9)
-void wasm_import_235_wgpuRenderPassEncoderSetScissorRect(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+void wasm_import_235_wgpuRenderPassEncoderSetScissorRect(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot 236: env.wgpuComputePassEncoderPopDebugGroup  (i32) -> void  (type 0)
-void wasm_import_236_wgpuComputePassEncoderPopDebugGroup(void* vmctx, int32_t a0);
+void wasm_import_236_wgpuComputePassEncoderPopDebugGroup(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 237: env.wgpuComputePassEncoderEnd  (i32) -> void  (type 0)
-void wasm_import_237_wgpuComputePassEncoderEnd(void* vmctx, int32_t a0);
+void wasm_import_237_wgpuComputePassEncoderEnd(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 238: env.wgpuRenderPassEncoderPopDebugGroup  (i32) -> void  (type 0)
-void wasm_import_238_wgpuRenderPassEncoderPopDebugGroup(void* vmctx, int32_t a0);
+void wasm_import_238_wgpuRenderPassEncoderPopDebugGroup(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 239: env.wgpuCommandEncoderFinish  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_239_wgpuCommandEncoderFinish(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_239_wgpuCommandEncoderFinish(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 240: env.wgpuCommandEncoderBeginComputePass  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_240_wgpuCommandEncoderBeginComputePass(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_240_wgpuCommandEncoderBeginComputePass(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 241: env.wgpuDeviceGetLimits  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_241_wgpuDeviceGetLimits(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_241_wgpuDeviceGetLimits(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 242: env.wgpuCommandEncoderPopDebugGroup  (i32) -> void  (type 0)
-void wasm_import_242_wgpuCommandEncoderPopDebugGroup(void* vmctx, int32_t a0);
+void wasm_import_242_wgpuCommandEncoderPopDebugGroup(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 243: env.presentBrowserFrame  (i32, i32, i32) -> void  (type 3)
-void wasm_import_243_presentBrowserFrame(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+void wasm_import_243_presentBrowserFrame(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot 244: env.wgpuCommandEncoderCopyBufferToBuffer  (i32, i32, i64, i32, i64, i64) -> void  (type 495)
-void wasm_import_244_wgpuCommandEncoderCopyBufferToBuffer(void* vmctx, int32_t a0, int32_t a1, int64_t a2, int32_t a3, int64_t a4, int64_t a5);
+void wasm_import_244_wgpuCommandEncoderCopyBufferToBuffer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int64_t a2, int32_t a3, int64_t a4, int64_t a5);
 // slot 245: env.wgpuDeviceCreateCommandEncoder  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_245_wgpuDeviceCreateCommandEncoder(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_245_wgpuDeviceCreateCommandEncoder(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 246: env.wgpuDeviceHasFeature  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_246_wgpuDeviceHasFeature(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_246_wgpuDeviceHasFeature(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 247: env.wgpuInstanceCreateSurface  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_247_wgpuInstanceCreateSurface(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_247_wgpuInstanceCreateSurface(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 248: env.wgpuSurfaceConfigure  (i32, i32) -> void  (type 1)
-void wasm_import_248_wgpuSurfaceConfigure(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_248_wgpuSurfaceConfigure(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 249: env.applyPendingBrowserCanvasResize  () -> void  (type 15)
-void wasm_import_249_applyPendingBrowserCanvasResize(void* vmctx);
+void wasm_import_249_applyPendingBrowserCanvasResize(void* vmctx, void* caller_vmctx);
 // slot 250: env.wgpuCommandEncoderResolveQuerySet  (i32, i32, i32, i32, i32, i64) -> void  (type 70)
-void wasm_import_250_wgpuCommandEncoderResolveQuerySet(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int64_t a5);
+void wasm_import_250_wgpuCommandEncoderResolveQuerySet(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int64_t a5);
 // slot 251: env.getWebGpuTimestampInterval  () -> i32  (type 10)
-int32_t wasm_import_251_getWebGpuTimestampInterval(void* vmctx);
+int32_t wasm_import_251_getWebGpuTimestampInterval(void* vmctx, void* caller_vmctx);
 // slot 252: env.wgpuDeviceCreateQuerySet  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_252_wgpuDeviceCreateQuerySet(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_252_wgpuDeviceCreateQuerySet(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 253: env.wgpuDeviceCreateComputePipeline  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_253_wgpuDeviceCreateComputePipeline(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_253_wgpuDeviceCreateComputePipeline(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 254: env.wgpuDeviceCreateSampler  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_254_wgpuDeviceCreateSampler(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_254_wgpuDeviceCreateSampler(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 255: env.wgpuCommandEncoderCopyTextureToBuffer  (i32, i32, i32, i32) -> void  (type 5)
-void wasm_import_255_wgpuCommandEncoderCopyTextureToBuffer(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+void wasm_import_255_wgpuCommandEncoderCopyTextureToBuffer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot 256: env.wgpuTextureGetDepthOrArrayLayers  (i32) -> i32  (type 2)
-int32_t wasm_import_256_wgpuTextureGetDepthOrArrayLayers(void* vmctx, int32_t a0);
+int32_t wasm_import_256_wgpuTextureGetDepthOrArrayLayers(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 257: env.wgpuTextureGetDimension  (i32) -> i32  (type 2)
-int32_t wasm_import_257_wgpuTextureGetDimension(void* vmctx, int32_t a0);
+int32_t wasm_import_257_wgpuTextureGetDimension(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 258: env.wgpuTextureGetUsage  (i32) -> i64  (type 20)
-int64_t wasm_import_258_wgpuTextureGetUsage(void* vmctx, int32_t a0);
+int64_t wasm_import_258_wgpuTextureGetUsage(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 259: env.emwgpuGetPreferredFormat  () -> i32  (type 10)
-int32_t wasm_import_259_emwgpuGetPreferredFormat(void* vmctx);
+int32_t wasm_import_259_emwgpuGetPreferredFormat(void* vmctx, void* caller_vmctx);
 // slot 260: env.emwgpuDeviceCreateBuffer  (i32, i32, i32) -> i32  (type 6)
-int32_t wasm_import_260_emwgpuDeviceCreateBuffer(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+int32_t wasm_import_260_emwgpuDeviceCreateBuffer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot 261: env.emwgpuDelete  (i32) -> void  (type 0)
-void wasm_import_261_emwgpuDelete(void* vmctx, int32_t a0);
+void wasm_import_261_emwgpuDelete(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 262: env.emwgpuDeviceDestroy  (i32) -> void  (type 0)
-void wasm_import_262_emwgpuDeviceDestroy(void* vmctx, int32_t a0);
+void wasm_import_262_emwgpuDeviceDestroy(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 263: env.emwgpuBufferUnmap  (i32) -> void  (type 0)
-void wasm_import_263_emwgpuBufferUnmap(void* vmctx, int32_t a0);
+void wasm_import_263_emwgpuBufferUnmap(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 264: env.emwgpuDeviceCreateShaderModule  (i32, i32, i32) -> void  (type 3)
-void wasm_import_264_emwgpuDeviceCreateShaderModule(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+void wasm_import_264_emwgpuDeviceCreateShaderModule(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot 265: env.emwgpuBufferGetConstMappedRange  (i32, i32, i32) -> i32  (type 6)
-int32_t wasm_import_265_emwgpuBufferGetConstMappedRange(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+int32_t wasm_import_265_emwgpuBufferGetConstMappedRange(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot 266: env.emwgpuShaderModuleGetCompilationInfo  (i32, i64, i32) -> void  (type 32)
-void wasm_import_266_emwgpuShaderModuleGetCompilationInfo(void* vmctx, int32_t a0, int64_t a1, int32_t a2);
+void wasm_import_266_emwgpuShaderModuleGetCompilationInfo(void* vmctx, void* caller_vmctx, int32_t a0, int64_t a1, int32_t a2);
 // slot 267: env.emwgpuBufferMapAsync  (i32, i64, i64, i32, i32) -> void  (type 102)
-void wasm_import_267_emwgpuBufferMapAsync(void* vmctx, int32_t a0, int64_t a1, int64_t a2, int32_t a3, int32_t a4);
+void wasm_import_267_emwgpuBufferMapAsync(void* vmctx, void* caller_vmctx, int32_t a0, int64_t a1, int64_t a2, int32_t a3, int32_t a4);
 // slot 268: env.emscripten_runtime_keepalive_push  () -> void  (type 15)
-void wasm_import_268_emscripten_runtime_keepalive_push(void* vmctx);
+void wasm_import_268_emscripten_runtime_keepalive_push(void* vmctx, void* caller_vmctx);
 // slot 269: env.emscripten_websocket_close  (i32, i32, i32) -> i32  (type 6)
-int32_t wasm_import_269_emscripten_websocket_close(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+int32_t wasm_import_269_emscripten_websocket_close(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot 270: env.emscripten_websocket_delete  (i32) -> i32  (type 2)
-int32_t wasm_import_270_emscripten_websocket_delete(void* vmctx, int32_t a0);
+int32_t wasm_import_270_emscripten_websocket_delete(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 271: env.emscripten_websocket_send_binary  (i32, i32, i32) -> i32  (type 6)
-int32_t wasm_import_271_emscripten_websocket_send_binary(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+int32_t wasm_import_271_emscripten_websocket_send_binary(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot 272: env.emscripten_websocket_send_utf8_text  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_272_emscripten_websocket_send_utf8_text(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_272_emscripten_websocket_send_utf8_text(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 273: env.emscripten_websocket_new  (i32) -> i32  (type 2)
-int32_t wasm_import_273_emscripten_websocket_new(void* vmctx, int32_t a0);
+int32_t wasm_import_273_emscripten_websocket_new(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 274: env.emscripten_websocket_set_onopen_callback_on_thread  (i32, i32, i32, i32) -> i32  (type 8)
-int32_t wasm_import_274_emscripten_websocket_set_onopen_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+int32_t wasm_import_274_emscripten_websocket_set_onopen_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot 275: env.emscripten_websocket_set_onmessage_callback_on_thread  (i32, i32, i32, i32) -> i32  (type 8)
-int32_t wasm_import_275_emscripten_websocket_set_onmessage_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+int32_t wasm_import_275_emscripten_websocket_set_onmessage_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot 276: env.emscripten_websocket_set_onerror_callback_on_thread  (i32, i32, i32, i32) -> i32  (type 8)
-int32_t wasm_import_276_emscripten_websocket_set_onerror_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+int32_t wasm_import_276_emscripten_websocket_set_onerror_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot 277: env.emscripten_websocket_set_onclose_callback_on_thread  (i32, i32, i32, i32) -> i32  (type 8)
-int32_t wasm_import_277_emscripten_websocket_set_onclose_callback_on_thread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+int32_t wasm_import_277_emscripten_websocket_set_onclose_callback_on_thread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot 278: env.rbx_opfs_close  (i32) -> void  (type 0)
-void wasm_import_278_rbx_opfs_close(void* vmctx, int32_t a0);
+void wasm_import_278_rbx_opfs_close(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 279: env.rbx_opfs_free  (i32) -> void  (type 0)
-void wasm_import_279_rbx_opfs_free(void* vmctx, int32_t a0);
+void wasm_import_279_rbx_opfs_free(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 280: env.rbx_opfs_install_helpers  (i32, i32) -> void  (type 1)
-void wasm_import_280_rbx_opfs_install_helpers(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_280_rbx_opfs_install_helpers(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 281: env.__asyncjs__rbx_opfs_set  (i32, i32, i32) -> i32  (type 6)
-int32_t wasm_import_281___asyncjs__rbx_opfs_set(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+int32_t wasm_import_281___asyncjs__rbx_opfs_set(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot 282: env.rbx_opfs_read_sync_if_cached  (i32, i32, i32, i32) -> i32  (type 8)
-int32_t wasm_import_282_rbx_opfs_read_sync_if_cached(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+int32_t wasm_import_282_rbx_opfs_read_sync_if_cached(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot 283: env.__asyncjs__rbx_opfs_get_buffer  (i32, i32, i32) -> i32  (type 6)
-int32_t wasm_import_283___asyncjs__rbx_opfs_get_buffer(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+int32_t wasm_import_283___asyncjs__rbx_opfs_get_buffer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot 284: env.__asyncjs__rbx_opfs_open  (i32, i32) -> void  (type 1)
-void wasm_import_284___asyncjs__rbx_opfs_open(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_284___asyncjs__rbx_opfs_open(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 285: env.__asyncjs__rbx_opfs_clear  () -> i32  (type 10)
-int32_t wasm_import_285___asyncjs__rbx_opfs_clear(void* vmctx);
+int32_t wasm_import_285___asyncjs__rbx_opfs_clear(void* vmctx, void* caller_vmctx);
 // slot 286: env.__asyncjs__rbx_opfs_get_offset  (i32, i32, i32, i32) -> i32  (type 8)
-int32_t wasm_import_286___asyncjs__rbx_opfs_get_offset(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+int32_t wasm_import_286___asyncjs__rbx_opfs_get_offset(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot 287: env.__asyncjs__rbx_opfs_contains  (i32) -> i32  (type 2)
-int32_t wasm_import_287___asyncjs__rbx_opfs_contains(void* vmctx, int32_t a0);
+int32_t wasm_import_287___asyncjs__rbx_opfs_contains(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 288: env.__asyncjs__rbx_opfs_remove  (i32) -> i32  (type 2)
-int32_t wasm_import_288___asyncjs__rbx_opfs_remove(void* vmctx, int32_t a0);
+int32_t wasm_import_288___asyncjs__rbx_opfs_remove(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 289: env.__asyncjs__rbx_opfs_get_buffer_offset  (i32, i32, i32, i32, i32) -> i32  (type 7)
-int32_t wasm_import_289___asyncjs__rbx_opfs_get_buffer_offset(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
+int32_t wasm_import_289___asyncjs__rbx_opfs_get_buffer_offset(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4);
 // slot 290: env.__asyncjs__rbx_opfs_file_size  (i32) -> i32  (type 2)
-int32_t wasm_import_290___asyncjs__rbx_opfs_file_size(void* vmctx, int32_t a0);
+int32_t wasm_import_290___asyncjs__rbx_opfs_file_size(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 291: env.__asyncjs__rbx_opfs_get  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_291___asyncjs__rbx_opfs_get(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_291___asyncjs__rbx_opfs_get(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 292: env.__asyncjs__rbx_opfs_list  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_292___asyncjs__rbx_opfs_list(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_292___asyncjs__rbx_opfs_list(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 293: env.__asyncjs__rbx_opfs_list_sized  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_293___asyncjs__rbx_opfs_list_sized(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_293___asyncjs__rbx_opfs_list_sized(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 294: env.__asyncjs__rbx_opfs_remove_batch  (i32) -> i32  (type 2)
-int32_t wasm_import_294___asyncjs__rbx_opfs_remove_batch(void* vmctx, int32_t a0);
+int32_t wasm_import_294___asyncjs__rbx_opfs_remove_batch(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 295: env.RBX_setFullWasmStackTrace  () -> f64  (type 92)
-double wasm_import_295_RBX_setFullWasmStackTrace(void* vmctx);
+double wasm_import_295_RBX_setFullWasmStackTrace(void* vmctx, void* caller_vmctx);
 // slot 296: env.RBX_restoreWasmStackTraceLimit  (f64) -> void  (type 199)
-void wasm_import_296_RBX_restoreWasmStackTraceLimit(void* vmctx, double a0);
+void wasm_import_296_RBX_restoreWasmStackTraceLimit(void* vmctx, void* caller_vmctx, double a0);
 // slot 297: env.read_host_info_int  (i32) -> i32  (type 2)
-int32_t wasm_import_297_read_host_info_int(void* vmctx, int32_t a0);
+int32_t wasm_import_297_read_host_info_int(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 298: env.read_host_info_string  (i32, i32, i32) -> void  (type 3)
-void wasm_import_298_read_host_info_string(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+void wasm_import_298_read_host_info_string(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot 299: env.get_hardware_concurrency  () -> i32  (type 10)
-int32_t wasm_import_299_get_hardware_concurrency(void* vmctx);
+int32_t wasm_import_299_get_hardware_concurrency(void* vmctx, void* caller_vmctx);
 // slot 300: env.emscripten_stack_snapshot  () -> i32  (type 10)
-int32_t wasm_import_300_emscripten_stack_snapshot(void* vmctx);
+int32_t wasm_import_300_emscripten_stack_snapshot(void* vmctx, void* caller_vmctx);
 // slot 301: env.emscripten_stack_unwind_buffer  (i32, i32, i32) -> i32  (type 6)
-int32_t wasm_import_301_emscripten_stack_unwind_buffer(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+int32_t wasm_import_301_emscripten_stack_unwind_buffer(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot 302: env.HaveOffsetConverter  () -> i32  (type 10)
-int32_t wasm_import_302_HaveOffsetConverter(void* vmctx);
+int32_t wasm_import_302_HaveOffsetConverter(void* vmctx, void* caller_vmctx);
 // slot 303: env.emscripten_pc_get_function  (i32) -> i32  (type 2)
-int32_t wasm_import_303_emscripten_pc_get_function(void* vmctx, int32_t a0);
+int32_t wasm_import_303_emscripten_pc_get_function(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 304: env.emscripten_start_fetch  (i32) -> void  (type 0)
-void wasm_import_304_emscripten_start_fetch(void* vmctx, int32_t a0);
+void wasm_import_304_emscripten_start_fetch(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 305: env.emscripten_fetch_free  (i32) -> void  (type 0)
-void wasm_import_305_emscripten_fetch_free(void* vmctx, int32_t a0);
+void wasm_import_305_emscripten_fetch_free(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 306: env._emscripten_fetch_get_response_headers_length  (i32) -> i32  (type 2)
-int32_t wasm_import_306__emscripten_fetch_get_response_headers_length(void* vmctx, int32_t a0);
+int32_t wasm_import_306__emscripten_fetch_get_response_headers_length(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 307: env._emscripten_fetch_get_response_headers  (i32, i32, i32) -> i32  (type 6)
-int32_t wasm_import_307__emscripten_fetch_get_response_headers(void* vmctx, int32_t a0, int32_t a1, int32_t a2);
+int32_t wasm_import_307__emscripten_fetch_get_response_headers(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2);
 // slot 308: wasi_snapshot_preview1.proc_exit  (i32) -> void  (type 0)
-void wasm_import_308_proc_exit(void* vmctx, int32_t a0);
+void wasm_import_308_proc_exit(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 309: wasi_snapshot_preview1.environ_sizes_get  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_309_environ_sizes_get(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_309_environ_sizes_get(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 310: wasi_snapshot_preview1.environ_get  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_310_environ_get(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_310_environ_get(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 311: env._tzset_js  (i32, i32, i32, i32) -> void  (type 5)
-void wasm_import_311__tzset_js(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+void wasm_import_311__tzset_js(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot 312: env._abort_js  () -> void  (type 15)
-void wasm_import_312__abort_js(void* vmctx);
+void wasm_import_312__abort_js(void* vmctx, void* caller_vmctx);
 // slot 313: wasi_snapshot_preview1.clock_time_get  (i32, i64, i32) -> i32  (type 49)
-int32_t wasm_import_313_clock_time_get(void* vmctx, int32_t a0, int64_t a1, int32_t a2);
+int32_t wasm_import_313_clock_time_get(void* vmctx, void* caller_vmctx, int32_t a0, int64_t a1, int32_t a2);
 // slot 314: env.emscripten_console_log  (i32) -> void  (type 0)
-void wasm_import_314_emscripten_console_log(void* vmctx, int32_t a0);
+void wasm_import_314_emscripten_console_log(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 315: env.emscripten_console_warn  (i32) -> void  (type 0)
-void wasm_import_315_emscripten_console_warn(void* vmctx, int32_t a0);
+void wasm_import_315_emscripten_console_warn(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 316: env._emscripten_log_formatted  (i32, i32) -> void  (type 1)
-void wasm_import_316__emscripten_log_formatted(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_316__emscripten_log_formatted(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 317: env.emscripten_date_now  () -> f64  (type 92)
-double wasm_import_317_emscripten_date_now(void* vmctx);
+double wasm_import_317_emscripten_date_now(void* vmctx, void* caller_vmctx);
 // slot 318: env._emscripten_thread_set_strongref  (i32) -> void  (type 0)
-void wasm_import_318__emscripten_thread_set_strongref(void* vmctx, int32_t a0);
+void wasm_import_318__emscripten_thread_set_strongref(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 319: env.__syscall_getegid32  () -> i32  (type 10)
-int32_t wasm_import_319___syscall_getegid32(void* vmctx);
+int32_t wasm_import_319___syscall_getegid32(void* vmctx, void* caller_vmctx);
 // slot 320: wasi_snapshot_preview1.random_get  (i32, i32) -> i32  (type 4)
-int32_t wasm_import_320_random_get(void* vmctx, int32_t a0, int32_t a1);
+int32_t wasm_import_320_random_get(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 321: env.__syscall_geteuid32  () -> i32  (type 10)
-int32_t wasm_import_321___syscall_geteuid32(void* vmctx);
+int32_t wasm_import_321___syscall_geteuid32(void* vmctx, void* caller_vmctx);
 // slot 322: env.__syscall_getgid32  () -> i32  (type 10)
-int32_t wasm_import_322___syscall_getgid32(void* vmctx);
+int32_t wasm_import_322___syscall_getgid32(void* vmctx, void* caller_vmctx);
 // slot 323: env.__syscall_getuid32  () -> i32  (type 10)
-int32_t wasm_import_323___syscall_getuid32(void* vmctx);
+int32_t wasm_import_323___syscall_getuid32(void* vmctx, void* caller_vmctx);
 // slot 324: env._emscripten_init_main_thread_js  (i32) -> void  (type 0)
-void wasm_import_324__emscripten_init_main_thread_js(void* vmctx, int32_t a0);
+void wasm_import_324__emscripten_init_main_thread_js(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 325: env._emscripten_thread_mailbox_await  (i32) -> void  (type 0)
-void wasm_import_325__emscripten_thread_mailbox_await(void* vmctx, int32_t a0);
+void wasm_import_325__emscripten_thread_mailbox_await(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 326: env._mktime_js  (i32) -> i64  (type 20)
-int64_t wasm_import_326__mktime_js(void* vmctx, int32_t a0);
+int64_t wasm_import_326__mktime_js(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 327: env._localtime_js  (i64, i32) -> i32  (type 133)
-int32_t wasm_import_327__localtime_js(void* vmctx, int64_t a0, int32_t a1);
+int32_t wasm_import_327__localtime_js(void* vmctx, void* caller_vmctx, int64_t a0, int32_t a1);
 // slot 328: env._gmtime_js  (i64, i32) -> i32  (type 133)
-int32_t wasm_import_328__gmtime_js(void* vmctx, int64_t a0, int32_t a1);
+int32_t wasm_import_328__gmtime_js(void* vmctx, void* caller_vmctx, int64_t a0, int32_t a1);
 // slot 329: env._msync_js  (i32, i32, i32, i32, i32, i64) -> i32  (type 317)
-int32_t wasm_import_329__msync_js(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int64_t a5);
+int32_t wasm_import_329__msync_js(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int64_t a5);
 // slot 330: wasi_snapshot_preview1.fd_pread  (i32, i32, i32, i64, i32) -> i32  (type 80)
-int32_t wasm_import_330_fd_pread(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int64_t a3, int32_t a4);
+int32_t wasm_import_330_fd_pread(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int64_t a3, int32_t a4);
 // slot 331: env._emscripten_receive_on_main_thread_js  (i32, i32, i32, i32, i32, i32, i32) -> f64  (type 496)
-double wasm_import_331__emscripten_receive_on_main_thread_js(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6);
+double wasm_import_331__emscripten_receive_on_main_thread_js(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3, int32_t a4, int32_t a5, int32_t a6);
 // slot 332: env.emscripten_check_blocking_allowed  () -> void  (type 15)
-void wasm_import_332_emscripten_check_blocking_allowed(void* vmctx);
+void wasm_import_332_emscripten_check_blocking_allowed(void* vmctx, void* caller_vmctx);
 // slot 333: env.__pthread_create_js  (i32, i32, i32, i32) -> i32  (type 8)
-int32_t wasm_import_333___pthread_create_js(void* vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
+int32_t wasm_import_333___pthread_create_js(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1, int32_t a2, int32_t a3);
 // slot 334: env._emscripten_thread_cleanup  (i32) -> void  (type 0)
-void wasm_import_334__emscripten_thread_cleanup(void* vmctx, int32_t a0);
+void wasm_import_334__emscripten_thread_cleanup(void* vmctx, void* caller_vmctx, int32_t a0);
 // slot 335: env.emscripten_unwind_to_js_event_loop  () -> void  (type 15)
-void wasm_import_335_emscripten_unwind_to_js_event_loop(void* vmctx);
+void wasm_import_335_emscripten_unwind_to_js_event_loop(void* vmctx, void* caller_vmctx);
 // slot 336: env._emscripten_runtime_keepalive_clear  () -> void  (type 15)
-void wasm_import_336__emscripten_runtime_keepalive_clear(void* vmctx);
+void wasm_import_336__emscripten_runtime_keepalive_clear(void* vmctx, void* caller_vmctx);
 // slot 337: env.__call_sighandler  (i32, i32) -> void  (type 1)
-void wasm_import_337___call_sighandler(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_337___call_sighandler(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 338: env.emscripten_num_logical_cores  () -> i32  (type 10)
-int32_t wasm_import_338_emscripten_num_logical_cores(void* vmctx);
+int32_t wasm_import_338_emscripten_num_logical_cores(void* vmctx, void* caller_vmctx);
 // slot 339: env.emscripten_get_heap_max  () -> i32  (type 10)
-int32_t wasm_import_339_emscripten_get_heap_max(void* vmctx);
+int32_t wasm_import_339_emscripten_get_heap_max(void* vmctx, void* caller_vmctx);
 // slot 340: env._emscripten_notify_mailbox_postmessage  (i32, i32) -> void  (type 1)
-void wasm_import_340__emscripten_notify_mailbox_postmessage(void* vmctx, int32_t a0, int32_t a1);
+void wasm_import_340__emscripten_notify_mailbox_postmessage(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1);
 // slot 341: env.emscripten_resize_heap  (i32) -> i32  (type 2)
-int32_t wasm_import_341_emscripten_resize_heap(void* vmctx, int32_t a0);
+int32_t wasm_import_341_emscripten_resize_heap(void* vmctx, void* caller_vmctx, int32_t a0);
 }  // extern "C"

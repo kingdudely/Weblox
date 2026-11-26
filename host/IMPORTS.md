@@ -56,9 +56,16 @@ directly.  There is no libffi/wasmtime trampoline in the object.
 
 | Item | Location |
 | --- | --- |
-| Hidden `vmctx` | `rdi` (first argument) |
-| Integer/pointer wasm args (`i32`, `i64`) | `rsi`, `rdx`, `rcx`, `r8`, `r9`, then stack |
+| Hidden callee `vmctx` | `rdi` (first argument) |
+| Hidden caller `vmctx` | `rsi` (always passed; **not** a wasm arg) |
+| Integer/pointer wasm args (`i32`, `i64`) | `rdx`, `rcx`, `r8`, `r9`, then stack |
 | Float wasm args (`f32`, `f64`) | `xmm0` … `xmm7`, then stack |
+| Stack args | callee-pops (`ret $N`), unlike SysV C |
+
+Every generated import therefore declares **two** leading `void*` parameters
+(`vmctx`, `caller_vmctx`).  Calling a wasm export with more than four GP
+arguments from C directly corrupts `rsp`; use an asm shim that mirrors the
+callee-pops convention (see `wb_call_thread_init` in `main.cpp`).
 | Integer result | `eax` / `rax` |
 | Float result | `xmm0` |
 | Multiple results | not used by this module (would need sret) |
@@ -192,9 +199,10 @@ the table base or a per-worker VMContext, which `vmctx.cpp` owns:
   routine needs a worker VMContext, per-worker TLS init and stack-limit setup.
   `wb::imports_set_thread_entry(start, arg, pthread_ptr)` is the explicit hook;
   without it `pthread_create` returns `EAGAIN` instead of pretending success.
-  `_emscripten_init_main_thread_js` (#324) likewise cannot invoke the guest's
-  `_emscripten_thread_init` / `_emscripten_tls_init`; the hook point is in place
-  (mailbox armed, `pthread_ptr+112 = 1`), the guest call is not faked.
+  `_emscripten_init_main_thread_js` (#324) now re-enters the guest's
+  `_emscripten_thread_init` / `_emscripten_tls_init` through
+  `wb::imports_set_main_thread_init()` (wired in `main.cpp`), then arms the
+  mailbox with the guest's own `pthread_self()` value.
 * **Fibers / `Atomics.waitAsync` on the main thread.**  The futex wait is a
   real bounded host wait with a notify hook; a true JSPI-style parked fibre
   needs stack switching that `out.full.o` does not provide.  Unbounded waits

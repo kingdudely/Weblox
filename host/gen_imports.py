@@ -204,8 +204,10 @@ def build_header(rows: list[dict]) -> str:
         "inline const ImportDesc* import_desc(std::uint32_t slot) {\n",
         "  return slot >= 1 && slot <= kImportCount ? &import_descs()[slot - 1] : nullptr;\n",
         "}\n\n",
-        "// Raw wasm-call function pointers, indexed by slot - 1.  Each has the\n",
-        "// hidden vmctx in rdi followed by the wasm arguments in SysV registers.\n",
+        "// Raw wasm-call function pointers, indexed by slot - 1.  Wasmtime 50's\n",
+        "// wasm-call ABI passes rdi = import slot vmctx, rsi = caller's vmctx,\n",
+        "// then the wasm arguments in rdx, rcx, r8, r9, stack (int) and\n",
+        "// xmm0..xmm7 (float).  Both vmctx parameters are explicit below.\n",
         "void* const* import_wasm_calls();\n",
         "void* import_wasm_call(std::uint32_t slot);\n\n",
         "// Mirror of wasmtime-environ's VMFunctionImport (32 bytes on x86-64).\n",
@@ -229,6 +231,29 @@ def build_header(rows: list[dict]) -> str:
         "bool imports_has_memory();\n\n",
         "// Called by every generated stub the first time that slot is invoked.\n",
         "void import_log_first(std::uint32_t slot);\n\n",
+        "// HOST_TRACE=1 diagnostics: log the first call of every import with\n",
+        "// the raw wasm-call argument registers and a wasm backtrace.\n",
+        "bool trace_enabled();\n",
+        "void trace_import_args(std::uint32_t slot, const std::uint64_t* args,\n",
+        "                       unsigned nargs);\n",
+        "#if defined(__x86_64__)\n",
+        "#define WB_TRACE_IMPORT(slot)                                             \\\n",
+        "  do {                                                                      \\\n",
+        "    std::uint64_t wb_trace_a_[5] = {};                                    \\\n",
+        "    __asm__ volatile(\"movq %%rsi, %0\\n\\tmovq %%rdx, %1\\n\\t\"             \\\n",
+        "                     \"movq %%rcx, %2\\n\\tmovq %%r8, %3\\n\\t\"             \\\n",
+        "                     \"movq %%r9, %4\"                                    \\\n",
+        "                     : \"=m\"(wb_trace_a_[0]), \"=m\"(wb_trace_a_[1]),      \\\n",
+        "                       \"=m\"(wb_trace_a_[2]), \"=m\"(wb_trace_a_[3]),      \\\n",
+        "                       \"=m\"(wb_trace_a_[4])                              \\\n",
+        "                     : : \"memory\");                                     \\\n",
+        "    if (wb::trace_enabled()) {                                            \\\n",
+        "      wb::trace_import_args(slot, wb_trace_a_, 5);                        \\\n",
+        "    }                                                                     \\\n",
+        "  } while (0)\n",
+        "#else\n",
+        "#define WB_TRACE_IMPORT(slot) ((void)0)\n",
+        "#endif\n\n",
         "// --- import table accessors used by the hand-written implementations ---\n",
         "// Fixed-size, process-lifetime storage so pointers stay valid.\n",
         "struct Binding {\n",
@@ -247,7 +272,11 @@ def build_header(rows: list[dict]) -> str:
         "                                const double* args, std::size_t argc);\n",
         "void imports_set_thread_entry(ThreadEntry entry);\n",
         "void imports_set_wasm_callback(WasmCallback cb);\n",
-        "void imports_set_main_thread(std::uint32_t pthread_ptr);\n\n",
+        "void imports_set_main_thread(std::uint32_t pthread_ptr);\n",
+        "// Called by slot 324 so the host can re-enter _emscripten_thread_init\n",
+        "// and _emscripten_tls_init before guest code uses TLS/pthread data.\n",
+        "using MainThreadInit = void (*)(void* vmctx, std::uint32_t pthread_ptr);\n",
+        "void imports_set_main_thread_init(MainThreadInit fn);\n\n",
         "// Wake waiters of a futex word.  Wire the memory.atomic.notify builtin to\n",
         "// this so the ported __asyncjs__rbxFutexWaitMainJspi can be notified.\n",
         "std::uint32_t imports_futex_notify(std::uint32_t addr, std::uint32_t count);\n\n",
@@ -258,7 +287,8 @@ def build_header(rows: list[dict]) -> str:
         'extern "C" {\n',
     ]
     for row in rows:
-        args = ", ".join(["void* vmctx"] + [f"{C_TYPES[t]} a{i}" for i, t in enumerate(row["params"])])
+        args = ", ".join(["void* vmctx", "void* caller_vmctx"] +
+                         [f"{C_TYPES[t]} a{i}" for i, t in enumerate(row["params"])])
         out.append(f"// slot {row['slot']:3}: {row['module']}.{row['name']}  {row['sig']}  (type {row['type_index']})\n")
         out.append(f"{row['ret_c']} wasm_import_{row['slot']:03d}_{sym(row['name'])}({args});\n")
     out.append("}  // extern \"C\"\n")
@@ -275,6 +305,7 @@ def build_cpp(rows: list[dict], handwritten: str) -> str:
         "#include <cstring>\n#include <memory>\n#include <mutex>\n#include <string>\n",
         "#include <sys/stat.h>\n#include <thread>\n#include <unordered_map>\n",
         "#include <unordered_set>\n#include <vector>\n\n",
+        "#include <execinfo.h>\n\n",
         "#include <curl/curl.h>\n\n",
         "namespace wb {\nnamespace {\n",
         "std::atomic<bool> g_seen[kImportCount + 1];\n",
@@ -306,6 +337,38 @@ def build_cpp(rows: list[dict], handwritten: str) -> str:
         '    std::fprintf(stderr, "[import] first call slot=%u %s.%s\\n", slot, d.module, d.name);\n',
         "  }\n",
         "}\n",
+        "bool trace_enabled() {\n",
+        "  static const bool on = [] {\n",
+        '    const char* e = std::getenv("HOST_TRACE");\n',
+        "    return e && *e && std::strcmp(e, \"0\") != 0;\n",
+        "  }();\n",
+        "  return on;\n",
+        "}\n",
+        "void trace_import_args(std::uint32_t slot, const std::uint64_t* args,\n",
+        "                       unsigned nargs) {\n",
+        "  if (slot && slot <= kImportCount &&\n",
+        "      !g_seen[slot].exchange(true, std::memory_order_relaxed)) {\n",
+        "    const ImportDesc& d = g_descs[slot - 1];\n",
+        '    std::fprintf(stderr, "[import] first call slot=%u %s.%s args=", slot,\n',
+        "                 d.module, d.name);\n",
+        "    for (unsigned i = 0; i < nargs; ++i) {\n",
+        '      std::fprintf(stderr, "%s%#llx", i ? "," : "",\n',
+        "                   static_cast<unsigned long long>(args[i]));\n",
+        "    }\n",
+        '    std::fprintf(stderr, "\\n");\n',
+        "    void* frames[10];\n",
+        "    const int n = backtrace(frames, 10);\n",
+        "    char** syms = backtrace_symbols(frames, n);\n",
+        "    if (syms) {\n",
+        "      for (int i = 1; i < n; ++i) {\n",
+        '        if (std::strstr(syms[i], "_wasm_function_")) {\n',
+        '          std::fprintf(stderr, "[import]   frame[%d] %s\\n", i, syms[i]);\n',
+        "        }\n",
+        "      }\n",
+        "      std::free(syms);\n",
+        "    }\n",
+        "  }\n",
+        "}\n",
         "}  // namespace wb\n\n",
         "// --- generated stubs: log once, return a safe zero ----------------------\n",
         "// === BEGIN GENERATED STUBS ===\n",
@@ -314,11 +377,14 @@ def build_cpp(rows: list[dict], handwritten: str) -> str:
         if row["real"]:
             out.append(f"// slot {row['slot']:3}: {row['name']} -- hand-written below\n")
             continue
-        args = ", ".join(["void* vmctx"] + [f"{C_TYPES[t]} a{i}" for i, t in enumerate(row["params"])])
+        args = ", ".join(["void* vmctx", "void* caller_vmctx"] +
+                         [f"{C_TYPES[t]} a{i}" for i, t in enumerate(row["params"])])
         out.append(f"extern \"C\" {row['ret_c']} wasm_import_{row['slot']:03d}_{sym(row['name'])}({args}) {{\n")
         out.append("  (void)vmctx;\n")
+        out.append("  (void)caller_vmctx;\n")
         for i in range(len(row["params"])):
             out.append(f"  (void)a{i};\n")
+        out.append(f"  WB_TRACE_IMPORT({row['slot']});\n")
         out.append(f"  wb::import_log_first({row['slot']});\n")
         if row["ret"] != "void":
             out.append(f"  return {ZEROS[row['ret']]};\n")
