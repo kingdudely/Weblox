@@ -41,6 +41,7 @@ download it. Stage B never recompiles the engine.
 | `tools/ci/common.sh` | shared helpers: pinned wasm download + sha256, WABT fetch, feature-flag probing, timing, metrics |
 | `tools/ci/engine.sh` | Stage A: translate → compile → `libweblox_engine.a` + `WC.h` + `manifest.json` + `env.sh` |
 | `tools/ci/host.sh` | Stage B: compile host sources and link against the cached `.a`; header-only check when no host sources exist |
+| `tools/ci/fetch_engine.sh` | download a Stage A library from a GitHub Release into the local cache |
 | `tools/ci/metrics.py` | fold `metrics.txt` + GNU `time -v` into JSON |
 | `.github/workflows/heavy.yml` | `workflow_dispatch` / `workflow_call`, publishes Release assets and uploads small logs |
 
@@ -54,7 +55,7 @@ Every path has an env override (`WC_WASM`, `WASM2C`, `WABT_ROOT`, `SIMDE_DIR`,
 
 ```sh
 # Stage A: normally skip; use the Release asset instead
-tools/ci/engine.sh
+ENGINE_RUN_ID=45927310475 tools/ci/fetch_engine.sh
 
 # Stage B: seconds
 WC_HOST_SRCS="host/main.c host/imports.c" tools/ci/host.sh
