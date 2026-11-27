@@ -14,8 +14,10 @@
 #define _GNU_SOURCE 1
 #include "unwind.h"
 #include "vmctx.h"
+#include "pthread_start.h"
 
 #include <algorithm>
+#include <csignal>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -259,17 +261,31 @@ void unwind_trace(const char* fmt, ...) {
 
 bool unwind_init() { return g_table.ready || init_table(); }
 
+// On a worker, returning false makes vmctx.cpp's caller execute the guest's
+// `raise -> ud2` path.  That SIGILL lands in whichever process-wide handler was
+// installed last, which may restore SIG_DFL and kill the process.  Convert the
+// rejection into the worker's own controlled trap instead; on the main thread
+// this is a no-op and the honest trap path is preserved.
+void reject_worker_throw() { wb::worker_raise_controlled(SIGILL); }
+
 bool unwind_throw(void* vmctx, uint32_t exnref) {
-  if (exnref == 0 || !vmctx) return false;
+  if (exnref == 0 || !vmctx) {
+    reject_worker_throw();
+    return false;
+  }
   if (!unwind_init()) {
     unwind_trace("exception table unavailable\n");
+    reject_worker_throw();
     return false;
   }
 
   void* store_ptr = nullptr;
   std::memcpy(&store_ptr, static_cast<unsigned char*>(vmctx) + VMCTX_OFF_STORE_CONTEXT,
               sizeof(store_ptr));
-  if (!store_ptr) return false;
+  if (!store_ptr) {
+    reject_worker_throw();
+    return false;
+  }
   auto* store = static_cast<VMStoreContext*>(store_ptr);
 
   // The object's .text begins with _wasm_function_0 (symbol value 0), so the
@@ -284,6 +300,7 @@ bool unwind_throw(void* vmctx, uint32_t exnref) {
   if (!exit_pc || !trampoline_fp) {
     unwind_trace("tid=%ld no exit state (pc=%#lx fp=%#lx)\n", current_tid(),
                  static_cast<unsigned long>(exit_pc), static_cast<unsigned long>(trampoline_fp));
+    reject_worker_throw();
     return false;
   }
   const uint64_t rel_pc = exit_pc > code_base ? exit_pc - code_base : 0;
@@ -296,6 +313,7 @@ bool unwind_throw(void* vmctx, uint32_t exnref) {
                  static_cast<unsigned long long>(rel_pc),
                  static_cast<unsigned long long>(code_span));
     reset_wasm_exit_state(vmctx);
+    reject_worker_throw();
     return false;
   }
   // A copied store inherits the main thread's FP.  Never dereference a frame
@@ -304,6 +322,7 @@ bool unwind_throw(void* vmctx, uint32_t exnref) {
     unwind_trace("tid=%ld exit fp=%#lx is not on this thread's stack (stale copy); clearing\n",
                  current_tid(), static_cast<unsigned long>(trampoline_fp));
     reset_wasm_exit_state(vmctx);
+    reject_worker_throw();
     return false;
   }
 
@@ -394,6 +413,7 @@ bool unwind_throw(void* vmctx, uint32_t exnref) {
     pc = next_pc;
   }
   unwind_trace("no catch-all handler found; propagating as trap\n");
+  reject_worker_throw();  // worker: never reach the guest's raise -> ud2
   return false;
 }
 
