@@ -21,10 +21,13 @@
 #include "vmctx.h"
 
 #include <atomic>
+#include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
+#include <thread>
 #include <setjmp.h>
 
 extern "C" {
@@ -113,6 +116,60 @@ void guarded(void (*fn)(void*), void* vmctx, const char* what) {
 }
 
 }  // namespace
+}  // namespace weblox
+
+namespace weblox {
+
+// Bounded driver for the engine's main loop.  The caller supplies the guarded
+// turn (`main_loop_iteration` under main.cpp's ExportTrapGuard); this function
+// owns the deadline, the turn count and the periodic RNA progress report.
+// Each turn still goes through __wrap__wasm_function_176 above, so the RNA
+// completion pump and both mailbox drains run on this thread.  Returns 0 when
+// the deadline was reached, or the trapping signal of the first bad turn.
+int run_loop(host::HostState& state,
+             std::chrono::steady_clock::time_point deadline,
+             const std::function<int()>& turn, RnaBridge* bridge,
+             uint64_t& turns_out) {
+  (void)state;  // the turn captures the same HostState; kept in the API for
+                // symmetry with the other guest-entry helpers.
+  int trap_signal = 0;
+  if (wb::trace_enabled()) {
+    std::fprintf(stderr, "[loop] run_loop entered (wrapped iteration)\n");
+    std::fflush(stderr);
+  }
+  while (std::chrono::steady_clock::now() < deadline && trap_signal == 0) {
+    if (wb::trace_enabled() && turns_out < 3) {
+      std::fprintf(stderr, "[loop] turn %llu begin\n",
+                   static_cast<unsigned long long>(turns_out + 1));
+      std::fflush(stderr);
+    }
+    trap_signal = turn();
+    ++turns_out;
+    if (wb::trace_enabled() && turns_out <= 3) {
+      std::fprintf(stderr, "[loop] turn %llu end trap=%d\n",
+                   static_cast<unsigned long long>(turns_out), trap_signal);
+      std::fflush(stderr);
+    }
+    if (turns_out % 100 == 0 && bridge) {
+      const RnaStats s = bridge->stats();
+      std::printf("[rna-main] turns=%llu connects=%llu dgrams=%llu/%llu "
+                  "ring=%llu drop=%llu cb=%llu/%llu status=%lld\n",
+                  static_cast<unsigned long long>(turns_out),
+                  static_cast<unsigned long long>(s.connects),
+                  static_cast<unsigned long long>(s.datagrams_sent),
+                  static_cast<unsigned long long>(s.datagrams_recv),
+                  static_cast<unsigned long long>(s.ring_slots_written),
+                  static_cast<unsigned long long>(s.ring_drops),
+                  static_cast<unsigned long long>(s.callbacks_delivered),
+                  static_cast<unsigned long long>(s.callbacks_failed),
+                  static_cast<long long>(s.connect_status));
+      std::fflush(stdout);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  return trap_signal;
+}
+
 }  // namespace weblox
 
 extern "C" void __wrap__wasm_function_176(void* callee_vmctx, void* caller_vmctx) {
