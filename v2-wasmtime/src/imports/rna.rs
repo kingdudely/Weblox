@@ -211,7 +211,65 @@ fn ring_write(id: u32, data: &[u8]) -> Option<(u32, usize)> {
     Some((index, n))
 }
 
-fn connect(id: u32, url: String, owner: u32, ring: Ring) {
+/// Percent-decode the JSON blob the launcher puts in `NetStackConfig`.
+fn pct_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            let hex = |c: u8| -> Option<u8> {
+                match c { b'0'..=b'9' => Some(c - b'0'), b'a'..=b'f' => Some(c - b'a' + 10),
+                          b'A'..=b'F' => Some(c - b'A' + 10), _ => None }
+            };
+            if let (Some(a), Some(c)) = (hex(b[i+1]), hex(b[i+2])) {
+                out.push(a << 4 | c); i += 3; continue;
+            }
+        }
+        out.push(b[i]); i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Route inputs from the unpatched joinScript: the browser/UDMUX peer, the
+/// capability string and the pinned certificate hashes.  The qdmux FQDN is
+/// taken from the URL the engine built (it is SNI + `:authority` only).
+fn route_from_join(url: &str) -> wtransport::ConnectOptions {
+    let mut opts = wtransport::ConnectOptions::default();
+    let Some(script) = crate::imports::http::JOIN_SCRIPT.get() else { return opts };
+    let mut cfg = script.get("NetStackConfig").cloned();
+    if let Some(serde_json::Value::String(s)) = cfg {
+        cfg = serde_json::from_str(&pct_decode(&s)).ok();
+    }
+    let cfg = cfg.unwrap_or_default();
+    if let Some(caps) = cfg.get("caps").and_then(|c| c.as_str()) {
+        opts.caps = Some(caps.to_string());
+    }
+    opts.cert_hashes = cfg.get("certHashes").and_then(|h| h.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    // Native UDMUX .33 -> browser/qdmux .34, exactly as fresh_route.py does.
+    if let Some(addr) = script.get("UdmuxEndpoints").and_then(|u| u.get(0))
+        .and_then(|e| e.get("Address")).and_then(|a| a.as_str())
+    {
+        if let Some(port) = script.get("NetStackPort").and_then(|p| p.as_u64()) {
+            let mut parts: Vec<u8> = addr.split('.').filter_map(|p| p.parse().ok()).collect();
+            if parts.len() == 4 && parts[3] % 2 == 1 && parts[3] != 255 {
+                parts[3] += 1;
+                let peer = format!("{}.{}.{}.{}:{}", parts[0], parts[1], parts[2], parts[3], port);
+                if let Ok(a) = peer.parse() { opts.peer = Some(a); }
+            }
+        }
+    }
+    if let Ok(u) = url::Url::parse(url) {
+        if let Some(host) = u.host_str() { opts.sni = Some(host.to_string()); }
+        let port = u.port_or_known_default().unwrap_or(443);
+        opts.authority = Some(format!("{}:{}", u.host_str().unwrap_or_default(), port));
+    }
+    opts
+}
+
+fn connect(id: u32, url: String, owner: u32, ring: Ring, guest_hashes: Vec<String>) {
     let (ring_head, ring_tail) = (ring.head, ring.tail);
     AUTOTAIL.store(std::env::var_os("WC_AUTOTAIL").is_some(), std::sync::atomic::Ordering::Relaxed);
     set_owner(id, owner);
@@ -228,9 +286,18 @@ fn connect(id: u32, url: String, owner: u32, ring: Ring) {
     }
     RINGS.lock().unwrap().get_or_insert_with(HashMap::new).insert(id, ring);
     rt().spawn(async move {
+        let opts = route_from_join(&url);
+        // The guest also hands us the certHashes it parsed from joinScript;
+        // keep them as a fallback if the captured join reply is unavailable.
+        let mut pins = opts.cert_hashes.clone();
+        for h in guest_hashes {
+            if !pins.contains(&h) { pins.push(h); }
+        }
+        eprintln!("[rna ] route peer={:?} caps={:?} pins={}", opts.peer, opts.caps, pins.len());
         let cfg = wtransport::ClientConfig::builder()
             .with_bind_default()
             .with_no_cert_validation()
+            .with_cert_hashes(pins)
             .build();
         let endpoint = match wtransport::Endpoint::client(cfg) {
             Ok(e) => e,
@@ -240,7 +307,7 @@ fn connect(id: u32, url: String, owner: u32, ring: Ring) {
                 return;
             }
         };
-        let conn = match endpoint.connect(url.as_str()).await {
+        let conn = match endpoint.connect_with(url.as_str(), opts).await {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("[rna ] connect failed: {e}");
@@ -535,11 +602,24 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
     l.func_wrap(
         "env",
         "rbx_wasm_rna_connect_js",
-        |c: Caller<'_, St>, id: i32, url: i32, _n: i32, _certs: i32, data: i32, head: i32,
+        |c: Caller<'_, St>, id: i32, url: i32, certs: i32, ncerts: i32, data: i32, head: i32,
          tail: i32, slot: i32, count: i32, _err: i32, _fix: i32, _dg: i32, _a: i32, _b: i32| {
             MEM.get_or_init(|| c.data().mem.clone());
             let u = crate::state::rstr(&c, url as u32);
             eprintln!("[rna ] connect_js id={id} url={u}");
+            // The guest passes base64 certificate hashes (the WebIDL
+            // `serverCertificateHashes` values from joinScript) as a ptr array.
+            let mut hashes = Vec::new();
+            if ncerts > 0 && ncerts <= 64 {
+                for i in 0..ncerts as u32 {
+                    let word = crate::state::rbytes(&c, certs as u32 + 4 * i, 4);
+                    let p = u32::from_le_bytes(word.try_into().unwrap_or([0; 4]));
+                    if p != 0 {
+                        let h = crate::state::rstr(&c, p);
+                        if !h.is_empty() { hashes.push(h); }
+                    }
+                }
+            }
             let owner = self_ptr(&c);
             connect(
                 id as u32,
@@ -552,6 +632,7 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
                     slot: slot as u32,
                     count: count as u32,
                 },
+                hashes,
             );
         },
     )?;
