@@ -23,8 +23,10 @@ CI_HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 CI_ROOT=$(cd "$CI_HERE/../.." && pwd)
 CI_BUILD_DIR=${WC_BUILD_DIR:-"$CI_ROOT/build/ci"}
 
-# Pinned engine build.  Changing this is a deliberate engine update; the
-# sha256 below is checked so CI can never silently build a different module.
+# The source of truth for the current engine build is pins.env.  Env vars
+# still win (the workflow uses them for one-off experiments).
+PINS="$CI_HERE/pins.env"
+[[ -f $PINS ]] && . "$PINS"
 WASM_VERSION=${WASM_VERSION:-1ef59424f70d4932}
 WASM_BASE_URL="https://setup.rbxcdn.com/webclient/version-$WASM_VERSION-RobloxWebClient"
 WASM_SHA256=${WASM_SHA256:-be370a4446dcfce62635f7e6d271526b15e2099507fb7250b2d3360eacd4a61f}

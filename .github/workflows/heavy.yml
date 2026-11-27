@@ -42,14 +42,14 @@ on:
         default: ''
         type: string
       wasm-version:
-        description: 'pinned engine version hash'
+        description: 'override engine version (blank = tools/ci/pins.env)'
         required: false
-        default: 1ef59424f70d4932
+        default: ''
         type: string
       wasm-sha256:
-        description: 'expected sha256 of WebClient.wasm'
+        description: 'override wasm sha256 (blank = tools/ci/pins.env)'
         required: false
-        default: be370a4446dcfce62635f7e6d271526b15e2099507fb7250b2d3360eacd4a61f
+        default: ''
         type: string
       upload-release:
         description: 'upload the engine library to a Release'
@@ -106,14 +106,14 @@ on:
         default: ''
         type: string
       wasm-version:
-        description: 'pinned engine version hash'
+        description: 'override engine version (blank = tools/ci/pins.env)'
         required: false
-        default: 1ef59424f70d4932
+        default: ''
         type: string
       wasm-sha256:
-        description: 'expected sha256 of WebClient.wasm'
+        description: 'override wasm sha256 (blank = tools/ci/pins.env)'
         required: false
-        default: be370a4446dcfce62635f7e6d271526b15e2099507fb7250b2d3360eacd4a61f
+        default: ''
         type: string
       upload-release:
         description: 'upload the engine library to a Release'
