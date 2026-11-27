@@ -89,27 +89,32 @@ for f in "$WASM2C_RUNTIME_DIR"/wasm-rt*.c; do
   "$CC" -c -w $PIC_FLAG -I"$WASM2C_INCLUDE" -I"$GEN" -I"$SIMDE_DIR" "$f" -o "$OBJ/rt-$(basename "$f" .c).o"
 done
 
-LIB="$OUT/$STATIC_NAME"
-if [[ $PLAT_OS == windows ]] && command -v llvm-lib >/dev/null 2>&1; then
-  # Git Bash rewrites /OUT: into a Windows path; use the -OUT: spelling.
-  llvm-lib -OUT:"$LIB" "$OBJ"/*.o
+SHARED="$OUT/$SHARED_NAME"
+IMPORT=""
+if [[ $PLAT_OS == windows ]]; then
+  # No edits to generated C: derive exports from the compiled objects.
+  DEF="$OUT/exports.def"
+  printf 'EXPORTS\n' > "$DEF"
+  llvm-nm --defined-only "$OBJ"/*.o 2>/dev/null \
+    | awk '{print $3}' | grep -E '^(w2c_|wasm2c_)' | sort -u >> "$DEF"
+  IMPORT="$OUT/$IMPORT_NAME"
+  lld-link /DLL /OUT:"$SHARED" /DEF:"$DEF" /IMPLIB:"$IMPORT" "$OBJ"/*.o
 else
-  AR=${AR:-ar}
-  "$AR" rcs "$LIB" "$OBJ"/*.o
-fi
-
-SHARED=""
-if [[ -n $SHARED_NAME ]]; then
-  SHARED="$OUT/$SHARED_NAME"
   # Generated objects call host imports that live in the executable.  Linux
   # .so allows undefined symbols by default; macOS needs dynamic_lookup.
   UNDEFINED_FLAG=""
   [[ $PLAT_OS == macos ]] && UNDEFINED_FLAG="-Wl,-undefined,dynamic_lookup"
   "$CC" $SHARED_FLAG $UNDEFINED_FLAG -o "$SHARED" "$OBJ"/*.o -lm -lpthread
-  ci_metric shared_bytes "$(wc -c < "$SHARED" | tr -d ' ')"
 fi
+ci_metric shared_bytes "$(wc -c < "$SHARED" | tr -d ' ')"
+
 cp "$GEN/WC.h" "$OUT/WC.h"
 cp "$GEN/WC-impl.h" "$OUT/WC-impl.h" 2>/dev/null || true
+if command -v zstd >/dev/null 2>&1; then
+  zstd -19 -f -q "$SHARED" -o "$SHARED.zst"
+  [[ -n $IMPORT ]] && zstd -19 -f -q "$IMPORT" -o "$IMPORT.zst"
+  ci_metric zstd_bytes "$(wc -c < "$SHARED.zst" | tr -d ' ')"
+fi
 {
   echo '{'
   echo "  \"task\": \"compile-generated\","
@@ -117,23 +122,22 @@ cp "$GEN/WC-impl.h" "$OUT/WC-impl.h" 2>/dev/null || true
   echo "  \"generated_tus\": \"${#TRANSLATED[@]}\","
   echo "  \"compile_secs\": \"$((SECONDS - T0))\","
   echo "  \"platform\": \"$PLATFORM\","
-  echo "  \"library\": \"$STATIC_NAME\","
   echo "  \"shared\": \"$SHARED_NAME\","
   echo "  \"header\": \"WC.h\""
   echo '}'
 } > "$OUT/manifest.json"
 {
   echo "ENGINE_DIR='$OUT'"
-  echo "ENGINE_LIB='$LIB'"
+  echo "ENGINE_LIB='$SHARED'"
   echo "ENGINE_SO='$SHARED'"
+  echo "ENGINE_IMPORT='$IMPORT'"
   echo "GEN_INCLUDE='$OUT'"
   echo "WABT_INCLUDE='$WASM2C_INCLUDE'"
-  echo "WASM_VERSION='f807b21caba84809'"
-  echo "WASM_SHA256='7405e01f87c4fa10816c86f95ebab7eec4b646adf2dcaf2ebba664b5c4aef271'"
+  echo "WASM_VERSION='$WASM_VERSION'"
+  echo "WASM_SHA256='$WASM_SHA256'"
 } > "$OUT/env.sh"
 
-ci_metric lib_bytes "$(wc -c < "$LIB" | tr -d ' ')"
 ci_metric engine_dir "$OUT"
 printf '%s\n' "$OUT" > "$CI_BUILD_DIR/engine_dir"
 ci_finish
-echo "[gen] done: $LIB" >&2
+echo "[gen] done: $SHARED" >&2

@@ -24,20 +24,23 @@ PLATFORM="$PLAT_OS-$PLAT_ARCH"
 case "$PLAT_OS" in
   windows)
     PIC_FLAG=""
-    STATIC_NAME="libweblox_engine-$PLATFORM.lib"
-    SHARED_NAME=""
+    STATIC_NAME=""
+    SHARED_NAME="engine-$PLATFORM.dll"
+    IMPORT_NAME="engine-$PLATFORM.lib"
     SHARED_FLAG=""
     ;;
   macos)
     PIC_FLAG="-fPIC"
-    STATIC_NAME="libweblox_engine-$PLATFORM.a"
-    SHARED_NAME="libweblox_engine-$PLATFORM.dylib"
+    STATIC_NAME=""
+    SHARED_NAME="engine-$PLATFORM.dylib"
+    IMPORT_NAME=""
     SHARED_FLAG="-dynamiclib"
     ;;
   *)
     PIC_FLAG="-fPIC"
-    STATIC_NAME="libweblox_engine-$PLATFORM.a"
-    SHARED_NAME="libweblox_engine-$PLATFORM.so"
+    STATIC_NAME=""
+    SHARED_NAME="engine-$PLATFORM.so"
+    IMPORT_NAME=""
     SHARED_FLAG="-shared"
     ;;
 esac

@@ -27,8 +27,13 @@ CI_BUILD_DIR=${WC_BUILD_DIR:-"$CI_ROOT/build/ci"}
 # still win (the workflow uses them for one-off experiments).
 PINS="$CI_HERE/pins.env"
 [[ -f $PINS ]] && . "$PINS"
-WASM_VERSION=${WASM_VERSION:-1ef59424f70d4932}
-WASM_BASE_URL="https://setup.rbxcdn.com/webclient/version-$WASM_VERSION-RobloxWebClient"
+WASM_VERSION=${WASM_VERSION:-version-1ef59424f70d4932-RobloxWebClient}
+# Accept either the canonical upload string or the bare hash.
+case "$WASM_VERSION" in
+  version-*) WASM_UPLOAD=$WASM_VERSION ;;
+  *) WASM_UPLOAD="version-$WASM_VERSION-RobloxWebClient" ;;
+esac
+WASM_BASE_URL="https://setup.rbxcdn.com/webclient/$WASM_UPLOAD"
 WASM_SHA256=${WASM_SHA256:-be370a4446dcfce62635f7e6d271526b15e2099507fb7250b2d3360eacd4a61f}
 WABT_VERSION=${WABT_VERSION:-1.0.42}
 

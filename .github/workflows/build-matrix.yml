@@ -36,16 +36,21 @@ jobs:
     outputs:
       tag: ${{ steps.release.outputs.tag }}
     steps:
+      - uses: actions/checkout@v4
+
       - name: Create release
         id: release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="ci-matrix-${{ github.run_id }}"
-          gh release create "$tag" --repo "${{ github.repository }}" \
-            --title "wasm2c engine matrix ${{ github.run_id }}" \
-            --notes "Prebuilt engine libraries for Linux/macOS/Windows." \
-            --target "${{ github.sha }}"
+          tag=$(grep '^WASM_VERSION=' tools/ci/pins.env | cut -d= -f2)
+          case "$tag" in version-*) ;; *) tag="version-$tag-RobloxWebClient" ;; esac
+          if ! gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release create "$tag" --repo "${{ github.repository }}" \
+              --title "Engine $tag" \
+              --notes "Prebuilt wasm2c engine libraries for Linux/macOS/Windows." \
+              --target "${{ github.sha }}"
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
   build:
@@ -67,7 +72,14 @@ jobs:
           if ! command -v clang >/dev/null 2>&1; then
             choco install llvm -y
           fi
+          if ! command -v zstd >/dev/null 2>&1; then
+            if [ "${{ runner.os }}" = "Windows" ]; then choco install zstd -y
+            elif [ "${{ runner.os }}" = "macOS" ]; then brew install zstd
+            else sudo apt-get update -qq && sudo apt-get install -y -qq zstd
+            fi
+          fi
           clang --version | head -1
+          zstd --version | head -1
 
       - name: Prepare
         run: mkdir -p build/ci
@@ -101,6 +113,26 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ENGINE_DIR: ${{ steps.run.outputs.dir }}
+          TAG: ${{ needs.prepare.outputs.tag }}
         run: |
-          gh release upload "${{ needs.prepare.outputs.tag }}" \
-            "$ENGINE_DIR"/* --repo "${{ github.repository }}" --clobber
+          gh release upload "$TAG" \
+            "$ENGINE_DIR"/engine-*.zst \
+            "$ENGINE_DIR"/WC.h --repo "${{ github.repository }}" --clobber
+
+  source:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build portable source bundle
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p gen
+          gh release download ci-local-wasm2c-generated --repo "${{ github.repository }}" \
+            --dir gen --pattern 'WC*.c' --pattern 'WC.h' --pattern 'WC-impl.h'
+          tar --zstd -cf generated-c.tar.zst -C gen .
+          gh release upload "$TAG" generated-c.tar.zst gen/WC.h \
+            --repo "${{ github.repository }}" --clobber
