@@ -33,6 +33,10 @@ extern "C" {
 extern w2c_WebClient* g_wc_instance;
 }
 
+namespace weblox::deferred {
+void detail_push(u32 fn, u32 arg);
+}
+
 // ---------------------------------------------------------------------------
 // GUEST STRUCT LAYOUT (single source of truth for every offset below)
 // ---------------------------------------------------------------------------
@@ -215,9 +219,9 @@ namespace {
 
 // The URL/header helpers live next to the curl request below; bring them into
 // scope for the import entry points in this translation unit.
-using weblox::http::authority;
-using weblox::http::cookie_value;
-using weblox::http::iequals;
+using ::weblox::http::authority;
+using ::weblox::http::cookie_value;
+using ::weblox::http::iequals;
 
 // ------------------------------------------------------------- response data
 
@@ -240,44 +244,32 @@ std::string get_headers(u32 fetch) {
 
 u32 read_u32(u32 address) {
   u32 value = 0;
-  if (const auto* p = weblox::guest::ptr(address, sizeof value))
+  if (const auto* p = ::weblox::guest::ptr(address, sizeof value))
     std::memcpy(&value, p, sizeof value);
   return value;
 }
 
 void write_u16(u32 address, u16 value) {
-  if (auto* p = weblox::guest::ptr(address, sizeof value))
+  if (auto* p = ::weblox::guest::ptr(address, sizeof value))
     std::memcpy(p, &value, sizeof value);
 }
 
 void write_text(u32 address, std::size_t capacity, const std::string& text) {
-  auto* p = weblox::guest::ptr(address, capacity);
+  auto* p = ::weblox::guest::ptr(address, capacity);
   if (!p) return;
   const std::size_t n = std::min(text.size(), capacity - 1);
   std::memcpy(p, text.data(), n);
   p[n] = 0;
 }
 
-// Guest callbacks are ordinary wasm functions; give a thrown wasm exception a
-// landing pad instead of letting it longjmp through this C++ frame.
+// XHR/fetch completion handlers run as browser tasks, not inside the import
+// that started the request.  Queueing them avoids re-entering an RBX_on*
+// callback that is still on the wasm stack.
 void call_callback(u32 fetch, u32 index) {
   if (!index || !g_wc_instance) return;
   auto& table = g_wc_instance->w2c_0x5F_indirect_function_table;
-  if (index >= table.size) return;
-  const wasm_rt_funcref_t& ref = table.data[index];
-  if (!ref.func) return;
-  using Callback = void (*)(void*, u32);
-  auto fn = reinterpret_cast<Callback>(ref.func);
-  WASM_RT_UNWIND_TARGET* outer = wasm_rt_get_unwind_target();
-  WASM_RT_UNWIND_TARGET target;
-  if (wasm_rt_try(target)) {
-    wasm_rt_set_unwind_target(outer);
-    std::fprintf(stderr, "[http] guest callback threw\n");
-    return;
-  }
-  wasm_rt_set_unwind_target(&target);
-  fn(ref.module_instance, fetch);
-  wasm_rt_set_unwind_target(outer);
+  if (index >= table.size || !table.data[index].func) return;
+  ::weblox::deferred::detail_push(index, fetch);
 }
 
 // ------------------------------------------------------------------- join ---
@@ -458,9 +450,9 @@ bool is_host(const std::string& url, const char* want) {
 extern "C" {
 
 void w2c_env_emscripten_start_fetch(struct w2c_env*, u32 fetch) {
-  const std::string url = weblox::guest::string(read_u32(fetch + kFetchUrlPtr));
+  const std::string url = ::weblox::guest::string(read_u32(fetch + kFetchUrlPtr));
   const u32 attrs = fetch + kFetchAttrs;
-  std::string method = weblox::guest::string(attrs + kAttrMethod);
+  std::string method = ::weblox::guest::string(attrs + kAttrMethod);
   const u32 on_ready = read_u32(attrs + kAttrReadyChange);
   const u32 on_success = read_u32(attrs + kAttrOnSuccess);
   const u32 on_error = read_u32(attrs + kAttrOnError);
@@ -492,10 +484,10 @@ void w2c_env_emscripten_start_fetch(struct w2c_env*, u32 fetch) {
 
   for (u32 pair = read_u32(attrs + kAttrHeaders); pair;
        pair = read_u32(pair + 4)) {
-    const std::string name = weblox::guest::string(read_u32(pair));
+    const std::string name = ::weblox::guest::string(read_u32(pair));
     if (name.empty()) break;
     const u32 value_ptr = read_u32(pair + 4);
-    const std::string value = value_ptr ? weblox::guest::string(value_ptr) : "";
+    const std::string value = value_ptr ? ::weblox::guest::string(value_ptr) : "";
     if (join && iequals(name, "rbx-user-agent"))
       continue;  // the native identity must win for joins
     if (roblox && iequals(name, "cookie"))
@@ -509,11 +501,11 @@ void w2c_env_emscripten_start_fetch(struct w2c_env*, u32 fetch) {
   const u32 body_ptr = read_u32(attrs + kAttrBodyPtr);
   const u32 body_len = read_u32(attrs + kAttrBodyLen);
   if (body_ptr && body_len && body_len <= kMaxBody) {
-    if (const auto* bytes = weblox::guest::ptr(body_ptr, body_len))
+    if (const auto* bytes = ::weblox::guest::ptr(body_ptr, body_len))
       body.assign(reinterpret_cast<const char*>(bytes), body_len);
   }
 
-  weblox::http::Response reply = weblox::http::request(
+  ::weblox::http::Response reply = ::weblox::http::request(
       method, url, headers, body, kMaxBody, kTimeoutMs);
   if (reply.status >= 200 && reply.status < 300 && join) {
     std::string fqdn;
@@ -531,13 +523,13 @@ void w2c_env_emscripten_start_fetch(struct w2c_env*, u32 fetch) {
     data = w2c_WebClient_malloc(g_wc_instance,
                                 static_cast<u32>(reply.body.size()));
   if (data) {
-    if (auto* dst = weblox::guest::ptr(data, reply.body.size()))
+    if (auto* dst = ::weblox::guest::ptr(data, reply.body.size()))
       std::memcpy(dst, reply.body.data(), reply.body.size());
   }
-  weblox::guest::put_u32(fetch + kFetchDataPtr, data);
-  weblox::guest::put_u64(fetch + kFetchNumBytes, data ? reply.body.size() : 0);
-  weblox::guest::put_u64(fetch + kFetchDataOffset, 0);
-  weblox::guest::put_u64(fetch + kFetchTotalBytes, data ? reply.body.size() : 0);
+  ::weblox::guest::put_u32(fetch + kFetchDataPtr, data);
+  ::weblox::guest::put_u64(fetch + kFetchNumBytes, data ? reply.body.size() : 0);
+  ::weblox::guest::put_u64(fetch + kFetchDataOffset, 0);
+  ::weblox::guest::put_u64(fetch + kFetchTotalBytes, data ? reply.body.size() : 0);
   write_u16(fetch + kFetchReadyState, 4);  // readyState DONE
   write_u16(fetch + kFetchStatus,
             static_cast<u16>(reply.status <= 0xFFFF ? reply.status : 0));
@@ -570,7 +562,7 @@ u32 w2c_env_0x5Femscripten_fetch_get_response_headers(struct w2c_env*, u32 fetch
   const std::string headers = get_headers(fetch);
   const std::size_t n = std::min<std::size_t>(headers.size(), capacity);
   if (n) {
-    if (auto* p = weblox::guest::ptr(dst, n)) std::memcpy(p, headers.data(), n);
+    if (auto* p = ::weblox::guest::ptr(dst, n)) std::memcpy(p, headers.data(), n);
   }
   return static_cast<u32>(n);
 }

@@ -94,6 +94,11 @@ double eval(u32 key, u32 sigp, u32 buf) {
     case 8667221:
       std::fprintf(stderr, "[asm] EXPERIENCE LEFT\n");
       return 0.0;
+    case 8679911:  // crash report hook (type, message)
+      std::fprintf(stderr, "[asm] CRASH type=\"%s\" msg=\"%s\"\n",
+                   n > 0 ? weblox::guest::str(a[0].pointer) : "",
+                   n > 1 ? weblox::guest::str(a[1].pointer) : "");
+      return 0.0;
     case 8686787:  // CORS header warning
       std::fprintf(stderr, "[asm] cors: %s\n",
                    n ? weblox::guest::str(a[0].pointer) : "");

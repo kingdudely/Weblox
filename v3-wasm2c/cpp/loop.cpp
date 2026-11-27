@@ -80,6 +80,7 @@ int run(w2c_WebClient* inst, std::chrono::milliseconds budget) {
   } else {
     guarded([&] { w2c_WebClient_0x5F_main_argc_argv(inst, 0, 0); });
   }
+  std::fprintf(stderr, "[loop] main returned\n");
 
   const auto deadline = std::chrono::steady_clock::now() + budget;
   int turns = 0;
