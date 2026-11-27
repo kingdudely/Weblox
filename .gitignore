@@ -38,6 +38,8 @@ host/*.o
 # generated from the wasm element/data sections; regenerate with make
 host/table.cpp
 host/runtime_data.cpp
+# generated callee-pop thunk table; regenerate with make (host/ABI.md)
+host/abi_stubs.S
 
 # native host build inputs/outputs (build_all.sh defaults to /tmp/opencode,
 # but allow local overrides inside host/ without committing large binaries)

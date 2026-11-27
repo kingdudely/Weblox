@@ -30,6 +30,9 @@ inline const ImportDesc* import_desc(std::uint32_t slot) {
 // wasm-call ABI passes rdi = import slot vmctx, rsi = caller's vmctx,
 // then the wasm arguments in rdx, rcx, r8, r9, stack (int) and
 // xmm0..xmm7 (float).  Both vmctx parameters are explicit below.
+// Each pointer is a generated `wasm_abi_NNN` thunk (abi_stubs.S) that
+// calls the C++ body below with a normal System-V entry and returns
+// with the callee-pops `ret $POP` the guest expects; see host/ABI.md.
 void* const* import_wasm_calls();
 void* import_wasm_call(std::uint32_t slot);
 
