@@ -42,6 +42,7 @@ endif()
 # Engine payload.
 # ---------------------------------------------------------------------------
 include(cmake/FetchAsset.cmake)
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
 set(WABT_DIR "${CMAKE_CURRENT_LIST_DIR}/deps/wabt")
 set(ENGINE_SRC "${CMAKE_BINARY_DIR}/engine")
 file(MAKE_DIRECTORY "${ENGINE_SRC}")
@@ -87,6 +88,29 @@ else()
   message(FATAL_ERROR "WEBLOX_ENGINE_MODE must be prebuilt or source")
 endif()
 
+# The published WC-impl.h has no-op atomic wait/notify stubs.  In source mode
+# we compile the generated C ourselves, so a build-directory VFS overlay can
+# fix it without touching the Release asset.  A prebuilt .so/.dylib/.dll has
+# the stubs baked in and must be rebuilt with this overlay by build-engine.yml.
+if(WEBLOX_ENGINE_MODE STREQUAL "source")
+  set(WC_IMPL "${ENGINE_SRC}/WC-impl.h")
+  if(NOT EXISTS "${WC_IMPL}")
+    message(FATAL_ERROR "generated-c bundle is missing WC-impl.h")
+  endif()
+  execute_process(
+    COMMAND ${Python3_EXECUTABLE}
+      "${CMAKE_CURRENT_LIST_DIR}/tools/make_overlay.py"
+      "${WC_IMPL}" "${CMAKE_CURRENT_BINARY_DIR}/overlay"
+    OUTPUT_VARIABLE ATOMIC_OVERLAY
+    RESULT_VARIABLE rc
+    ERROR_VARIABLE overlay_error)
+  if(NOT rc EQUAL 0)
+    message(FATAL_ERROR "make_overlay.py failed: ${overlay_error}")
+  endif()
+  string(STRIP "${ATOMIC_OVERLAY}" ATOMIC_OVERLAY)
+  message(STATUS "atomic overlay: ${ATOMIC_OVERLAY}")
+endif()
+
 if(NOT EXISTS "${ENGINE_SRC}/WC.h")
   message(FATAL_ERROR "engine is missing WC.h")
 endif()
@@ -123,7 +147,7 @@ if(WEBLOX_ENGINE_MODE STREQUAL "source")
   add_library(wc_generated STATIC ${GENERATED_C})
   target_include_directories(wc_generated PRIVATE
     "${ENGINE_SRC}" "${WABT_DIR}" "${SIMDE_DIR}")
-  target_compile_options(wc_generated PRIVATE -w)
+  target_compile_options(wc_generated PRIVATE -w "-ivfsoverlay ${ATOMIC_OVERLAY}")
 endif()
 
 # ---------------------------------------------------------------------------
