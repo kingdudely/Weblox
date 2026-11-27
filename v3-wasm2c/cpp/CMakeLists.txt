@@ -228,7 +228,8 @@ endif()
 # ---------------------------------------------------------------------------
 find_package(Threads REQUIRED)
 add_executable(weblox
-  host.cpp imports.cpp asm_const.cpp thread_init.cpp host_info.cpp loop.cpp platform.cpp mem.c
+  host.cpp imports.cpp embind.cpp prepare.cpp asm_const.cpp thread_init.cpp
+  host_info.cpp loop.cpp platform.cpp mem.c
   window.cpp window_sdl.cpp net_stub.cpp net_curl.cpp
   gpu_stub.cpp fiber_impl.cpp thread_host.cpp futex_host.cpp
   mailbox.cpp deferred.cpp ${HTTP_SOURCES})

@@ -43,6 +43,9 @@ extern "C" void w2c_env_schedule_main_loop(struct w2c_env*) {
 namespace weblox::deferred {
 int pump(w2c_WebClient* inst);
 }
+namespace weblox::prepare {
+bool run(w2c_WebClient* inst);
+}
 
 namespace weblox::loop {
 
@@ -60,6 +63,7 @@ int run(w2c_WebClient* inst, std::chrono::milliseconds budget) {
       if (!table.data[i].func) table.data[i] = fill;
   }
   w2c_WebClient_0x5F_wasm_call_ctors(inst);
+  weblox::prepare::run(inst);
 
   // The generated export is `__main_argc_argv`, declared by name in WC.h.
   // Its arguments are a guest argc and a guest address of a pointer array, so
