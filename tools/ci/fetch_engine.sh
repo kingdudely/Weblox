@@ -51,10 +51,20 @@ else
       done
 fi
 
-[[ -f $DEST/env.sh ]] || {
+[[ -f $DEST/libweblox_engine.a && -f $DEST/WC.h ]] || {
   echo "fetch_engine.sh: release $TAG has no engine assets" >&2
   exit 2
 }
+# The published env.sh points at the build runner's directories.  Rewrite it
+# for this machine so host.sh / smoke.sh find the downloaded assets.
+{
+  echo "ENGINE_DIR='$DEST'"
+  echo "ENGINE_LIB='$DEST/libweblox_engine.a'"
+  echo "GEN_INCLUDE='$DEST'"
+  echo "WABT_INCLUDE=''"
+  echo "WASM_VERSION='$WASM_VERSION'"
+  echo "WASM_SHA256='$WASM_SHA256'"
+} > "$DEST/env.sh"
 printf '%s\n' "$DEST" > "$CI_BUILD_DIR/engine_dir"
 ci_metric engine_release "$TAG"
 ci_metric engine_dir "$DEST"
