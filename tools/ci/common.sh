@@ -35,6 +35,13 @@ ci_init() {
   CI_METRICS="$CI_BUILD_DIR/metrics.txt"
   : > "$CI_METRICS"
   CI_START=$SECONDS
+  # Record the memory ceiling: WABT wasm2c and Cranelift both peak near 5 GB.
+  if [[ -r /proc/meminfo ]]; then
+    ci_metric host_mem_kb "$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)"
+  fi
+  if [[ -r /sys/fs/cgroup/memory.max ]]; then
+    ci_metric cgroup_memory_max "$(cat /sys/fs/cgroup/memory.max)"
+  fi
 }
 
 ci_metric() {

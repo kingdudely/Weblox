@@ -75,7 +75,9 @@ gh run watch
 ```
 
 `workflow_call` is enabled too, so another workflow or agent can dispatch the
-same job.
+same job. An optional `runner` input selects a larger runner; larger runners are
+**billed even for public repos**, so leave it at `ubuntu-latest` unless a
+translation is provably memory-bound.
 
 ## Where the output goes
 

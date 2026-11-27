@@ -61,6 +61,11 @@ on:
         required: false
         default: '180'
         type: string
+      runner:
+        description: 'runner label (larger runners are billed even for public repos)'
+        required: false
+        default: ubuntu-latest
+        type: string
 
   workflow_call:
     inputs:
@@ -109,13 +114,18 @@ on:
         required: false
         default: '180'
         type: string
+      runner:
+        description: 'runner label (larger runners are billed)'
+        required: false
+        default: ubuntu-latest
+        type: string
 
 permissions:
   contents: write
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
     timeout-minutes: ${{ fromJSON(inputs.timeout-minutes || '180') }}
 
     steps:
