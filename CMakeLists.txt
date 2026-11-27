@@ -194,7 +194,7 @@ if(WEBLOX_ENGINE_MODE STREQUAL "source")
   add_library(wc_generated STATIC ${GENERATED_C})
   target_include_directories(wc_generated PRIVATE
     "${ENGINE_SRC}" "${WABT_DIR}" "${SIMDE_DIR}")
-  target_compile_options(wc_generated PRIVATE -w "-ivfsoverlay ${ATOMIC_OVERLAY}")
+  target_compile_options(wc_generated PRIVATE -w -ivfsoverlay "${ATOMIC_OVERLAY}")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -242,16 +242,26 @@ elseif(WIN32)
   add_custom_command(TARGET weblox POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different
       "${ENGINE_SRC}/${ENGINE_SHARED}" "$<TARGET_FILE_DIR:weblox>/${ENGINE_SHARED}")
+elseif(APPLE)
+  # Apple's linker does not accept -l:filename.  The published dylib also has
+  # an absolute install name, so rewrite a local copy to @rpath.
+  set(ENGINE_RUNTIME "${CMAKE_CURRENT_BINARY_DIR}/${ENGINE_SHARED}")
+  configure_file("${ENGINE_SRC}/${ENGINE_SHARED}" "${ENGINE_RUNTIME}" COPYONLY)
+  find_program(INSTALL_NAME_TOOL install_name_tool REQUIRED)
+  execute_process(
+    COMMAND "${INSTALL_NAME_TOOL}" -id "@rpath/${ENGINE_SHARED}" "${ENGINE_RUNTIME}"
+    RESULT_VARIABLE rc)
+  if(NOT rc EQUAL 0)
+    message(FATAL_ERROR "install_name_tool failed")
+  endif()
+  target_link_libraries(weblox PRIVATE "${ENGINE_RUNTIME}")
+  set_target_properties(weblox PROPERTIES BUILD_RPATH "@loader_path")
 else()
-  # No SONAME in the published library: link by bare name so DT_NEEDED is a
-  # plain filename resolved through the rpath, not a cwd-relative path.
+  # No SONAME in the published .so: link by bare name so DT_NEEDED is a plain
+  # filename resolved through the rpath, not a cwd-relative path.
   target_link_directories(weblox PRIVATE "${ENGINE_SRC}")
   target_link_libraries(weblox PRIVATE "-l:${ENGINE_SHARED}")
-  if(APPLE)
-    set_target_properties(weblox PROPERTIES BUILD_RPATH "@loader_path/engine")
-  else()
-    set_target_properties(weblox PROPERTIES BUILD_RPATH "$ORIGIN/engine")
-  endif()
+  set_target_properties(weblox PROPERTIES BUILD_RPATH "$ORIGIN/engine")
 endif()
 
 enable_testing()
