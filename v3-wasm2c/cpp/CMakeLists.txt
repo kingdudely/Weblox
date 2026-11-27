@@ -208,7 +208,7 @@ endif()
 # ---------------------------------------------------------------------------
 find_package(Threads REQUIRED)
 add_executable(weblox
-  host.cpp imports.cpp host_info.cpp loop.cpp platform.cpp mem.c
+  host.cpp imports.cpp asm_const.cpp thread_init.cpp host_info.cpp loop.cpp platform.cpp mem.c
   window.cpp window_sdl.cpp net_stub.cpp net_curl.cpp
   gpu_stub.cpp fiber_stub.cpp fiber_ucontext.cpp fiber_win.cpp)
 target_include_directories(weblox PRIVATE
@@ -220,7 +220,13 @@ if(WIN32)
   target_compile_definitions(weblox PRIVATE _ALLOW_COMPILER_AND_STL_VERSION_MISMATCH)
 endif()
 target_link_libraries(weblox PRIVATE
-  wc_stubs wc_runtime Threads::Threads ${CMAKE_DL_LIBS})
+  wc_stubs Threads::Threads ${CMAKE_DL_LIBS})
+# The Linux .so and macOS .dylib export their own WABT runtime.  Using the
+# host's copy there would split exception/TLS state and crash on wasm throws.
+# The Windows DLL exports only WC.h names, so the host must supply its own.
+if(WIN32)
+  target_link_libraries(weblox PRIVATE wc_runtime)
+endif()
 
 if(WEBLOX_ENGINE_MODE STREQUAL "source")
   target_link_libraries(weblox PRIVATE wc_generated)

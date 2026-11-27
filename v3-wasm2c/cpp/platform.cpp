@@ -13,9 +13,13 @@ std::unordered_map<const volatile void*, std::condition_variable*> g_waiters;
 }
 
 std::uint64_t now_ms() {
+  // performance.now()/emscripten_get_now() are relative to page load.  Using
+  // steady_clock's epoch (system boot) yields huge deltas that overflow the
+  // engine's scheduling arithmetic.
+  static const auto start = std::chrono::steady_clock::now();
   return static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
-          std::chrono::steady_clock::now().time_since_epoch())
+          std::chrono::steady_clock::now() - start)
           .count());
 }
 

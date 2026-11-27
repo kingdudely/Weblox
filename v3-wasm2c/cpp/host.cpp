@@ -22,6 +22,7 @@ extern "C" {
 extern wasm_rt_shared_memory_t g_mem;
 extern struct w2c_env g_env;
 extern struct w2c_wasi__snapshot__preview1 g_wasi;
+w2c_WebClient* g_wc_instance;
 }
 
 int main(int argc, char** argv) {
@@ -29,9 +30,11 @@ int main(int argc, char** argv) {
   (void)argv;
 
   wasm_rt_init();
+  // The browser allocates the module maximum up front and never grows it.
+  // Using the minimum here makes engine atomics outside the first 256 MiB trap.
   wasm_rt_allocate_memory_shared(
       &g_mem,
-      wasm2c_WebClient_min_env_memory,
+      wasm2c_WebClient_max_env_memory,
       wasm2c_WebClient_max_env_memory,
       wasm2c_WebClient_is64_env_memory,
       wasm2c_WebClient_pagesize_env_memory);
@@ -39,6 +42,7 @@ int main(int argc, char** argv) {
   w2c_WebClient inst;
   std::memset(&inst, 0, sizeof inst);
   wasm2c_WebClient_instantiate(&inst, &g_env, &g_wasi);
+  g_wc_instance = &inst;
 
   std::printf("CPP_SMOKE_OK mem=%llu\n",
               static_cast<unsigned long long>(g_mem.size));

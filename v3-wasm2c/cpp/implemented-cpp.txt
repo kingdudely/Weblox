@@ -28,3 +28,8 @@ is_touch_mobile
 is_touch_screen_device
 js_web_client_page_visible
 schedule_main_loop
+emscripten_asm_const_int
+emscripten_asm_const_double
+emscripten_asm_const_int_sync_on_main_thread
+emscripten_asm_const_async_on_main_thread
+0x5Femscripten_init_main_thread_js
