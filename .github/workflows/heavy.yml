@@ -71,6 +71,12 @@ on:
         required: false
         default: ''
         type: string
+      compiler:
+        description: 'C compiler for generated wasm2c code'
+        required: false
+        default: clang
+        type: choice
+        options: [clang, gcc]
 
   workflow_call:
     inputs:
@@ -129,6 +135,11 @@ on:
         required: false
         default: ''
         type: string
+      compiler:
+        description: 'C compiler for generated wasm2c code'
+        required: false
+        default: clang
+        type: string
 
 permissions:
   contents: write
@@ -152,7 +163,15 @@ jobs:
           echo "nproc=$(nproc)" >> "$GITHUB_OUTPUT"
 
       - name: Prepare
-        run: mkdir -p build/ci
+        run: mkdir -p build/ci/ccache
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: build/ci/ccache
+          key: ccache-${{ inputs.task }}-${{ inputs.compiler || 'clang' }}-${{ inputs.opt }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ inputs.task }}-${{ inputs.compiler || 'clang' }}-${{ inputs.opt }}-
 
       - name: Run ${{ inputs.task }}
         id: run
@@ -162,6 +181,7 @@ jobs:
           WC_OPT: ${{ inputs.opt }}
           WC_OUTPUTS: ${{ inputs.outputs }}
           WC_JOBS: ${{ inputs.jobs }}
+          CC: ${{ inputs.compiler || 'clang' }}
           WASM_VERSION: ${{ inputs.wasm-version }}
           WASM_SHA256: ${{ inputs.wasm-sha256 }}
         run: |

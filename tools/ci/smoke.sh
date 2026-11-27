@@ -33,7 +33,7 @@ fi
 
 OUT="$CI_BUILD_DIR/smoke"
 mkdir -p "$OUT"
-CC=${CC:-cc}
+CC=${CC:-$(command -v clang >/dev/null 2>&1 && echo clang || echo cc)}
 INCLUDES="-I$GEN_INCLUDE -I$WABT_INCLUDE"
 [[ -n ${SIMDE_DIR:-} ]] && INCLUDES="$INCLUDES -I$SIMDE_DIR"
 

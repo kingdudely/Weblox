@@ -45,8 +45,19 @@ if [[ ! -f $SIMDE_DIR/simde/wasm/simd128.h ]]; then
 fi
 
 OPT=${WC_OPT:-O0}
+OFLAG="-${OPT#-}"
 JOBS=${WC_JOBS:-$(ci_nproc)}
-CC=${CC:-cc}
+CC=${CC:-${WC_CC:-}}
+if [[ -z $CC ]]; then
+  CC=$(command -v clang >/dev/null 2>&1 && echo clang || echo cc)
+fi
+if command -v ccache >/dev/null 2>&1 && [[ -z ${WC_NO_CCACHE:-} ]]; then
+  export CCACHE_DIR="$CI_BUILD_DIR/ccache"
+  WRAP="$CI_BUILD_DIR/cc-$RANDOM"
+  printf '#!/bin/sh\nexec ccache %s "$@"\n' "$CC" > "$WRAP"
+  chmod +x "$WRAP"
+  CC="$WRAP"
+fi
 CFLAGS="-w -Wno-error=incompatible-pointer-types -Wno-error=int-conversion \
   -Wno-error=pointer-sign -Wno-error=builtin-declaration-mismatch \
   -fno-asynchronous-unwind-tables -fno-stack-protector \
@@ -61,11 +72,11 @@ ci_metric translated_bytes "$(cat "${TRANSLATED[@]}" | wc -c | tr -d ' ')"
 echo "[gen] compiling ${#TRANSLATED[@]} generated units with $JOBS jobs" >&2
 T0=$SECONDS
 export WC_OBJ_DIR="$OBJ" WC_CC_BIN="$CC" WC_GEN_DIR="$GEN" \
-       WC_WABT_INC="$WASM2C_INCLUDE" WC_SIMDE_INC="$SIMDE_DIR"
+       WC_WABT_INC="$WASM2C_INCLUDE" WC_SIMDE_INC="$SIMDE_DIR" WC_OFLAG="$OFLAG"
 printf '%s\n' "${TRANSLATED[@]}" | xargs -P "$JOBS" -I{} sh -c '
   f="$1"
   o="$WC_OBJ_DIR/$(basename "$f" .c).o"
-  [ -f "$o" ] || "$WC_CC_BIN" -c '"$OPT $CFLAGS"' \
+  [ -f "$o" ] || "$WC_CC_BIN" -c '"$WC_OFLAG $CFLAGS"' \
     -I"$WC_GEN_DIR" -I"$WC_WABT_INC" -I"$WC_SIMDE_INC" "$f" -o "$o"
 ' sh {}
 ci_metric compile_secs $((SECONDS - T0))

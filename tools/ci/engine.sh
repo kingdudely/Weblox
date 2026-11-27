@@ -24,9 +24,22 @@ WASM=$(ci_fetch_wasm)
 ci_fetch_wabt
 
 OPT=${WC_OPT:-O1}
+OFLAG="-${OPT#-}"
 OUTPUTS=${WC_OUTPUTS:-512}
 JOBS=${WC_JOBS:-$(ci_nproc)}
-CC=${CC:-${WC_CC:-cc}}
+CC=${CC:-${WC_CC:-}}
+if [[ -z $CC ]]; then
+  CC=$(command -v clang >/dev/null 2>&1 && echo clang || echo cc)
+fi
+# ccache makes recompiles of an unchanged generated tree cheap.  A tiny
+# wrapper keeps CC a single executable so the xargs calls stay quoted.
+if command -v ccache >/dev/null 2>&1 && [[ -z ${WC_NO_CCACHE:-} ]]; then
+  export CCACHE_DIR="$CI_BUILD_DIR/ccache"
+  WRAP="$CI_BUILD_DIR/cc-$RANDOM"
+  printf '#!/bin/sh\nexec ccache %s "$@"\n' "$CC" > "$WRAP"
+  chmod +x "$WRAP"
+  CC="$WRAP"
+fi
 CFLAGS="-w -fno-asynchronous-unwind-tables -fno-stack-protector -DWASM_RT_STACK_DEPTH_COUNT=1"
 [[ ${SIMDE_DIR:-} ]] && CFLAGS="$CFLAGS -I$SIMDE_DIR"
 
@@ -82,11 +95,12 @@ ci_metric translated_bytes "$(cat "${TRANSLATED[@]}" | wc -c | tr -d ' ')"
 
 echo "[engine] compiling ${#TRANSLATED[@]} translation units with $JOBS jobs"
 T0=$SECONDS
-export WC_OBJ_DIR="$OBJ" WC_CC_BIN="$CC" WC_GEN_DIR="$GEN" WC_WABT_INC="$WASM2C_INCLUDE"
+export WC_OBJ_DIR="$OBJ" WC_CC_BIN="$CC" WC_GEN_DIR="$GEN" WC_WABT_INC="$WASM2C_INCLUDE" \
+       WC_OFLAG="$OFLAG"
 printf '%s\n' "${TRANSLATED[@]}" | xargs -P "$JOBS" -I{} sh -c '
   f="$1"
   o="$WC_OBJ_DIR/$(basename "$f" .c).o"
-  [ -f "$o" ] || "$WC_CC_BIN" -c '"$OPT $CFLAGS"' \
+  [ -f "$o" ] || "$WC_CC_BIN" -c '"$WC_OFLAG $CFLAGS"' \
     -I"$WC_GEN_DIR" -I"$WC_WABT_INC" "$f" -o "$o"
 ' sh {}
 ci_metric compile_secs $((SECONDS - T0))

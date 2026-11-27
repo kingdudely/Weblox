@@ -29,7 +29,7 @@ fi
 ci_metric engine_dir "$ENGINE_DIR"
 ci_metric wasm_sha256 "$WASM_SHA256"
 
-CC=${CC:-cc}
+CC=${CC:-$(command -v clang >/dev/null 2>&1 && echo clang || echo cc)}
 CFLAGS="-w -fno-asynchronous-unwind-tables -I$GEN_INCLUDE -I$WABT_INCLUDE"
 HOST_OUT=${WC_HOST_OUT:-"$CI_BUILD_DIR/host/weblox"}
 mkdir -p "$(dirname "$HOST_OUT")" "$CI_BUILD_DIR/host/obj"
