@@ -47,7 +47,10 @@ fi
 OPT=${WC_OPT:-O0}
 JOBS=${WC_JOBS:-$(ci_nproc)}
 CC=${CC:-cc}
-CFLAGS="-w -fno-asynchronous-unwind-tables -fno-stack-protector -I$GEN -I$WASM2C_INCLUDE -I$SIMDE_DIR"
+CFLAGS="-w -Wno-error=incompatible-pointer-types -Wno-error=int-conversion \
+  -Wno-error=pointer-sign -Wno-error=builtin-declaration-mismatch \
+  -fno-asynchronous-unwind-tables -fno-stack-protector \
+  -I$GEN -I$WASM2C_INCLUDE -I$SIMDE_DIR"
 
 TRANSLATED=()
 while IFS= read -r f; do TRANSLATED+=("$f"); done < <(find "$GEN" -maxdepth 1 -name 'WC_*.c' -print | sort)
