@@ -12,6 +12,13 @@ mem.h/.c       C shim for guest memory (C11 _Atomic is not usable from C++)
 platform.h     std::chrono / std::thread / std::condition_variable services
 imports.cpp    core imports (console/clock/random/WASI)
 host_info.cpp  host identity, canvas, DPR and device queries
+asm_const.cpp  EM_ASM closure dispatch (page-side keys)
+thread_init.cpp main-thread TLS/thread setup
+loop.cpp       event-loop inversion with wasm exception guards
+fiber_impl.cpp, thread_host.cpp, futex_host.cpp, mailbox.cpp, deferred.cpp
+               JSPI fibers, pthreads, futexes and the deferred queue
+fetch_curl.cpp, http_fetch.cpp, fs_cache.cpp
+               libcurl HTTP/fetch and the local content cache (optional)
 implemented-cpp.txt  imports this host implements; all others get stubs
 window.h       window/input abstraction; window_sdl.cpp is the SDL3 opt-in
 net.h          HTTP abstraction; net_curl.cpp is the curl opt-in
@@ -46,7 +53,8 @@ abi/           WABT 1.0.42 runtime headers and sources (exact engine ABI)
 ## Build
 
 Prerequisites: stock CMake >= 3.20 and the `zstd` CLI. No CMake upgrade is
-needed.
+needed. libcurl is optional: when found, the HTTP/fetch imports are real; when
+absent they remain generated no-ops and the join path is unavailable.
 
 ```sh
 cmake -S v3-wasm2c/cpp -B build/cpp

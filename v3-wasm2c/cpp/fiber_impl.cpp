@@ -17,6 +17,12 @@
 // saved per slot and restored on every switch, so an exception thrown in one
 // fibre never longjmps into a different fibre's stack.
 
+// macOS hides the ucontext API unless XOPEN is requested, and the feature
+// macro must be set before any system header is included.
+#if !defined(_WIN32) && !defined(_XOPEN_SOURCE)
+#define _XOPEN_SOURCE 700
+#endif
+
 #include "cpp_compat.h"
 extern "C" {
 #include "WC.h"
@@ -139,7 +145,8 @@ void platform_capture(Slot& s) {
 // Build the initial context of a new guest fibre in its slot.
 void platform_start(Slot& s, Fib& f) {
 #if defined(_WIN32)
-  f.fiber = CreateFiber(k_FIB_STACK, &fiber_trampoline, f);
+  f.fiber = CreateFiber(k_FIB_STACK, fiber_trampoline,
+                        reinterpret_cast<LPVOID>(&f));
   s.resume = f.fiber;
 #else
   getcontext(&s.ctx);
