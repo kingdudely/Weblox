@@ -88,7 +88,15 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p build/cpp
-          cmake -G Ninja -S v3-wasm2c/cpp -B build/cpp -DCMAKE_BUILD_TYPE=Release 2>&1 | tee build/cpp/configure.log
+          # The published Windows DLL exports only WC.h names; the generated C
+          # calls WABT runtime symbols that are not in that export table, so
+          # instantiation faults.  Build the pinned generated C on Windows
+          # instead (the portable fallback); Linux/macOS use the fast .so/.dylib.
+          mode=prebuilt
+          [ "$RUNNER_OS" = Windows ] && mode=source
+          cmake -G Ninja -S v3-wasm2c/cpp -B build/cpp \
+            -DCMAKE_BUILD_TYPE=Release -DWEBLOX_ENGINE_MODE="$mode" \
+            2>&1 | tee build/cpp/configure.log
 
       - name: Build
         run: |
