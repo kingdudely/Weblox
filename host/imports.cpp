@@ -3950,6 +3950,7 @@ extern "C" void wasm_import_337___call_sighandler(void* vmctx, void* caller_vmct
 // ---------------------------------------------------------------------------
 // Kept in the preserved region (the includes above are regenerated).
 #include "vmctx.h"
+#include "fiber.h"
 #include <csignal>
 #include <setjmp.h>
 
@@ -4755,26 +4756,19 @@ extern "C" double wasm_import_004_emscripten_get_now(void* vmctx, void* caller_v
   return wb::steady_ms();
 }
 
-// slot 5: Atomics.waitAsync -- non-blocking main-thread polling -------------
+// slot 5: Atomics.waitAsync -- JSPI-style suspend/resume -------------------
 //
 // In a browser, JSPI suspends this wasm call and immediately returns control
-// to the page's event loop; the main thread never blocks on the futex.  This
-// host has no fibre/promise pump, so blocking here (even with a 30 s hard
-// stop) stalls the very loop that drives main_loop_iteration and delivers
-// native RNA completions.  Emulate the browser's contract honestly instead:
-// report "not-equal" when the word already changed, otherwise give a notifier
-// ONE bounded short slice to land and then report "timed-out" so control
-// returns to the guest turn.  This necessarily produces far more 2
-// (timed-out) returns than a real JSPI host, and an unbounded (a3=inf) guest
-// wait now retries from the guest instead of being suspended; both are
-// documented in host/JSPI.md with the measured log evidence.
+// to the page event loop; the main thread never blocks on the futex.  With
+// the native fibre installed by host/fiber.cpp the guest turn is parked on
+// its own ucontext stack: yield() hands control to the driver, which pumps
+// RNA completions and resumes the very same call.  On resume the guest word
+// and the futex notify state are re-checked before returning 0/1/2.  Before
+// the driver exists (ctors / smoke paths) the old bounded 2 ms slice is kept.
 extern "C" int32_t wasm_import_005___asyncjs__rbxFutexWaitMainJspi(
     void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2, double a3) {
   WB_TRACE_IMPORT(5);
   (void)caller_vmctx;
-  (void)a3;  // no native wait may outlive one bounded slice
-  if (wb::g_guest_tick) wb::g_guest_tick(vmctx);
-  wb::mailbox_drain_if_pending(vmctx);
   const uint32_t addr = static_cast<uint32_t>(a1);
   const uint32_t expected = static_cast<uint32_t>(a2);
   const uint8_t* word = wb::mem_ptr(addr, 4);
@@ -4783,30 +4777,58 @@ extern "C" int32_t wasm_import_005___asyncjs__rbxFutexWaitMainJspi(
   std::memcpy(&cur, word, 4);
   if (cur != expected) return 1;  // not-equal
 
-  // Bounded HOST_TRACE counter: this slot is the only place a guest can turn
-  // one timeout into an unbounded retry loop, so make that visible.
+  // Bounded HOST_TRACE counter: every suspension is visible, but the log
+  // stays small even if the guest re-arms the same unbounded wait.
   static std::atomic<uint32_t> s_calls{0};
   const uint32_t call_no = ++s_calls;
-  if (wb::trace_enabled() && (call_no <= 12 || call_no % 1000 == 0)) {
-    std::fprintf(stderr, "[futex] call=%u addr=%#x exp=%#x a3=%g cur=%#x\n",
-                 call_no, addr, expected, a3, cur);
+  const bool fibered = weblox::fiber::enabled();
+  if (wb::trace_enabled() &&
+      (call_no <= 12 || call_no % 1000 == 0 || (call_no % 1000 == 1 && call_no > 1))) {
+    std::fprintf(stderr,
+                 "[futex] call=%u addr=%#x exp=%#x a3=%g cur=%#x fibered=%d\n",
+                 call_no, addr, expected, a3, cur, fibered ? 1 : 0);
     std::fflush(stderr);
   }
-  wb::note_once("[futex] main-thread waitAsync polled (no JSPI fibre)");
+
   const auto w = wb::waiter_for(addr);
+
+  if (!fibered) {
+    // Boot-time fallback: no driver/fibre yet (ctors, selftest).  Keep the
+    // non-blocking bounded slice from feat/cpp-jspi; never spin here.
+    (void)a3;
+    if (wb::g_guest_tick) wb::g_guest_tick(vmctx);
+    wb::mailbox_drain_if_pending(vmctx);
+    wb::note_once("[futex] main-thread waitAsync polled (no JSPI fibre)");
+    bool woke = false;
+    {
+      std::unique_lock<std::mutex> lock(w->m);
+      w->cv.wait_until(lock,
+                       std::chrono::steady_clock::now() + std::chrono::milliseconds(2),
+                       [&] { return w->signaled; });
+      woke = w->signaled;
+      w->signaled = false;
+    }
+    return woke ? 0 : 2;
+  }
+
+  // JSPI path: park the wasm call on the fibre.  yield() returns only after
+  // the driver resumes this exact call; re-check the guest word then.
+  wb::note_once("[futex] main-thread waitAsync suspended on native fibre");
+  weblox::fiber::yield();
+
+  word = wb::mem_ptr(addr, 4);
+  if (!word) return 1;
+  std::memcpy(&cur, word, 4);
+  if (cur != expected) return 1;  // not-equal: completion changed the word
+
   bool woke = false;
   {
-    std::unique_lock<std::mutex> lock(w->m);
-    // One bounded slice is enough for an already-running notifier to land;
-    // never loop, and never wait on a guest's unbounded (a3) timeout here.
-    w->cv.wait_until(lock,
-                     std::chrono::steady_clock::now() + std::chrono::milliseconds(2),
-                     [&] { return w->signaled; });
-    woke = w->signaled;
+    std::lock_guard<std::mutex> lock(w->m);
+    woke = w->signaled;  // guest memory.atomic.notify / mailbox ring
     w->signaled = false;
   }
-  if (woke) return 0;  // ok/woken (notify may arrive without a word change)
-  return 2;            // timed-out: hand control back to the guest turn
+  if (woke || weblox::fiber::woken()) return 0;  // ok/woken
+  return 2;                                       // timed-out for this slice
 }
 
 // slots 6 / 7 / 13 / 53: EM_ASM key decoding -------------------------------

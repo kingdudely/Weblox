@@ -59,7 +59,11 @@ runtime_data.cpp runtime_data.h: gen_runtime_data.py $(WC_WASM)
 # The join driver in main.cpp owns the deadline loop; route its
 # main_loop_iteration calls through host/loop.cpp's drain hook without
 # modifying that read-only file.
-WRAPFLAGS ?= -Wl,--wrap=_wasm_function_176
+# The bounded turn driver in loop.cpp is read-only.  fiber.cpp installs a
+# JSPI-style native-fibre driver by wrapping the mangled weblox::run_loop
+# symbol; the _wasm_function_176 hook in loop.cpp itself stays in place.
+WRAP_RUN_LOOP = _ZN6weblox8run_loopERN4host9HostStateENSt6chrono10time_pointINS3_3_V212steady_clockENS3_8durationIlSt5ratioILl1ELl1000000000EEEEEERKSt8functionIFivEEPNS_9RnaBridgeERm
+WRAPFLAGS ?= -Wl,--wrap=_wasm_function_176 -Wl,--wrap=$(WRAP_RUN_LOOP)
 
 # The callee-pop thunk table is derived from the import signatures; it is
 # generated at build time and intentionally not checked in (host/ABI.md).
@@ -67,15 +71,15 @@ abi_stubs.S: gen_imports.py $(WC_WASM) $(REPO_ROOT)/docs/imports-wasm.json
 	python3 gen_imports.py --wasm $(WC_WASM) --docs $(REPO_ROOT)/docs/imports-wasm.json \
 		--out-dir . --stubs-only
 
-demo: main.cpp vmctx.cpp unwind.cpp imports.cpp loop.cpp pthread_start.cpp rna_bridge.cpp \
+demo: main.cpp vmctx.cpp unwind.cpp imports.cpp loop.cpp fiber.cpp pthread_start.cpp rna_bridge.cpp \
       wt.cpp route.cpp prepare.cpp runtime_data.cpp table.cpp abi_stubs.S \
-      vmctx.h unwind.h imports.h pthread_start.h rna_bridge.h wt.h route.h prepare.h \
+      vmctx.h unwind.h imports.h fiber.h pthread_start.h rna_bridge.h wt.h route.h prepare.h \
       vmctx_offsets.h runtime_data.h table.h
 	@if [ ! -f "$(WC_OBJ)" ]; then \
 	  echo "Makefile: $(WC_OBJ) missing; run 'make obj' or host/build_all.sh" >&2; \
 	  exit 1; \
 	fi
-	$(CXX) $(CXXFLAGS) -o $@ main.cpp vmctx.cpp unwind.cpp imports.cpp loop.cpp \
+	$(CXX) $(CXXFLAGS) -o $@ main.cpp vmctx.cpp unwind.cpp imports.cpp loop.cpp fiber.cpp \
 		pthread_start.cpp rna_bridge.cpp wt.cpp route.cpp prepare.cpp \
 		runtime_data.cpp table.cpp abi_stubs.S $(WC_OBJ) $(WRAPFLAGS) $(LDFLAGS)
 
