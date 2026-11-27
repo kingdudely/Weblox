@@ -145,11 +145,11 @@ jobs:
           WASM_SHA256: ${{ inputs.wasm-sha256 }}
         run: |
           set -euo pipefail
-          if [ "$TASK" = custom ]; then
-            script="$SCRIPT"
-          else
-            script="tools/ci/$TASK.sh"
-          fi
+          case "$TASK" in
+            custom) script="$SCRIPT" ;;
+            wabt-wasm2c) script="tools/ci/engine.sh" ;;
+            *) script="tools/ci/$TASK.sh" ;;
+          esac
           [ -n "$script" ] && [ -f "$script" ] || { echo "missing script: $script" >&2; exit 2; }
           echo "script=$script" >> "$GITHUB_OUTPUT"
           if [ -x /usr/bin/time ]; then
