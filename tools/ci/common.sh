@@ -145,6 +145,8 @@ ci_fetch_wabt() {
       "wabt-$WABT_VERSION-$plat.tar.gz"
       "wabt-$WABT_VERSION-ubuntu-20.04.tar.gz"
       "wabt-$WABT_VERSION-ubuntu-22.04.tar.gz"
+      "wabt-$WABT_VERSION-macos-arm64.tar.gz"
+      "wabt-$WABT_VERSION-macos-x64.tar.gz"
       "wabt-$WABT_VERSION-macos-14.tar.gz"
       "wabt-$WABT_VERSION-macos-12.tar.gz"
       "wabt-$WABT_VERSION-macos-13.tar.gz"
