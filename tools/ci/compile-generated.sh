@@ -77,7 +77,8 @@ if [[ $CC_BASE == *clang* ]]; then
     echo '#include "wasm-rt.h"'
     echo '#include "wasm-rt-exceptions.h"'
     echo '#include "WC.h"'
-    echo '#include "WC-impl.h"'
+    # WC-impl.h has no include guard: each generated TU includes it itself,
+    # so putting it in the PCH would cause redefinitions.
   } > "$PRE"
   if "$CC_BASE" -x c-header $CFLAGS "$PRE" -o "$GEN/weblox-pre.h.pch" 2>/dev/null; then
     PCH_FLAGS="-include-pch $GEN/weblox-pre.h.pch"
