@@ -8,15 +8,20 @@ CMake (3.20+), Python 3, `zstd` and a C11 compiler.
 Portability gate for the host. Runs on `workflow_dispatch`, `workflow_call`,
 and pushes to `host-c` that touch CMake sources, `cmake/`, `deps/`, `src/`,
 `tools/` or the workflow itself. Permissions are read-only and runs for the
-same ref are serialized with cancellation of older runs.
+same ref are serialized without cancelling a running matrix: new pushes queue
+instead of killing the current run.
 
 A Linux/macOS/Windows matrix (`fail-fast: false`, `bash` shell) verifies the
-toolchain (installing `zstd` when absent, checking CMake >= 3.20), then runs
-configure, build and `ctest` as separate steps. Each step tees its output into
+toolchain (installing `zstd` only when absent, checking CMake >= 3.20), then
+runs configure, build and `ctest` as separate steps. No distro packages are
+installed for libraries: `cmake/Dependencies.cmake` builds pinned curl and SDL3
+source tarballs when system packages are unavailable. Each step tees its output into
 `ci-logs/`; the logs are uploaded as an artifact on failure. Windows configures
 with `-DWEBLOX_ENGINE_MODE=source`, because the Windows DLL has no `wasm_rt_*`
-exports; Linux and macOS consume the prebuilt engine bundle. A passing test
-prints `SMOKE_OK`.
+exports; Linux and macOS consume the prebuilt engine bundle. Source mode
+compiles the generated C at `WEBLOX_ENGINE_OPT=O0` (default) so the validation
+build stays fast; shipped bundles are built at O3 by `build-engine.yml`. A
+passing test prints `SMOKE_OK`.
 
 ## `build-engine.yml`
 
@@ -43,7 +48,8 @@ downloads will fail hash verification.
 `deps/pins.env` is the single source of truth for every download. CMake reads
 `WASM_VERSION`, `ENGINE_LINUX_SHA256`, `ENGINE_MACOS_SHA256`,
 `ENGINE_WINDOWS_SHA256`, `WC_H_SHA256`, `GENERATED_C_SHA256`, `SIMDE_SHA256`
-and `WABT_SOURCE_SHA256`. `cmake/FetchAsset.cmake` passes each hash to
+and `WABT_SOURCE_SHA256`, `CURL_SHA256`, `SDL3_SHA256`, `YYJSON_SHA256` and
+`MINICORO_SHA256`. `cmake/FetchAsset.cmake` passes each hash to
 `file(DOWNLOAD ... EXPECTED_HASH SHA256=...)`, so a tampered or stale asset is
 rejected before it is unpacked. `build-engine.yml` applies the same rule to
 the generated-C bundle and SIMDE tarball with an explicit SHA-256 check before
