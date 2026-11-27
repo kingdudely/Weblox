@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::ffi::{c_void, CString};
 use std::sync::Mutex;
-use wasmtime::{AsContext, AsContextMut, StoreContextMut};
+use wasmtime::StoreContextMut;
 
 use khronos_egl as egl;
 use x11_dl::xlib;
@@ -39,6 +39,10 @@ struct Gfx {
     px: i32,
     py: i32,
     wm_delete: xlib::Atom,
+    /// The X window's real visual/screen: wgpu's Vulkan Xlib surface needs the
+    /// visual id that matches the window's depth, not a guessed zero.
+    visual: u32,
+    screen: i32,
 }
 
 unsafe impl Send for Gfx {}
@@ -67,15 +71,21 @@ pub fn handles() -> Option<(*mut c_void, u64)> {
     g.as_ref().map(|g| (g.dpy as *mut c_void, g.win as u64))
 }
 
+/// (display, window, visual id, screen) for creating a native Vulkan surface.
+pub fn handles_ex() -> Option<(*mut c_void, u64, u32, i32)> {
+    let g = GFX.lock().unwrap();
+    g.as_ref().map(|g| (g.dpy as *mut c_void, g.win as u64, g.visual, g.screen))
+}
+
 pub fn block<F: std::future::Future>(f: F) -> F::Output { pollster_block(f) }
 
-fn wgpu_probe(g: &Gfx, screen: i32) {
+fn wgpu_probe(g: &Gfx) {
     use raw_window_handle::{RawDisplayHandle, RawWindowHandle, XlibDisplayHandle, XlibWindowHandle};
     let inst = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let mut wh = XlibWindowHandle::new(g.win);
-    wh.visual_id = 0;
+    wh.visual_id = g.visual as u64;
     let raw = RawWindowHandle::Xlib(wh);
-    let disp = RawDisplayHandle::Xlib(XlibDisplayHandle::new(std::ptr::NonNull::new(g.dpy as *mut _), screen));
+    let disp = RawDisplayHandle::Xlib(XlibDisplayHandle::new(std::ptr::NonNull::new(g.dpy as *mut _), g.screen));
     let surf = unsafe {
         inst.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
             raw_window_handle: raw,
@@ -149,6 +159,14 @@ unsafe fn open() -> Result<(), String> {
     (xlib.XMapWindow)(dpy, win);
     (xlib.XFlush)(dpy);
 
+    // Query the real visual: the Vulkan Xlib surface must match the window.
+    let mut attrs: xlib::XWindowAttributes = std::mem::zeroed();
+    let visual = if (xlib.XGetWindowAttributes)(dpy, win, &mut attrs) != 0 && !attrs.visual.is_null() {
+        unsafe { (*attrs.visual).visualid as u32 }
+    } else {
+        0
+    };
+
     let lib = libloading::Library::new("libEGL.so.1").map_err(|e| format!("libEGL: {e}"))?;
     let egl = egl::DynamicInstance::<egl::EGL1_5>::load_required_from(lib)
         .map_err(|e| format!("egl load: {e:?}"))?;
@@ -207,9 +225,10 @@ unsafe fn open() -> Result<(), String> {
     let mut gfx = Gfx {
         xlib, dpy, win, egl, edpy, surface, ctx, cfg,
         procs: HashMap::new(), maps: HashMap::new(), w: W, h: H, px: 0, py: 0, wm_delete,
+        visual, screen,
     };
     if std::env::var_os("WC_GFXPROBE").is_some() {
-        wgpu_probe(&gfx, screen);
+        wgpu_probe(&gfx);
     }
     let ver = gfx.gl_get(gl::VERSION);
     eprintln!("[gfx ] {} | {}", ver, gfx.gl_get(gl::RENDERER));
@@ -283,8 +302,64 @@ fn g_free(st: &mut StoreContextMut<'_, crate::state::St>, p: u32) {
     }
 }
 
-/// Raw call: args are already marshalled as 64-bit words, one per wasm param.
+/// Which arguments of an import are guest pointers (i32 offsets into linear
+/// memory).  Wasmtime's shared memory is an ordinary host allocation: an i32
+/// guest offset is *not* a host address, so every pointer argument must be
+/// translated before it reaches GLES.  Pointer 0 stays NULL.
+fn ptr_args(name: &str) -> &'static [usize] {
+    match name {
+        "glGetUniformLocation" | "glGetUniformBlockIndex" | "glGetIntegerv"
+        | "glDrawBuffers" | "glGenFramebuffers" | "glGenVertexArrays" | "glGenBuffers"
+        | "glGenTextures" | "glGenRenderbuffers" => &[1],
+        "glInvalidateFramebuffer" | "glClearBufferfv" | "glClearBufferiv"
+        | "glGetProgramiv" | "glGetShaderiv" | "glBindAttribLocation"
+        | "glBufferData" | "glTexParameterfv" => &[2],
+        "glShaderSource" | "glGetProgramInfoLog" | "glGetShaderInfoLog" => &[2, 3],
+        "glBufferSubData" | "glGetActiveUniformBlockiv" => &[3],
+        "glGetActiveUniform" => &[3, 4, 5, 6],
+        // glDrawElements / glVertexAttribPointer pass byte offsets into bound
+        // buffers, not client addresses: leave those words untouched.
+        "glTexImage2D" | "glTexSubImage2D" | "glCompressedTexImage2D"
+        | "glCompressedTexSubImage2D" => &[8],
+        "glTexImage3D" | "glCompressedTexImage3D" => &[9],
+        "glTexSubImage3D" | "glCompressedTexSubImage3D" => &[10],
+        "glReadPixels" => &[6],
+        _ => &[],
+    }
+}
+
+/// Guest offset -> host address inside the shared wasm memory.
+fn guest(st: &mut StoreContextMut<'_, crate::state::St>, off: u32) -> u64 {
+    if off == 0 {
+        return 0;
+    }
+    let d = st.data().mem.data();
+    if off as usize >= d.len() {
+        eprintln!("[gfx ] guest pointer {off:#x} out of range");
+        return 0;
+    }
+    d.as_ptr() as u64 + off as u64
+}
+
+/// Call one of the 103 GL imports.  `args` are the raw wasm words: i32 (and
+/// f32 bits) in the low half of each u64.
 pub fn call(name: &str, args: &[u64], st: &mut StoreContextMut<'_, crate::state::St>) -> u64 {
+    let mut a = [0u64; 12];
+    for (i, v) in args.iter().take(12).enumerate() {
+        a[i] = *v;
+    }
+    for &i in ptr_args(name) {
+        if i < 12 {
+            a[i] = guest(st, args.get(i).copied().unwrap_or(0) as u32);
+        }
+    }
+    call_raw(name, &a[..args.len().min(12)], st)
+}
+
+/// Dispatch with arguments that are already host addresses.  Use this only
+/// for calls made by the host itself (e.g. the glGetStringi enumeration);
+/// guest-originated calls must go through `call` so their pointers are mapped.
+pub fn call_raw(name: &str, args: &[u64], st: &mut StoreContextMut<'_, crate::state::St>) -> u64 {
     make_current();
     let mut g = GFX.lock().unwrap();
     let Some(g) = &mut *g else { return 0 };
@@ -293,6 +368,67 @@ pub fn call(name: &str, args: &[u64], st: &mut StoreContextMut<'_, crate::state:
         return 0;
     };
     let f = unsafe { std::mem::transmute::<usize, extern "system" fn(u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64) -> u64>(p) };
+
+    // Floats travel in XMM registers on x86-64; the generic u64/u64 dispatcher
+    // would put them in GPRs and the driver would read garbage.  Use typed
+    // entry points for every float-taking import.
+    let fl = |i: usize| f32::from_bits(args.get(i).copied().unwrap_or(0) as u32);
+    match name {
+        "glPolygonOffset" => {
+            let f: extern "system" fn(f32, f32) = unsafe { std::mem::transmute(p) };
+            f(fl(0), fl(1));
+            return 0;
+        }
+        "glClearColor" => {
+            let f: extern "system" fn(f32, f32, f32, f32) = unsafe { std::mem::transmute(p) };
+            f(fl(0), fl(1), fl(2), fl(3));
+            return 0;
+        }
+        "glClearDepthf" => {
+            let f: extern "system" fn(f32) = unsafe { std::mem::transmute(p) };
+            f(fl(0));
+            return 0;
+        }
+        "glClearBufferfi" => {
+            let f: extern "system" fn(u32, i32, f32, i32) = unsafe { std::mem::transmute(p) };
+            f(args[0] as u32, args[1] as i32, fl(2), args[3] as i32);
+            return 0;
+        }
+        "glTexParameterf" => {
+            let f: extern "system" fn(u32, u32, f32) = unsafe { std::mem::transmute(p) };
+            f(args[0] as u32, args[1] as u32, fl(2));
+            return 0;
+        }
+        _ => {}
+    }
+
+    // GLES reads an array of char* here, not an array of guest offsets: the
+    // inner offsets need a second translation pass.
+    if name == "glShaderSource" {
+        let count = args.get(1).copied().unwrap_or(0) as usize;
+        let list = args.get(2).copied().unwrap_or(0) as *const u32;
+        let lens = args.get(3).copied().unwrap_or(0) as *const i32;
+        if !list.is_null() {
+            let d = st.data().mem.data();
+            let mut owned: Vec<CString> = Vec::with_capacity(count);
+            for i in 0..count {
+                let off = unsafe { *list.add(i) } as usize;
+                let n = if lens.is_null() { usize::MAX } else { unsafe { *lens.add(i) }.max(0) as usize };
+                let mut end = off;
+                while end < d.len() && end - off < n {
+                    if unsafe { *d[end].get() } == 0 { break }
+                    end += 1;
+                }
+                let bytes: Vec<u8> = (off..end.min(d.len())).map(|k| unsafe { *d[k].get() }).collect();
+                owned.push(CString::new(bytes).unwrap_or_default());
+            }
+            let mut ptrs: Vec<*const std::ffi::c_char> = owned.iter().map(|s| s.as_ptr()).collect();
+            let source: extern "system" fn(u32, i32, *const *const std::ffi::c_char, *const i32) =
+                unsafe { std::mem::transmute(p) };
+            source(args[0] as u32, count as i32, ptrs.as_ptr(), lens);
+            return 0;
+        }
+    }
 
     // map/unmap need the guest buffer on both sides
     if name == "glMapBufferRange" {
@@ -338,6 +474,18 @@ pub fn call(name: &str, args: &[u64], st: &mut StoreContextMut<'_, crate::state:
         args.get(10).copied().unwrap_or(0),
         args.get(11).copied().unwrap_or(0),
     )
+}
+
+/// Real GL integer parameter (host-side query, no guest pointer involved).
+pub fn gl_int(pname: u32) -> i32 {
+    make_current();
+    let mut g = GFX.lock().unwrap();
+    let Some(g) = &mut *g else { return 0 };
+    let Some(p) = g.proc("glGetIntegerv") else { return 0 };
+    let f: extern "system" fn(u32, *mut i32) = unsafe { std::mem::transmute(p) };
+    let mut out = 0i32;
+    f(pname, &mut out);
+    out
 }
 
 /// Guest pointer to a NUL-terminated copy of `s` (glGetString).
@@ -494,4 +642,56 @@ fn keysym_name(ks: xlib::KeySym) -> (String, String, u32, u32) {
 pub fn size() -> (i32, i32) {
     let g = GFX.lock().unwrap();
     g.as_ref().map(|g| (g.w, g.h)).unwrap_or((W, H))
+}
+
+/// Host-side GLES smoke test: typed float call + clear + glGetError.
+pub fn gl_selftest() -> Result<String, String> {
+    make_current();
+    let mut g = GFX.lock().unwrap();
+    let g = g.as_mut().ok_or("no EGL context")?;
+    let p = g.proc("glClearColor").ok_or("no glClearColor")?;
+    let clear_color: extern "system" fn(f32, f32, f32, f32) = unsafe { std::mem::transmute(p) };
+    clear_color(0.1, 0.2, 0.3, 1.0);
+    let p = g.proc("glClear").ok_or("no glClear")?;
+    let clear: extern "system" fn(u32) = unsafe { std::mem::transmute(p) };
+    clear(0x4000); // GL_COLOR_BUFFER_BIT
+    let p = g.proc("glGetError").ok_or("no glGetError")?;
+    let get_error: extern "system" fn() -> u32 = unsafe { std::mem::transmute(p) };
+    let err = get_error();
+    if err != 0 {
+        return Err(format!("glGetError={err:#x}"));
+    }
+    Ok(format!("{} | {}", g.gl_get(gl::VERSION), g.gl_get(gl::RENDERER)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ensure, gl_selftest};
+
+    #[test]
+    fn gl_context() {
+        if std::env::var_os("DISPLAY").is_none() {
+            eprintln!("[selftest] no DISPLAY; skipped");
+            return;
+        }
+        ensure().expect("EGL context");
+        match gl_selftest() {
+            Ok(s) => eprintln!("[selftest] GL PASS {s}"),
+            Err(e) => eprintln!("[selftest] GL FAIL {e}"),
+        }
+    }
+
+    /// Native GPU smoke test: adapter, device, surface configure, clear, submit,
+    /// present.  No wasm module, wasmtime store or game client is involved.
+    #[test]
+    fn gpu_selftest() {
+        if std::env::var_os("DISPLAY").is_none() {
+            eprintln!("[selftest] no DISPLAY; skipped");
+            return;
+        }
+        match crate::imports::webgpu::selftest() {
+            Ok(s) => eprintln!("[selftest] PASS {s}"),
+            Err(e) => eprintln!("[selftest] FAIL {e}"),
+        }
+    }
 }

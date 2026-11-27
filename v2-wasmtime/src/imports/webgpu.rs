@@ -7,9 +7,9 @@
 //! guest buffers because WebGPU hands JS a new ArrayBuffer.
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
 
-use wasmtime::{AsContextMut, Caller, FuncType, Linker, Val, ValType};
+use wasmtime::{Caller, Linker, ValType};
 
 use crate::imports::wgt;
 use crate::state::St;
@@ -58,7 +58,9 @@ struct Gpu {
 static GPU: Mutex<Option<Gpu>> = Mutex::new(None);
 unsafe impl Send for Obj {}
 unsafe impl Sync for Obj {}
-static NEXT: AtomicU32 = AtomicU32::new(0x1000);
+// Synthetic handles live above the guest heap so they can never be mistaken
+// for the C++ wrapper pointers the engine passes back as `out` parameters.
+static NEXT: AtomicU32 = AtomicU32::new(0x7000_0000);
 static INIT: Mutex<()> = Mutex::new(());
 
 fn with<R>(f: impl FnOnce(&mut Gpu) -> R) -> R {
@@ -196,15 +198,15 @@ fn ensure() -> bool {
         eprintln!("[wgpu] window: {e}");
         return false;
     }
-    let (dpy, win) = match crate::gfx::handles() {
+    let (dpy, win, visual, screen) = match crate::gfx::handles_ex() {
         Some(v) => v,
         None => return false,
     };
     use raw_window_handle::{RawDisplayHandle, RawWindowHandle, XlibDisplayHandle, XlibWindowHandle};
     let inst = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-    let mut wh = XlibWindowHandle::new(win);
-    wh.visual_id = 0;
-    let dh = XlibDisplayHandle::new(std::ptr::NonNull::new(dpy as *mut _), 0);
+    let mut wh = XlibWindowHandle::new(win as std::os::raw::c_ulong);
+    wh.visual_id = visual as std::os::raw::c_ulong;
+    let dh = XlibDisplayHandle::new(std::ptr::NonNull::new(dpy as *mut _), screen);
     let surface = unsafe {
         inst.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
             raw_window_handle: RawWindowHandle::Xlib(wh),
@@ -262,8 +264,14 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
         if raw == 0 { return 0 }
         let st = crate::fibre::store_ptr();
         let w = unsafe { wrapper(&mut *st, "emwgpuCreateDevice") };
-        if w != 0 { if let Some(o) = take(raw) { put_at(w, o) } }
-        w as i32
+        if w != 0 {
+            if let Some(o) = take(raw) { put_at(w, o) }
+            w as i32
+        } else {
+            // No guest wrapper export in this build: hand the engine one of
+            // our own out-of-heap handles instead of failing the device.
+            raw as i32
+        }
     })?;
     l.func_wrap("env", "emwgpuGetPreferredFormat", || -> i32 {
         with(|g| g.format) as i32
@@ -297,7 +305,8 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
             let _ = dev;
             let Some(device) = g.device.clone() else { return };
             let Some(Obj::Surface(s)) = g.objs.get(&(s as u32)) else { return };
-            let caps = s.get_capabilities(&g.adapter.as_ref().unwrap());
+            let Some(adapter) = g.adapter.as_ref() else { return };
+            let caps = s.get_capabilities(adapter);
             let format = wgt::tex_format(fmt).filter(|f| caps.formats.contains(f))
                 .or_else(|| caps.formats.first().copied()).unwrap_or(wgpu::TextureFormat::Bgra8Unorm);
             if w != 0 { g.size.0 = w }
@@ -973,7 +982,20 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
 
     f!("wgpuCommandEncoderPushDebugGroup", (_e: i32, _g: i32), (), |_st: &mut wasmtime::Store<St>, _m: M<'_>| {});
     f!("wgpuCommandEncoderPopDebugGroup", (_e: i32), (), |_st: &mut wasmtime::Store<St>, _m: M<'_>| {});
-    f!("wgpuQueueSubmit", (_q: i32, _n: i32, _l: i32), (), |_st: &mut wasmtime::Store<St>, _m: M<'_>| {});
+    f!("wgpuQueueSubmit", (_q: i32, n: i32, list: i32), (), |_st: &mut wasmtime::Store<St>, m: M<'_>| {
+        // The engine passes a guest array of command-buffer handles.  Each
+        // handle is consumed exactly once; presentBrowserFrame only sees a
+        // still-live handle if the engine submitted nothing.
+        let base = list as u32;
+        let mut bufs = Vec::new();
+        for k in 0..n.max(0) as u32 {
+            let h = m.u32(base.wrapping_add(k * 4)) as i32;
+            if let Some(Obj::Cmd(c)) = takeh(h) { bufs.push(c); }
+        }
+        if !bufs.is_empty() {
+            if let Some(q) = with(|g| g.queue.clone()) { q.submit(bufs); }
+        }
+    });
 
     f!("wgpuBufferGetSize", (b: i32), i64, |_st: &mut wasmtime::Store<St>, _m: M<'_>| { with(|g| g.objs.get(&(b as u32)).map(|o| match o { Obj::Buffer(x) => x.size() as i64, _ => 0 })).unwrap_or(0) });
     f!("wgpuTextureGetDepthOrArrayLayers", (t: i32), i32, |_st: &mut wasmtime::Store<St>, _m: M<'_>| { with(|g| g.objs.get(&(t as u32)).map(|o| match o { Obj::Texture(x) => x.depth_or_array_layers() as i32, _ => 0 })).unwrap_or(0) });
@@ -1149,6 +1171,70 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
         with(|g| g.device.as_ref().map(|d| d.features().contains(feat)).unwrap_or(false)) as i32
     })?;
     Ok(())
+}
+
+/// One isolated adapter + surface + clear + present pass, used by the
+/// `gfx::gpu_selftest` test.  No game/wasm code is involved.
+pub fn selftest() -> Result<String, String> {
+    if !ensure() {
+        return Err("adapter/device init failed".into());
+    }
+    with(|g| {
+        let dev = g.device.clone().ok_or_else(|| "no device".to_string())?;
+        let queue = g.queue.clone().ok_or_else(|| "no queue".to_string())?;
+        let surface = match g.objs.get(&0) {
+            Some(Obj::Surface(s)) => s,
+            _ => return Err("no surface".to_string()),
+        };
+        let adapter = g.adapter.as_ref().ok_or_else(|| "no adapter".to_string())?;
+        let caps = surface.get_capabilities(adapter);
+        let format = wgt::tex_format(g.format)
+            .filter(|f| caps.formats.contains(f))
+            .or_else(|| caps.formats.first().copied())
+            .ok_or_else(|| "no surface format".to_string())?;
+        surface.configure(&dev, &wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
+            width: g.size.0.max(1),
+            height: g.size.1.max(1),
+            present_mode: caps.present_modes.first().copied().unwrap_or(wgpu::PresentMode::Fifo),
+            alpha_mode: caps.alpha_modes.first().copied().unwrap_or(wgpu::CompositeAlphaMode::Auto),
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+            color_space: wgpu::SurfaceColorSpace::Srgb,
+        });
+        let frame = match surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
+            other => return Err(format!("get_current_texture: {other:?}")),
+        };
+        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut enc = dev.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("selftest") });
+        {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("selftest clear"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.6, b: 0.2, a: 1.0 }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            let _ = &mut pass;
+        }
+        let cmd = enc.finish();
+        queue.submit([cmd]);
+        queue.present(frame);
+        let info = adapter.get_info();
+        Ok(format!("adapter={} backend={:?} format={format:?} size={}x{} present=ok",
+            info.name, info.backend, g.size.0, g.size.1))
+    })
 }
 
 fn g_device() -> Option<wgpu::Device> {
