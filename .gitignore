@@ -17,6 +17,9 @@ build/bundle/
 # two-stage native build: translated engine C, objects and metrics
 build/ci/
 
+# CMake host build (downloaded engine bundles, objects, executable)
+build/cpp/
+
 # rust build output
 **/target/
 

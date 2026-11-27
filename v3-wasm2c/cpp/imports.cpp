@@ -1,6 +1,7 @@
 // Real C++ implementations for core imports.  Symbols have C linkage so the
 // generated C library finds them exactly like the generated stubs would.
 
+#include "cpp_compat.h"
 extern "C" {
 #include "WC.h"
 }

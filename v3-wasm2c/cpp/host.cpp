@@ -4,6 +4,7 @@
 // The generated C library is compiled as C; we include its header inside
 // extern "C" so C++ name mangling does not affect the ABI.
 
+#include "cpp_compat.h"
 extern "C" {
 #include "WC.h"
 }
