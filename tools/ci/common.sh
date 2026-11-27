@@ -142,7 +142,13 @@ ci_fetch_wabt() {
 ci_wasm2c_flags() {
   local bin=${1:-$WASM2C} help flags=""
   help=$("$bin" --help 2>&1 || true)
-  for feature in exceptions threads function-references tail-call annotations code-metadata gc; do
+  # wasm2c supports a strict subset of the proposals the rest of WABT knows.
+  # Asking for --enable-gc / --enable-code-metadata / --enable-function-references
+  # makes it abort with "only supports a limited set of features" even though
+  # those flags exist in --help.  Only opt in to what this engine actually
+  # needs: EH (setjmp-style) and the shared-memory threads proposal.  Bulk
+  # memory, reference types, sign-ext and multi-value are enabled by default.
+  for feature in exceptions threads; do
     if [[ $help == *"--enable-$feature"* ]]; then
       flags="$flags --enable-$feature"
     fi
