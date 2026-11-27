@@ -102,6 +102,22 @@ scripts work on any machine with a C compiler and `curl`.
 - `WC-impl.h` is created empty when absent (it is a splitter artifact of the
   parked `v3-wasm2c` tree, not a stock WABT output).
 
+## Measured decision (2026-11-27)
+
+`docs/CI-RESULTS.md` has the numbers. Summary:
+
+- **Cranelift** (`tools/ci/cranelift-object.sh`): 100 s codegen, 346 MB
+  archive, works on a free runner. Header is partial (symbol declarations
+  only, no C-ABI trampolines/VMContext) — host glue is still required.
+- **WABT wasm2c 1.0.42** (`tools/ci/engine.sh`): OOM in `WriteC` at ~4.9 GiB
+  on a free runner, independent of `--num-outputs`.
+- **WABT 1.0.36**: cannot parse the module's `exnref` type.
+- **w2c2**: no EH support; fails immediately.
+
+So the practical native path today is Cranelift object + generated glue, with
+`tools/ci/engine.sh` retained as the portable reference if a bigger machine is
+available. No wasm patching is needed in either case.
+
 ## Rules
 
 1. Anything that translates, compiles, or runs for minutes goes to Actions.
