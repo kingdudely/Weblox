@@ -26,6 +26,11 @@ on:
         required: false
         default: '360'
         type: string
+      force:
+        description: 'overwrite assets that already exist in the Release'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -101,6 +106,7 @@ jobs:
         env:
           GENERATED_RELEASE: ${{ inputs.generated-release }}
           WC_OPT: ${{ inputs.opt }}
+          FORCE: ${{ inputs.force }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -126,10 +132,17 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ENGINE_DIR: ${{ steps.run.outputs.dir }}
           TAG: ${{ needs.prepare.outputs.tag }}
+          FORCE: ${{ inputs.force }}
         run: |
-          gh release upload "$TAG" \
-            "$ENGINE_DIR"/engine-*.tar.zst \
-            "$ENGINE_DIR"/WC.h --repo "${{ github.repository }}" --clobber
+          existing=$(gh api "repos/${{ github.repository }}/releases/tags/$TAG" \
+            --jq '.assets[].name' 2>/dev/null || true)
+          asset=$(basename "$ENGINE_DIR"/engine-*.tar.zst)
+          if [ "$FORCE" = true ] || ! printf '%s\n' "$existing" | grep -qx "$asset"; then
+            gh release upload "$TAG" "$ENGINE_DIR/$asset" \
+              --repo "${{ github.repository }}" --clobber
+          else
+            echo "asset $asset already published; skipping"
+          fi
 
   source:
     needs: prepare
@@ -140,8 +153,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.prepare.outputs.tag }}
+          FORCE: ${{ inputs.force }}
         run: |
           set -euo pipefail
+          existing=$(gh api "repos/${{ github.repository }}/releases/tags/$TAG" \
+            --jq '.assets[].name' 2>/dev/null || true)
+          if [ "$FORCE" != true ] && printf '%s\n' "$existing" | grep -qx 'generated-c.tar.zst'; then
+            echo 'source bundle already published; skipping'
+            exit 0
+          fi
           mkdir -p gen
           gh release download ci-local-wasm2c-generated --repo "${{ github.repository }}" \
             --dir gen --pattern 'WC*.c' --pattern 'WC.h' --pattern 'WC-impl.h'
