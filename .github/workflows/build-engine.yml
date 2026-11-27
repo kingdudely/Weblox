@@ -153,7 +153,15 @@ jobs:
             tar -xzf "$root/build-ci/simde.tar.gz" -C "$simde" --strip-components=1
           fi
 
-          flags="-w $opt -fPIC -fno-stack-protector -pipe -I$gen -I$root/deps/wabt -I$simde"
+          # Never edit the released WC-impl.h: fix its no-op atomic stubs via
+          # a clang VFS overlay created in the build directory.
+          overlay=$(python3 "$root/tools/make_overlay.py" "$gen/WC-impl.h" \
+            "$root/build-ci/overlay" 2>/dev/null | tail -1)
+          [ -f "$overlay" ] || { echo "atomic overlay not created" >&2; exit 1; }
+
+          flags="-w $opt -fno-stack-protector -pipe -ivfsoverlay $overlay \
+            -I$gen -I$root/deps/wabt -I$simde"
+          case "$PLATFORM" in windows-x64) ;; *) flags="$flags -fPIC" ;; esac
           for f in "$gen"/WC_*.c; do
             [ -f "$f" ] || continue
             "$cc" $flags -c "$f" -o "$obj/$(basename "$f" .c).o"
