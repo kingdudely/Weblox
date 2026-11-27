@@ -41,13 +41,19 @@ CMakeLists.txt optional local build (requires stubs.c generated from WC.h)
 
 CI: `gh workflow run heavy.yml -f task=custom -f script=tools/ci/cpp-host.sh`.
 
-Locally (after downloading engine assets with `tools/ci/fetch_engine.sh`):
+CMake is the canonical build (requires CMake 4.1+ for `.tar.zst` extraction):
 
 ```sh
-python3 tools/ci/gen_stubs.py build/ci/engine/ci-*/WC.h > v3-wasm2c/cpp/stubs.c
-cmake -S v3-wasm2c/cpp -B v3-wasm2c/cpp/build
-cmake --build v3-wasm2c/cpp/build
+cmake -S v3-wasm2c/cpp -B build/cpp
+cmake --build build/cpp
 ```
+
+CMake reads `tools/ci/pins.env`, downloads the correct per-OS engine bundle from
+the Release tagged with the canonical Roblox version, verifies its pinned
+SHA-256, generates the import stubs from `WC.h`, and links the host against the
+imported shared library. No custom fetch script or manifest is involved.
+
+`tools/ci/cpp-host.sh` remains the CI-only smoke build.
 
 This skeleton proves the C++ ↔ generated-C boundary works. A join-capable
 host requires filling in the abstractions above.
