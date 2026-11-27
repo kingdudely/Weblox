@@ -20,6 +20,10 @@
 #include <ucontext.h>
 #include <unistd.h>
 
+#include <dlfcn.h>
+#include <pthread.h>
+#include <sys/syscall.h>
+
 namespace wb {
 namespace {
 
@@ -83,74 +87,264 @@ asm(
     ".size wb_call_worker_thread_init, .-wb_call_worker_thread_init\n");
 
 // ---- controlled traps on a worker -----------------------------------------
-// vmctx.cpp's process-wide trap handler longjmps into a buffer owned by the
-// main thread.  A worker trap must never do that.  Install a handler that
-// longjmps to a thread-local buffer when a worker is active and otherwise
-// delegates to the previous handler verbatim.
+// Signal dispositions are process-wide.  Three separate guards in the host
+// (vmctx.cpp, main.cpp's ExportTrapGuard, imports.cpp/loop.cpp's hook guards)
+// install and *restore* handlers; the last one to restore wins even while
+// detached workers are still running.  The old worker guard only covered the
+// guest call window, so a fault delivered after that window reached
+// vmctx.cpp's handler, which restored SIG_DFL and re-raised -- killing the
+// whole process (exit 139) instead of just the worker.
+//
+// The fix has two parts:
+//   1. Every worker thread owns two sigsetjmp targets (an inner one around the
+//      guest call and an outer one for the thread's whole lifetime), and the
+//      handler NEVER re-raises on a worker thread.
+//   2. sigaction() for these four signals is interposed once the join driver
+//      is registered: other host guards' actions are recorded as fallbacks but
+//      never replace ours, so no restore can expose a SIG_DFL re-raise while
+//      detached workers are still running.  Non-worker threads (main) are
+//      delegated to the recorded action verbatim, so main.cpp's read-only
+//      ExportTrapGuard keeps working unchanged.
 constexpr int kSignals[4] = {SIGSEGV, SIGFPE, SIGILL, SIGBUS};
-struct sigaction g_prev[4];
-std::mutex g_signal_mutex;
-std::atomic<int> g_signal_users{0};
-thread_local sigjmp_buf tl_jmp;
-thread_local volatile sig_atomic_t tl_active = 0;
+constexpr int kNumSignals = 4;
+
+thread_local sigjmp_buf tl_inner_jmp;
+thread_local sigjmp_buf tl_outer_jmp;
+thread_local volatile sig_atomic_t tl_inner_active = 0;
+thread_local volatile sig_atomic_t tl_outer_active = 0;
 thread_local volatile sig_atomic_t tl_signal = 0;
+thread_local volatile sig_atomic_t tl_is_worker = 0;
+thread_local long tl_tid = 0;
+
+std::mutex g_signal_mutex;
+// Displaced actions for non-worker threads; written under g_signal_mutex,
+// read by the handler.  A torn read can only select an older valid action.
+struct sigaction g_fallback[kNumSignals];
+// Guards nest: installing a foreign action pushes the previous fallback, and
+// restoring our action pops it.  Without the stack, a finished HookGuard's
+// handler would stay as the fallback for main.cpp's ExportTrapGuard.
+constexpr int kFallbackDepth = 16;
+struct sigaction g_fallback_stack[kNumSignals][kFallbackDepth];
+int g_fallback_depth[kNumSignals] = {};
+std::atomic<int> g_live_workers{0};
+std::atomic<bool> g_intercept_active{false};
+pthread_t g_main_thread{};
+bool g_main_recorded = false;
+thread_local int tl_delegate_logs = 0;
+
+void worker_trap_handler(int sig, siginfo_t*, void* uctx);
+void install_worker_handlers();
+
+// ---- async-signal-safe logging --------------------------------------------
+void safe_write(const char* s, size_t n) {
+  size_t done = 0;
+  while (done < n) {
+    ssize_t w = ::write(2, s + done, n - done);
+    if (w <= 0) break;
+    done += static_cast<size_t>(w);
+  }
+}
+void safe_puts(char*& p, char* end, const char* s) {
+  while (*s && p < end) *p++ = *s++;
+}
+void safe_dec(char*& p, char* end, unsigned long v) {
+  char tmp[24];
+  int n = 0;
+  if (v == 0) tmp[n++] = '0';
+  while (v > 0) { tmp[n++] = static_cast<char>('0' + v % 10); v /= 10; }
+  while (n > 0 && p < end) *p++ = tmp[--n];
+}
+void safe_hex(char*& p, char* end, uintptr_t v) {
+  static const char hex[] = "0123456789abcdef";
+  if (p + 2 > end) return;
+  *p++ = '0'; *p++ = 'x';
+  for (int i = 15; i >= 0 && p < end; --i)
+    *p++ = hex[(v >> (4 * i)) & 0xf];
+}
+
+uintptr_t fault_pc(void* uctx) {
+  if (auto* uc = static_cast<ucontext_t*>(uctx)) {
+#if defined(__x86_64__)
+    return static_cast<uintptr_t>(uc->uc_mcontext.gregs[REG_RIP]);
+#elif defined(__aarch64__)
+    return static_cast<uintptr_t>(uc->uc_mcontext.pc);
+#endif
+  }
+  return 0;
+}
+
+// One write() so concurrent workers cannot interleave halves of a line (the
+// old vmctx.cpp diagnostics were visibly garbled in /tmp/join-abi.log).
+void log_worker_trap(int sig, uintptr_t pc, const char* outcome) {
+  char buf[256];
+  char* p = buf;
+  char* end = buf + sizeof(buf);
+  safe_puts(p, end, "[pthr-guard] tid=");
+  safe_dec(p, end, static_cast<unsigned long>(tl_tid));
+  safe_puts(p, end, " sig=");
+  safe_dec(p, end, static_cast<unsigned long>(sig));
+  safe_puts(p, end, " pc=");
+  safe_hex(p, end, pc);
+  safe_puts(p, end, " ");
+  safe_puts(p, end, outcome);
+  safe_puts(p, end, "\n");
+  safe_write(buf, static_cast<size_t>(p - buf));
+}
+
+bool is_our_handler(const struct sigaction& sa) {
+  return (sa.sa_flags & SA_SIGINFO)
+             ? reinterpret_cast<void*>(sa.sa_sigaction) ==
+                   reinterpret_cast<void*>(&worker_trap_handler)
+             : false;
+}
+
+// Called when a guest throw has no landing pad on this worker.  Raising ud2
+// here would be caught by whichever process-wide handler happens to be
+// installed; on a worker that can be a re-raising handler.  Jump straight to
+// this thread's guard instead.  Returns false for non-worker threads so the
+// caller can keep the honest trap path there.
+bool deliver_controlled_trap(int sig) {
+  if (!tl_is_worker) return false;
+  log_worker_trap(sig, 0, "-> controlled guest trap (no re-raise)");
+  tl_signal = static_cast<sig_atomic_t>(sig);
+  if (tl_inner_active) {
+    tl_inner_active = 0;
+    siglongjmp(tl_inner_jmp, sig);
+  }
+  if (tl_outer_active) {
+    tl_outer_active = 0;
+    siglongjmp(tl_outer_jmp, sig);
+  }
+  return false;
+}
 
 void worker_trap_handler(int sig, siginfo_t* info, void* uctx) {
-  if (tl_active) {
-    if (debug_enabled()) {
-      char buf[160];
-      uintptr_t pc = 0;
-      if (auto* uc = static_cast<ucontext_t*>(uctx)) {
-#if defined(__x86_64__)
-        pc = static_cast<uintptr_t>(uc->uc_mcontext.gregs[REG_RIP]);
-#endif
-      }
-      int n = std::snprintf(buf, sizeof(buf),
-                            "[pthr-dbg] trap sig=%d pc=%p addr=%p\n", sig,
-                            reinterpret_cast<void*>(pc),
-                            info ? info->si_addr : nullptr);
-      ssize_t ignored = ::write(2, buf, static_cast<size_t>(n > 0 ? n : 0));
-      (void)ignored;
-    }
+  if (tl_tid == 0) tl_tid = static_cast<long>(::syscall(SYS_gettid));
+  if (tl_is_worker) {
+    // No signal disposition is changed and nothing is re-raised: the only
+    // destination is a sigsetjmp frame on THIS thread's stack.
+    log_worker_trap(sig, fault_pc(uctx), "-> controlled worker trap (no re-raise)");
     tl_signal = static_cast<sig_atomic_t>(sig);
-    siglongjmp(tl_jmp, sig);
+    if (tl_inner_active) {
+      tl_inner_active = 0;
+      siglongjmp(tl_inner_jmp, sig);
+    }
+    if (tl_outer_active) {
+      tl_outer_active = 0;
+      siglongjmp(tl_outer_jmp, sig);
+    }
+    // Last resort (a fault during thread teardown): end this pthread only.
+    ::pthread_exit(reinterpret_cast<void*>(static_cast<uintptr_t>(sig)));
   }
+
+  // A fault on a pthread that never went through worker_thread_enter() still
+  // must not kill the process: the host's other guards re-raise with SIG_DFL.
+  // Only main gets delegated to its own guard (ExportTrapGuard / vmctx.cpp).
+  const bool on_main = g_main_recorded && ::pthread_equal(::pthread_self(), g_main_thread);
+  if (!on_main) {
+    if (tl_delegate_logs++ < 4)
+      log_worker_trap(sig, fault_pc(uctx),
+                      "-> unregistered non-main thread: ending this thread only");
+    ::pthread_exit(nullptr);
+  }
+
   int idx = 0;
-  for (; idx < 4; ++idx) if (kSignals[idx] == sig) break;
-  if (idx == 4) return;
-  const struct sigaction& old = g_prev[idx];
+  for (; idx < kNumSignals; ++idx) if (kSignals[idx] == sig) break;
+  if (idx == kNumSignals) return;
+  const struct sigaction& old = g_fallback[idx];
   if (old.sa_flags & SA_SIGINFO) {
     old.sa_sigaction(sig, info, uctx);
   } else if (old.sa_handler == SIG_IGN) {
     return;
   } else if (old.sa_handler == SIG_DFL) {
-    sigaction(sig, &old, nullptr);
-    raise(sig);
+    // Only for threads that never entered a worker; main's own guards are
+    // installed before any guest call in main.cpp.
+    struct sigaction dfl{};
+    dfl.sa_handler = SIG_DFL;
+    sigemptyset(&dfl.sa_mask);
+    sigaction(sig, &dfl, nullptr);
+    ::raise(sig);
   } else {
     old.sa_handler(sig);
   }
 }
 
-class SignalScope {
- public:
-  SignalScope() {
-    std::lock_guard<std::mutex> lock(g_signal_mutex);
-    if (g_signal_users.fetch_add(1) == 0) {
-      for (int i = 0; i < 4; ++i) sigaction(kSignals[i], nullptr, &g_prev[i]);
-      struct sigaction sa {};
-      sa.sa_sigaction = &worker_trap_handler;
-      sa.sa_flags = SA_SIGINFO | SA_NODEFER;
-      sigemptyset(&sa.sa_mask);
-      for (int i = 0; i < 4; ++i) sigaction(kSignals[i], &sa, nullptr);
-    }
+void install_worker_handlers() {
+  std::lock_guard<std::mutex> lock(g_signal_mutex);
+  for (int i = 0; i < kNumSignals; ++i) {
+    struct sigaction cur{};
+    if (sigaction(kSignals[i], nullptr, &cur) != 0) continue;
+    if (is_our_handler(cur)) continue;  // keep the displaced action intact
+    g_fallback[i] = cur;
+    struct sigaction sa{};
+    sa.sa_sigaction = &worker_trap_handler;
+    sa.sa_flags = SA_SIGINFO | SA_NODEFER;
+    sigemptyset(&sa.sa_mask);
+    sigaction(kSignals[i], &sa, nullptr);
   }
-  ~SignalScope() {
-    if (g_signal_users.fetch_sub(1) == 1) {
+}
+
+// ---- sigaction interposition ------------------------------------------------
+// main.cpp, imports.cpp and loop.cpp each install a guard around a guest call
+// and restore the previous action afterwards.  Those restores are process-wide
+// and do not know about our detached workers.  From pthread_register() onward
+// we keep our handler installed: a foreign action is remembered as the
+// fallback for the main thread but is never allowed to replace ours.  This is
+// also race-free, unlike polling for and re-installing a displaced handler.
+using SigactionFn = int (*)(int, const struct sigaction*, struct sigaction*);
+SigactionFn g_real_sigaction = nullptr;
+pthread_once_t g_sigaction_once = PTHREAD_ONCE_INIT;
+
+void init_real_sigaction() {
+  g_real_sigaction = reinterpret_cast<SigactionFn>(dlsym(RTLD_NEXT, "sigaction"));
+}
+
+int signal_index(int sig) {
+  for (int i = 0; i < kNumSignals; ++i) if (kSignals[i] == sig) return i;
+  return -1;
+}
+
+extern "C" int sigaction(int sig, const struct sigaction* act,
+                         struct sigaction* old) {
+  ::pthread_once(&g_sigaction_once, &init_real_sigaction);
+  if (!g_real_sigaction) return -1;
+  const int idx = signal_index(sig);
+  if (act && idx >= 0 && g_intercept_active.load(std::memory_order_acquire)) {
+    if (is_our_handler(*act)) {
+      // A guard is restoring the action it captured on entry: unwind its
+      // fallback before letting the real sigaction run.
       std::lock_guard<std::mutex> lock(g_signal_mutex);
-      for (int i = 0; i < 4; ++i) sigaction(kSignals[i], &g_prev[i], nullptr);
+      if (g_fallback_depth[idx] > 0)
+        g_fallback[idx] = g_fallback_stack[idx][--g_fallback_depth[idx]];
+      return g_real_sigaction(sig, act, old);
     }
+    struct sigaction cur{};
+    if (g_real_sigaction(sig, nullptr, &cur) != 0) return -1;
+    if (old) *old = cur;
+    {
+      std::lock_guard<std::mutex> lock(g_signal_mutex);
+      if (g_fallback_depth[idx] < kFallbackDepth)
+        g_fallback_stack[idx][g_fallback_depth[idx]++] = g_fallback[idx];
+      g_fallback[idx] = *act;
+    }
+    return 0;  // deliberately leave our handler installed
   }
-};
+  return g_real_sigaction(sig, act, old);
+}
+
+void worker_thread_enter() {
+  tl_is_worker = 1;
+  tl_tid = static_cast<long>(::syscall(SYS_gettid));
+  tl_signal = 0;
+  g_live_workers.fetch_add(1, std::memory_order_release);
+}
+
+void worker_thread_leave() {
+  tl_outer_active = 0;
+  tl_inner_active = 0;
+  tl_is_worker = 0;
+  g_live_workers.fetch_sub(1, std::memory_order_release);
+}
 
 // A fresh VMContext: code, builtins, memory and GC heap are shared with the
 // main instance, but wasm globals, func refs and the indirect table are owned
@@ -251,16 +445,18 @@ void worker_body(uint32_t start, uint32_t arg, uint32_t pthread_ptr) {
     std::fprintf(stderr, "[pthr] worker vmctx allocation failed\n");
     return;
   }
-  SignalScope signals;
   uint32_t tls_self = 0, func_index = 0;
   void* fn = nullptr;
   int trap = 0;
 
+  // Inner guard: only the guest-call window.  Cleared before cleanup so a
+  // fault in free_worker_vmctx() lands in the outer guard instead.
   tl_signal = 0;
-  if (sigsetjmp(tl_jmp, 1) != 0) {
+  if (sigsetjmp(tl_inner_jmp, 1) != 0) {
     trap = static_cast<int>(tl_signal);
+    tl_inner_active = 0;
   } else {
-    tl_active = 1;
+    tl_inner_active = 1;
     // The parent allocated the worker stack in linear memory: +48 is its top,
     // +52 its size (v2-wasmtime/src/imports/thread.rs, v3-wasm2c/thread.c).
     auto* mi = reinterpret_cast<host::VMMemoryImport*>(
@@ -309,24 +505,40 @@ void worker_body(uint32_t start, uint32_t arg, uint32_t pthread_ptr) {
         PDBG("entry returned\n");
       }
     }
-    tl_active = 0;
+    tl_inner_active = 0;
   }
 
   if (trap) {
-    std::fprintf(stderr, "[pthr] worker ptr=%#x start=%u trapped via signal %d\n",
-                 pthread_ptr, start, trap);
+    std::fprintf(stderr,
+                 "[pthr] worker tid=%ld ptr=%#x start=%u trapped via signal %d "
+                 "(contained by worker guard)\n",
+                 tl_tid, pthread_ptr, start, trap);
   } else {
     std::fprintf(stderr,
-                 "[pthr] worker ptr=%#x start=%u -> func=%u (%s) tls=%#x done\n",
-                 pthread_ptr, start, func_index, fn ? "called" : "MISSING",
-                 tls_self);
+                 "[pthr] worker tid=%ld ptr=%#x start=%u -> func=%u (%s) "
+                 "tls=%#x done\n",
+                 tl_tid, pthread_ptr, start, func_index,
+                 fn ? "called" : "MISSING", tls_self);
   }
   free_worker_vmctx(vm);
 }
 
 }  // namespace
 
+// Used by host/unwind.cpp when `throw_ref` has no guest landing pad on a
+// worker: convert it to this thread's controlled trap instead of letting the
+// guest raise ud2 into an arbitrary process-wide handler.
+bool worker_raise_controlled(int sig) { return deliver_controlled_trap(sig); }
+
 void pthread_register(void* main_vmctx) {
+  // Called from main() before any guest thread is spawned: remember the one
+  // thread that is allowed to delegate faults to main.cpp's trap guard.
+  g_main_thread = ::pthread_self();
+  g_main_recorded = true;
+  // Install our handler before any guest call, then keep it installed: every
+  // later guard action is recorded as a fallback by sigaction() above.
+  install_worker_handlers();
+  g_intercept_active.store(true, std::memory_order_release);
   g_main_vmctx = main_vmctx;
   g_slot_map_size = wb_table_size;
   g_slot_map = static_cast<uint32_t*>(
@@ -349,7 +561,21 @@ void pthread_entry(uint32_t start, uint32_t arg, uint32_t pthread_ptr) {
     return;
   }
   std::thread([start, arg, pthread_ptr] {
-    worker_body(start, arg, pthread_ptr);
+    worker_thread_enter();
+    // Outer guard covers the worker's whole lifetime, including vmctx
+    // allocation, cleanup and thread teardown.  The inner guard in
+    // worker_body() is tried first so cleanup can still run.
+    tl_signal = 0;
+    if (sigsetjmp(tl_outer_jmp, 1) == 0) {
+      tl_outer_active = 1;
+      worker_body(start, arg, pthread_ptr);
+    } else {
+      std::fprintf(stderr,
+                   "[pthr] tid=%ld worker start=%u trapped outside guest call "
+                   "via signal %d (contained by outer worker guard)\n",
+                   tl_tid, start, static_cast<int>(tl_signal));
+    }
+    worker_thread_leave();
   }).detach();
 }
 
