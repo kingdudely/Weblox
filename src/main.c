@@ -3,6 +3,11 @@
 
 #include "host.h"
 
+#ifdef WEBLOX_HAVE_SDL3
+#include "fibers.h"
+#include "deferred.h"
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,6 +18,12 @@
 
 // g_mem, g_env and g_wasi are defined by the generated stubs.c.
 w2c_WebClient* weblox_instance;
+
+#ifdef WEBLOX_HAVE_SDL3
+static void main_turn(void* arg) {
+  w2c_WebClient_0x5F_main_argc_argv((w2c_WebClient*)arg, 0, 0);
+}
+#endif
 
 #ifdef _WIN32
 // WC.h declares these module constants without __declspec(dllimport), so
@@ -88,12 +99,33 @@ int main(void) {
   printf("RT_INIT\n");
   allocate_memory();
   printf("MEM=%llu\n", (unsigned long long)g_mem.size);
+#ifdef WEBLOX_HAVE_SDL3
+  weblox_fibers_init();
+#endif
 
   w2c_WebClient inst;
   memset(&inst, 0, sizeof inst);
   wasm2c_WebClient_instantiate(&inst, &g_env, &g_wasi);
   weblox_instance = &inst;
   printf("SMOKE_OK mem=%llu\n", (unsigned long long)g_mem.size);
+
+  const char* run_ms = getenv("WEBLOX_RUN_MS");
+  if (run_ms && *run_ms && weblox_instance) {
+#ifdef WEBLOX_HAVE_SDL3
+    w2c_WebClient_0x5F_wasm_call_ctors(&inst);
+    weblox_thread_maybe_init_main(&inst);
+    void* root = weblox_run_on_root(&inst, main_turn, &inst);
+    (void)root;
+    int turns = 0;
+    for (int i = 0; i < atoi(run_ms); ++i) {
+      weblox_deferred_pump(&inst);
+      ++turns;
+    }
+    printf("RUN_TURNS=%d\n", turns);
+#else
+    fprintf(stderr, "WEBLOX_RUN_MS needs SDL3/fiber support\n");
+#endif
+  }
 
   wasm2c_WebClient_free(&inst);
   free_memory();

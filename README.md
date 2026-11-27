@@ -31,6 +31,10 @@ instead of consuming the prebuilt shared library.
   with the same overlay by CI (`build-engine.yml`) before their atomics work.
 - `src/http.c`, `src/fetch.c`, `src/fs.c` — libcurl HTTP and asset fetch imports,
   using yyjson for join-reply patching and a queued completion pump.
+- `src/fibers.c`, `src/atomics.c`, `src/thread.c`, `src/futex.c`,
+  `src/mailbox.c`, `src/deferred.c` — JSPI fibers via pinned `deps/minicoro`,
+  SDL3 atomics/futexes, workers and the deferred callback queue. Each fiber
+  saves/restores WABT trap, unwind and exception state.
 - `src/window_sdl.c`, `src/gl.c`, `src/webgpu.c`, `src/webtransport.c` — SDL3
   window/input, GL ES, Dawn and ngtcp2/nghttp3 layers behind C interfaces.
 

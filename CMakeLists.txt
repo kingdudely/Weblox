@@ -95,6 +95,47 @@ if(CURL_FOUND)
 else()
   message(STATUS "libcurl not found; HTTP imports remain no-op stubs")
 endif()
+
+# Fibers, atomics and workers need SDL3 and minicoro.  Without SDL3 these
+# imports remain generated no-ops.
+find_package(SDL3 QUIET)
+if(NOT SDL3_FOUND)
+  find_path(SDL3_INCLUDE_DIR SDL3/SDL.h)
+  find_library(SDL3_LIBRARY NAMES SDL3)
+  if(SDL3_INCLUDE_DIR AND SDL3_LIBRARY)
+    set(SDL3_FOUND TRUE)
+    add_library(SDL3::SDL3 UNKNOWN IMPORTED)
+    set_target_properties(SDL3::SDL3 PROPERTIES
+      IMPORTED_LOCATION "${SDL3_LIBRARY}"
+      INTERFACE_INCLUDE_DIRECTORIES "${SDL3_INCLUDE_DIR}")
+  endif()
+endif()
+set(FIBER_SOURCES "")
+if(SDL3_FOUND)
+  list(APPEND FIBER_SOURCES
+    src/fibers.c src/atomics.c src/thread.c src/futex.c
+    src/mailbox.c src/deferred.c)
+  file(READ "${IMPLEMENTED_FILE}" IMPLEMENTED_TEXT2)
+  string(CONCAT FIBER_IMPORTS
+    "0x5F_asyncjs_0x5Fcreate_suspended_fiber_js\n"
+    "0x5F_asyncjs_0x5Ffiber_transfer_js\n"
+    "fiber_destroy_js\n"
+    "0x5F_asyncjs_0x5FrbxFutexWaitMainJspi\n"
+    "0x5F_pthread_create_js\n"
+    "0x5Femscripten_init_main_thread_js\n"
+    "0x5Femscripten_thread_cleanup\n"
+    "0x5Femscripten_thread_mailbox_await\n"
+    "0x5Femscripten_notify_mailbox_postmessage\n"
+    "emscripten_async_call\n"
+    "emscripten_unwind_to_js_event_loop\n"
+    "schedule_main_loop\n")
+  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/implemented-host2.txt"
+    "${IMPLEMENTED_TEXT2}${FIBER_IMPORTS}")
+  set(IMPLEMENTED_FILE "${CMAKE_CURRENT_BINARY_DIR}/implemented-host2.txt")
+else()
+  message(STATUS "SDL3 not found; fiber imports remain no-op stubs")
+endif()
+
 set(ENGINE_SRC "${CMAKE_BINARY_DIR}/engine")
 file(MAKE_DIRECTORY "${ENGINE_SRC}")
 
@@ -205,26 +246,14 @@ endif()
 # Host binary.
 # ---------------------------------------------------------------------------
 find_package(Threads REQUIRED)
-find_package(SDL3 QUIET)
-if(NOT SDL3_FOUND)
-  # Some distros ship SDL3 headers/libs without a CMake config package.
-  find_path(SDL3_INCLUDE_DIR SDL3/SDL.h)
-  find_library(SDL3_LIBRARY NAMES SDL3)
-  if(SDL3_INCLUDE_DIR AND SDL3_LIBRARY)
-    set(SDL3_FOUND TRUE)
-    add_library(SDL3::SDL3 UNKNOWN IMPORTED)
-    set_target_properties(SDL3::SDL3 PROPERTIES
-      IMPORTED_LOCATION "${SDL3_LIBRARY}"
-      INTERFACE_INCLUDE_DIRECTORIES "${SDL3_INCLUDE_DIR}")
-  endif()
-endif()
 
 add_executable(weblox
-  src/main.c src/mem.c src/imports.c ${HTTP_SOURCES}
+  src/main.c src/mem.c src/imports.c ${HTTP_SOURCES} ${FIBER_SOURCES}
   src/window_sdl.c src/gl.c src/webgpu.c src/webtransport.c)
 target_include_directories(weblox PRIVATE
-  "${ENGINE_SRC}" "${WABT_DIR}" "${CMAKE_CURRENT_LIST_DIR}/src")
-target_link_libraries(weblox PRIVATE wc_stubs Threads::Threads)
+  "${ENGINE_SRC}" "${WABT_DIR}" "${CMAKE_CURRENT_LIST_DIR}/src"
+  "${CMAKE_CURRENT_LIST_DIR}/deps/minicoro")
+target_link_libraries(weblox PRIVATE wc_stubs Threads::Threads m)
 if(SDL3_FOUND)
   target_compile_definitions(weblox PRIVATE WEBLOX_HAVE_SDL3=1)
   target_link_libraries(weblox PRIVATE SDL3::SDL3)
