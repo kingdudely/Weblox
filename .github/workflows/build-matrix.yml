@@ -75,7 +75,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -x /usr/bin/time ]; then
+          if /usr/bin/time -v true 2>/dev/null; then
             /usr/bin/time -v -o build/ci/time.txt bash tools/ci/compile-generated.sh 2>&1 | tee build/ci/run.log
           else
             bash tools/ci/compile-generated.sh 2>&1 | tee build/ci/run.log

@@ -21,18 +21,24 @@ fi
 
 CPP="$ENGINE_DIR/cpp"
 mkdir -p "$CPP"
-python3 "$HERE/gen_stubs.py" "$GEN_INCLUDE/WC.h" > "$CPP/stubs.c"
+python3 "$HERE/gen_stubs.py" "$GEN_INCLUDE/WC.h" \
+  "$CI_ROOT/v3-wasm2c/tools/implemented.txt" > "$CPP/stubs.c"
 ci_metric stubs "$(grep -c '^u32 w2c_\|^void w2c_\|^f64 w2c_\|^u64 w2c_' "$CPP/stubs.c")"
 
 CFLAGS="-w -I$GEN_INCLUDE -I$WABT_INCLUDE"
-CXXFLAGS="-std=c++17 -w -I$GEN_INCLUDE -I$WABT_INCLUDE -I$CI_ROOT/v3-wasm2c/cpp"
+CXXFLAGS="-std=c++17 -w -DWASM_RT_C11_AVAILABLE=1 -I$GEN_INCLUDE -I$WABT_INCLUDE -I$CI_ROOT/v3-wasm2c/cpp"
 CC=${CC:-$(command -v clang >/dev/null 2>&1 && echo clang || echo cc)}
 CXX=${CXX:-$(command -v clang++ >/dev/null 2>&1 && echo clang++ || echo c++)}
 
 "$CC" -c $CFLAGS "$CPP/stubs.c" -o "$CPP/stubs.o"
-"$CXX" -c $CXXFLAGS "$CI_ROOT/v3-wasm2c/cpp/host.cpp" -o "$CPP/host.o"
-"$CXX" -c $CXXFLAGS "$CI_ROOT/v3-wasm2c/cpp/window.cpp" -o "$CPP/window.o"
-"$CXX" "$CPP/host.o" "$CPP/window.o" "$CPP/stubs.o" "$ENGINE_LIB" \
+"$CC" -c $CFLAGS "$CI_ROOT/v3-wasm2c/cpp/mem.c" -o "$CPP/mem.o"
+CPP_SRCS="host.cpp window.cpp platform.cpp net_stub.cpp net_curl.cpp imports.cpp"
+CPP_OBJS=""
+for src in $CPP_SRCS; do
+  "$CXX" -c $CXXFLAGS "$CI_ROOT/v3-wasm2c/cpp/$src" -o "$CPP/${src%.cpp}.o"
+  CPP_OBJS="$CPP_OBJS $CPP/${src%.cpp}.o"
+done
+"$CXX" $CPP_OBJS "$CPP/mem.o" "$CPP/stubs.o" "$ENGINE_LIB" \
   -o "$CPP/weblox-host" -lm -lpthread
 ci_metric host_bytes "$(wc -c < "$CPP/weblox-host" | tr -d ' ')"
 

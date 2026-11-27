@@ -91,7 +91,8 @@ done
 
 LIB="$OUT/$STATIC_NAME"
 if [[ $PLAT_OS == windows ]] && command -v llvm-lib >/dev/null 2>&1; then
-  llvm-lib /OUT:"$LIB" "$OBJ"/*.o
+  # Git Bash rewrites /OUT: into a Windows path; use the -OUT: spelling.
+  llvm-lib -OUT:"$LIB" "$OBJ"/*.o
 else
   AR=${AR:-ar}
   "$AR" rcs "$LIB" "$OBJ"/*.o

@@ -34,9 +34,17 @@ def zero(ret: str) -> str:
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        print("usage: gen_stubs.py WC.h", file=sys.stderr)
+    if len(sys.argv) not in (2, 3):
+        print("usage: gen_stubs.py WC.h [skip-names.txt]", file=sys.stderr)
         return 2
+
+    skip: set[str] = set()
+    if len(sys.argv) == 3:
+        skip = {
+            line.strip()
+            for line in Path(sys.argv[2]).read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.startswith("#")
+        }
 
     text = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
     seen: set[str] = set()
@@ -68,6 +76,10 @@ def main() -> int:
             continue
         name = match.group("name")
         if name == "w2c_env_memory" or name in seen:
+            continue
+        short = name.removeprefix("w2c_env_").removeprefix(
+            "w2c_wasi__snapshot__preview1_")
+        if short in skip:
             continue
         seen.add(name)
         raw_args = [a.strip() for a in match.group("args").split(",") if a.strip()]
