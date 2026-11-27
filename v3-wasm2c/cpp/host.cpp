@@ -35,10 +35,18 @@ int main(int argc, char** argv) {
   wasm_rt_init();
   std::printf("CPP_RT_INIT\n");
   // The browser allocates the module maximum up front and never grows it.
-  // Using the minimum here makes engine atomics outside the first 256 MiB trap.
+  // On POSIX mmap reserves 4 GiB lazily, so that is safe.  WABT's Windows
+  // path MEM_COMMITs the full initial size, which exceeds the runner's commit
+  // limit and aborts; there we commit only the module's initial pages while
+  // still reserving the full range.
+#ifdef _WIN32
+  const u64 pages = wasm2c_WebClient_min_env_memory;
+#else
+  const u64 pages = wasm2c_WebClient_max_env_memory;
+#endif
   wasm_rt_allocate_memory_shared(
       &g_mem,
-      wasm2c_WebClient_max_env_memory,
+      pages,
       wasm2c_WebClient_max_env_memory,
       wasm2c_WebClient_is64_env_memory,
       wasm2c_WebClient_pagesize_env_memory);
