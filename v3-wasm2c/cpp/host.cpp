@@ -33,6 +33,7 @@ int main(int argc, char** argv) {
   std::printf("CPP_BEGIN\n");
 
   wasm_rt_init();
+  std::printf("CPP_RT_INIT\n");
   // The browser allocates the module maximum up front and never grows it.
   // Using the minimum here makes engine atomics outside the first 256 MiB trap.
   wasm_rt_allocate_memory_shared(
@@ -41,9 +42,12 @@ int main(int argc, char** argv) {
       wasm2c_WebClient_max_env_memory,
       wasm2c_WebClient_is64_env_memory,
       wasm2c_WebClient_pagesize_env_memory);
+  std::printf("CPP_MEM_ALLOC=%llu\n",
+              static_cast<unsigned long long>(g_mem.size));
 
   w2c_WebClient inst;
   std::memset(&inst, 0, sizeof inst);
+  std::printf("CPP_INSTANTIATE\n");
   wasm2c_WebClient_instantiate(&inst, &g_env, &g_wasi);
   g_wc_instance = &inst;
 
