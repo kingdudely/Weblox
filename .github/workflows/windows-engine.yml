@@ -1,0 +1,66 @@
+name: Build Windows wasm2c engine library
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Install MSYS2 UCRT64 toolchain
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            tar
+            unzip
+            curl
+            git
+
+      - name: Fetch generated C, WABT runtime and SIMDe
+        shell: msys2 {0}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          mkdir -p gen obj include runtime
+          gh release download ci-local-wasm2c-generated \
+            --repo kingdudely/Weblox --pattern 'WC*' --dir gen
+          curl -fL -o wabt.tar.gz \
+            https://github.com/WebAssembly/wabt/releases/download/1.0.42/wabt-1.0.42.tar.xz
+          tar -xf wabt.tar.gz
+          cp wabt-1.0.42/include/wasm-rt*.h include/
+          cp wabt-1.0.42/src/wasm-rt*.c runtime/
+          curl -fL -o simde.tar.gz \
+            https://github.com/simd-everywhere/simde/archive/refs/tags/v0.8.2.tar.gz
+          tar -xf simde.tar.gz
+
+      - name: Compile generated C (32 TUs, 4 jobs)
+        shell: msys2 {0}
+        run: |
+          set -e
+          export CFLAGS="-c -std=c11 -O0 -w \
+            -Wno-error=incompatible-pointer-types \
+            -Wno-error=implicit-function-declaration \
+            -DWASM_RT_STACK_DEPTH_COUNT=1 \
+            -Igen -Iinclude -Isimde-0.8.2"
+          printf '%s\n' gen/WC*.c | xargs -P 4 -I{} sh -c \
+            'gcc $CFLAGS "$1" -o obj/$(basename "$1" .c).o' sh {} || exit 1
+          for f in runtime/wasm-rt*.c; do
+            gcc $CFLAGS "$f" -o obj/rt-$(basename "$f" .c).o
+          done
+          ar rcs libweblox_engine_mingw.a obj/*.o
+          ls -lh libweblox_engine_mingw.a
+
+      - name: Publish engine library
+        shell: msys2 {0}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ci-local-wasm2c-generated \
+            libweblox_engine_mingw.a --repo kingdudely/Weblox --clobber
