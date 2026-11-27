@@ -1,0 +1,113 @@
+name: host-smoke
+
+# Fast correctness gate for the portable C++ host on every supported OS.
+# Separate from build-matrix: no Release publishing, just build + smoke test.
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  push:
+    branches: [main]
+    paths:
+      - 'v3-wasm2c/cpp/**'
+      - 'tools/ci/pins.env'
+      - '.github/workflows/host-smoke.yml'
+
+permissions:
+  contents: read
+
+# Matrix legs share pinned Release assets; serialize runs so concurrent
+# configure steps do not collide over the same build directory.
+concurrency:
+  group: host-smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          set -euo pipefail
+
+          # CMake fetches a pinned .tar.zst engine bundle and WC.h at configure
+          # time with hash verification, then unpacks them via the zstd CLI.
+          # Install it only when the runner image does not already provide it.
+          install_zstd() {
+            case "$RUNNER_OS" in
+              Linux)   sudo apt-get update -qq && sudo apt-get install -y -qq zstd ;;
+              macOS)   brew install zstd ;;
+              Windows) choco install zstd -y --no-progress ;;
+              *) echo "unsupported runner OS: $RUNNER_OS" >&2; exit 1 ;;
+            esac
+          }
+          if ! command -v zstd >/dev/null 2>&1; then
+            install_zstd
+          fi
+          command -v zstd >/dev/null 2>&1 || { echo "zstd is not on PATH after install" >&2; exit 1; }
+          zstd --version 2>&1 | head -1
+
+          # Do NOT install CMake: stock runners ship >= 3.20. Fail early with a
+          # clear message if an image ever regresses below the project minimum.
+          command -v cmake >/dev/null 2>&1 || { echo "cmake is not on PATH" >&2; exit 1; }
+          cmake --version | head -1
+          cmake_version=$(cmake --version | head -1 | awk '{print $3}')
+          major=${cmake_version%%.*}
+          rest=${cmake_version#*.}
+          minor=${rest%%.*}
+          if [ "$major" -lt 3 ] || { [ "$major" -eq 3 ] && [ "$minor" -lt 20 ]; }; then
+            echo "CMake >= 3.20 required, found $cmake_version; update the runner image" >&2
+            exit 1
+          fi
+
+          # C++17 compiler: clang on Linux/macOS, clang or MSVC on Windows.
+          # Pin clang on non-Windows; Windows keeps CMake's default (MSVC).
+          if command -v clang++ >/dev/null 2>&1; then
+            clang++ --version 2>&1 | head -1
+            if [ "$RUNNER_OS" != "Windows" ]; then
+              echo "CC=clang" >> "$GITHUB_ENV"
+              echo "CXX=clang++" >> "$GITHUB_ENV"
+            fi
+          elif command -v c++ >/dev/null 2>&1; then
+            c++ --version 2>&1 | head -1
+          elif command -v cl >/dev/null 2>&1; then
+            echo "MSVC cl.exe found on PATH"
+          else
+            echo "no C++17 compiler found on PATH" >&2
+            exit 1
+          fi
+
+      - name: Configure
+        run: |
+          set -euo pipefail
+          mkdir -p build/cpp
+          cmake -S v3-wasm2c/cpp -B build/cpp -DCMAKE_BUILD_TYPE=Release 2>&1 | tee build/cpp/configure.log
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          cmake --build build/cpp --config Release --parallel 2>&1 | tee build/cpp/build.log
+
+      # CTest resolves the per-OS executable path for the registered "smoke"
+      # test (which prints CPP_SMOKE_OK), so no exe path is hardcoded here.
+      - name: Smoke test
+        run: ctest --test-dir build/cpp -C Release --output-on-failure
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: host-smoke-logs-${{ matrix.os }}
+          path: |
+            build/cpp/configure.log
+            build/cpp/build.log
+          if-no-files-found: warn
