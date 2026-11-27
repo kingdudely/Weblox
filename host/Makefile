@@ -61,8 +61,14 @@ runtime_data.cpp runtime_data.h: gen_runtime_data.py $(WC_WASM)
 # modifying that read-only file.
 WRAPFLAGS ?= -Wl,--wrap=_wasm_function_176
 
+# The callee-pop thunk table is derived from the import signatures; it is
+# generated at build time and intentionally not checked in (host/ABI.md).
+abi_stubs.S: gen_imports.py $(WC_WASM) $(REPO_ROOT)/docs/imports-wasm.json
+	python3 gen_imports.py --wasm $(WC_WASM) --docs $(REPO_ROOT)/docs/imports-wasm.json \
+		--out-dir . --stubs-only
+
 demo: main.cpp vmctx.cpp unwind.cpp imports.cpp loop.cpp pthread_start.cpp rna_bridge.cpp \
-      wt.cpp route.cpp prepare.cpp runtime_data.cpp table.cpp \
+      wt.cpp route.cpp prepare.cpp runtime_data.cpp table.cpp abi_stubs.S \
       vmctx.h unwind.h imports.h pthread_start.h rna_bridge.h wt.h route.h prepare.h \
       vmctx_offsets.h runtime_data.h table.h
 	@if [ ! -f "$(WC_OBJ)" ]; then \
@@ -71,7 +77,7 @@ demo: main.cpp vmctx.cpp unwind.cpp imports.cpp loop.cpp pthread_start.cpp rna_b
 	fi
 	$(CXX) $(CXXFLAGS) -o $@ main.cpp vmctx.cpp unwind.cpp imports.cpp loop.cpp \
 		pthread_start.cpp rna_bridge.cpp wt.cpp route.cpp prepare.cpp \
-		runtime_data.cpp table.cpp $(WC_OBJ) $(WRAPFLAGS) $(LDFLAGS)
+		runtime_data.cpp table.cpp abi_stubs.S $(WC_OBJ) $(WRAPFLAGS) $(LDFLAGS)
 
 # Build the Cranelift compiler tool and emit the object from $(WC_WASM).
 # Codegen of all 154,552 functions takes ~260 s; see host/BUILD.md.
@@ -90,4 +96,4 @@ run: demo
 	timeout 60s ./demo
 
 clean:
-	rm -f demo table.cpp runtime_data.cpp
+	rm -f demo table.cpp runtime_data.cpp abi_stubs.S

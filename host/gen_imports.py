@@ -15,6 +15,10 @@ Outputs
   vmctx pointer in the first (rdi) slot, plus the slot metadata/install API.
 * ``host/imports.cpp`` -- one log-once-and-return-zero stub per unimplemented
   slot, plus a preserved hand-written region for the real implementations.
+  ``g_calls[]`` points at the ABI thunks below, never at the C++ bodies.
+* ``host/abi_stubs.S`` -- generated at build time (gitignored): one
+  ``wasm_abi_NNN`` thunk per import that gives the C++ body a normal System-V
+  entry but returns with Wasmtime's callee-pops epilogue (``ret $POP``).
 
 The hand-written region between the markers is copied verbatim on regeneration,
 so adding a name to ``REALIZED`` (and writing its implementation) promotes an
@@ -35,6 +39,12 @@ import json
 import re
 import sys
 from pathlib import Path
+
+# Number of nested host->wasm->host import calls a thread can have.  The thunks
+# save each guest return address in a per-thread stack (see abi_stubs.S); 256
+# is far beyond any observed nesting and a missing entry is a loud ud2, not
+# memory corruption.
+ABI_RET_STACK_DEPTH = 256
 
 # Import names with a hand-written implementation in imports.cpp.  Every name
 # must exist in the module or the generator fails (catches typos early).
@@ -200,6 +210,23 @@ def sig_str(params: list[str], result: str) -> str:
     return "(" + ", ".join(params) + ") -> " + result
 
 
+def abi_stack_words(params: list[str]) -> int:
+    """Stack words of a Wasmtime-50 wasm-call (Tail) invocation.
+
+    x86-64 Tail ABI: rdi=callee vmctx, rsi=caller vmctx, integer wasm args in
+    rdx/rcx/r8/r9 (four), float wasm args in xmm0..xmm7 (eight).  Everything
+    else is passed as an 8-byte stack slot, in wasm parameter order.
+    """
+    n_int = sum(p in ("i32", "i64") for p in params)
+    n_float = sum(p in ("f32", "f64") for p in params)
+    return max(0, n_int - 4) + max(0, n_float - 8)
+
+
+def abi_pop(params: list[str]) -> int:
+    """Bytes a wasm-call callee must pop on return (Cranelift align_to(.., 16))."""
+    return (abi_stack_words(params) * 8 + 15) // 16 * 16
+
+
 # ---------------------------------------------------------------------------
 # Generation
 # ---------------------------------------------------------------------------
@@ -230,6 +257,9 @@ def build_header(rows: list[dict]) -> str:
         "// wasm-call ABI passes rdi = import slot vmctx, rsi = caller's vmctx,\n",
         "// then the wasm arguments in rdx, rcx, r8, r9, stack (int) and\n",
         "// xmm0..xmm7 (float).  Both vmctx parameters are explicit below.\n",
+        "// Each pointer is a generated `wasm_abi_NNN` thunk (abi_stubs.S) that\n",
+        "// calls the C++ body below with a normal System-V entry and returns\n",
+        "// with the callee-pops `ret $POP` the guest expects; see host/ABI.md.\n",
         "void* const* import_wasm_calls();\n",
         "void* import_wasm_call(std::uint32_t slot);\n\n",
         "// Mirror of wasmtime-environ's VMFunctionImport (32 bytes on x86-64).\n",
@@ -332,8 +362,11 @@ def build_cpp(rows: list[dict], handwritten: str, rna_block: str = "") -> str:
         "#include <algorithm>\n#include <atomic>\n#include <chrono>\n",
         "#include <condition_variable>\n#include <cstdio>\n#include <cstdlib>\n",
         "#include <cstring>\n#include <memory>\n#include <mutex>\n#include <string>\n",
-        "#include <sys/stat.h>\n#include <thread>\n#include <unordered_map>\n",
+        "#include <sys/stat.h>\n#include <thread>\n#include <unistd.h>\n#include <unordered_map>\n",
         "#include <unordered_set>\n#include <vector>\n\n",
+        "// No <execinfo.h>: glibc's backtrace()/backtrace_symbols() unwind with libgcc\n",
+        "// CFI, and this binary links Cranelift frames that have no .eh_frame_hdr.\n",
+        "// See host/TRACE.md.\n\n",
         "#include <curl/curl.h>\n\n",
         "namespace wb {\nnamespace {\n",
         "// Defined in the preserved hand-written region below; the RNA stubs above it\n",
@@ -342,8 +375,23 @@ def build_cpp(rows: list[dict], handwritten: str, rna_block: str = "") -> str:
         "uint32_t mem_ld32(uint32_t p);\n",
         "std::string mem_cstr(uint32_t p, std::size_t cap);\n\n",
         "std::atomic<bool> g_seen[kImportCount + 1];\n",
-        "const ImportDesc g_descs[] = {\n",
+        "\n",
+        "// Per-thread saved guest return addresses for the wasm_abi_* thunks.\n",
+        "// Define the symbols here so abi_stubs.S can access them with GOTTPOFF.\n",
+        "constexpr std::size_t kAbiRetStackDepth = " + str(ABI_RET_STACK_DEPTH) + ";\n",
+        "}  // namespace\n",
+        'extern "C" {\n',
+        "thread_local void* wb_abi_ret_stack[kAbiRetStackDepth];\n",
+        "thread_local unsigned wb_abi_ret_depth;\n",
+        "// Generated in abi_stubs.S; never called with the C++ ABI directly.\n",
     ]
+    for row in rows:
+        out.append(f"void wasm_abi_{row['slot']:03d}();\n")
+    out.extend([
+        "}  // extern \"C\"\n",
+        "namespace {\n",
+        "const ImportDesc g_descs[] = {\n",
+    ])
     for row in rows:
         out.append(
             f'  {{ {row["slot"]}, "{row["module"]}", "{row["name"]}", '
@@ -354,7 +402,7 @@ def build_cpp(rows: list[dict], handwritten: str, rna_block: str = "") -> str:
         "void* const g_calls[kImportCount] = {\n",
     ])
     for row in rows:
-        out.append(f'  reinterpret_cast<void*>(&wasm_import_{row["slot"]:03d}_{sym(row["name"])}),\n')
+        out.append(f'  reinterpret_cast<void*>(&wasm_abi_{row["slot"]:03d}),\n')
     out.extend([
         "};\n",
         "}  // namespace\n\n",
@@ -377,6 +425,10 @@ def build_cpp(rows: list[dict], handwritten: str, rna_block: str = "") -> str:
         "  }();\n",
         "  return on;\n",
         "}\n",
+        "// noinline is load-bearing: the guest return address below is read from the\n",
+        "// caller's frame, which only names the wasm import stub if this helper is a\n",
+        "// real call.\n",
+        "__attribute__((noinline))\n",
         "void trace_import_args(std::uint32_t slot, const std::uint64_t* args,\n",
         "                       unsigned nargs) {\n",
         "  if (slot && slot <= kImportCount &&\n",
@@ -388,10 +440,15 @@ def build_cpp(rows: list[dict], handwritten: str, rna_block: str = "") -> str:
         '      std::fprintf(stderr, "%s%#llx", i ? "," : "",\n',
         "                   static_cast<unsigned long long>(args[i]));\n",
         "    }\n",
-        "    // No unwinding: glibc backtrace() cannot walk Cranelift frames and\n",
-        "    // faults (no usable .eh_frame_hdr). Read one return address off the\n",
-        "    // live stack with -fno-omit-frame-pointer; two plain loads only.\n",
+        "    // NO unwinding.  Read one return address straight off the live stack:\n",
+        "    // with -fno-omit-frame-pointer, the first word of this helper's frame is\n",
+        "    // the saved frame pointer of the import stub that called it, and on\n",
+        "    // x86-64 that stub's return address (into Cranelift-generated guest code)\n",
+        "    // sits at [stub_fp + 8].  Two plain loads; libgcc/CFI never sees a frame.\n",
         "#if defined(__x86_64__)\n",
+        "    // Level 0 is the current frame (supported).  Its first word is the saved\n",
+        "    // caller frame pointer -- the wasm import stub's -- whose +8 slot holds\n",
+        "    // the guest return address.  We never ask the compiler to unwind.\n",
         "    const void* const self_fp = __builtin_frame_address(0);\n",
         "    const void* const stub_fp =\n",
         "        self_fp ? *reinterpret_cast<const void* const*>(self_fp) : nullptr;\n",
@@ -444,12 +501,84 @@ def build_cpp(rows: list[dict], handwritten: str, rna_block: str = "") -> str:
     return "".join(out)
 
 
+def build_abi_stubs(rows: list[dict]) -> str:
+    """Build the callee-pops thunk table.
+
+    The guest calls `wasm_call` with Cranelift's Tail ABI.  On entry, rsp points
+    at the guest return address and the stack-passed wasm arguments occupy
+    [rsp+8, rsp+8+POP).  A plain C++ body (System-V) expects exactly that
+    layout and alignment, but returns with a plain `ret`, leaving the guest's
+    rsp POP bytes too low.  Each thunk therefore:
+
+      1. saves the guest return address in a per-thread stack (so it can be
+         restored after the C++ body has returned),
+      2. replaces the return address with a local `.L..._ret` label,
+      3. jumps (not calls!) to the C++ body, preserving rsp/regs/stack args,
+      4. at that label, restores the guest return address and executes
+         `ret $POP` so the guest's stack is balanced.
+
+    Only rax/r10/r11 (Tail caller-saved, never argument registers) are used as
+    scratch, and the epilogue deliberately leaves rax/%xmm0 alone so integer
+    and float return values reach the guest.  A mis-nested call hits `ud2`
+    rather than corrupting memory.
+    """
+    out = [
+        "// Generated by host/gen_imports.py -- DO NOT EDIT BY HAND.\n",
+        "// Callee-pops thunks for Wasmtime 50's x86-64 wasm-call (Tail) ABI.\n",
+        "// See host/ABI.md for the POP derivation and why `call` is not used.\n",
+        "\t.text\n",
+    ]
+    for row in rows:
+        slot = row["slot"]
+        pop = abi_pop(row["params"])
+        name = f"wasm_import_{slot:03d}_{sym(row['name'])}"
+        label = f".Labi_ret_{slot:03d}"
+        out.extend([
+            f"\t.globl wasm_abi_{slot:03d}\n",
+            f"\t.type wasm_abi_{slot:03d}, @function\n",
+            f"wasm_abi_{slot:03d}:\n",
+            "\tmovq wb_abi_ret_depth@gottpoff(%rip), %r10\n",
+            "\tmovl %fs:(%r10), %r11d\n",
+            f"\tcmpl ${ABI_RET_STACK_DEPTH}, %r11d\n",
+            "\tjae .Labi_ret_overflow\n",
+            "\tmovq wb_abi_ret_stack@gottpoff(%rip), %r10\n",
+            "\tmovq (%rsp), %rax\n",
+            "\tmovq %rax, %fs:(%r10,%r11,8)\n",
+            "\tincl %r11d\n",
+            "\tmovq wb_abi_ret_depth@gottpoff(%rip), %r10\n",
+            "\tmovl %r11d, %fs:(%r10)\n",
+            f"\tleaq {label}(%rip), %rax\n",
+            "\tmovq %rax, (%rsp)\n",
+            f"\tjmp {name}\n",
+            f"{label}:\n",
+            "\tmovq wb_abi_ret_depth@gottpoff(%rip), %r10\n",
+            "\tmovl %fs:(%r10), %r11d\n",
+            "\tdecl %r11d\n",
+            "\tmovq wb_abi_ret_depth@gottpoff(%rip), %r10\n",
+            "\tmovl %r11d, %fs:(%r10)\n",
+            "\tmovq wb_abi_ret_stack@gottpoff(%rip), %r10\n",
+            "\tmovq %fs:(%r10,%r11,8), %r11\n",
+            "\tmovq %r11, -8(%rsp)\n",
+            "\tleaq -8(%rsp), %rsp\n",
+            (f"\tret ${pop}\n" if pop else "\tret\n"),
+            f"\t.size wasm_abi_{slot:03d}, .-wasm_abi_{slot:03d}\n",
+        ])
+    out.extend([
+        ".Labi_ret_overflow:\n",
+        "\tud2\n",
+        "\t.section .note.GNU-stack,\"\",@progbits\n",
+    ])
+    return "".join(out)
+
+
 def main() -> int:
     root = Path(__file__).resolve().parent.parent
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--wasm", type=Path, default=Path("/tmp/opencode/WebClient.raknet.wasm"))
     ap.add_argument("--docs", type=Path, default=root / "docs" / "imports-wasm.json")
     ap.add_argument("--out-dir", type=Path, default=Path(__file__).resolve().parent)
+    ap.add_argument("--stubs-only", action="store_true",
+                    help="only (re)generate abi_stubs.S; leave imports.h/.cpp untouched")
     args = ap.parse_args()
 
     types, imports = parse_wasm(args.wasm)
@@ -496,6 +625,13 @@ def main() -> int:
         raise SystemExit(f"REALIZED names not in module: {sorted(missing)}")
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
+    stubs = build_abi_stubs(rows)
+    (args.out_dir / "abi_stubs.S").write_text(stubs)
+    if args.stubs_only:
+        print(f"generated {len(rows)} callee-pop thunks "
+              f"({sum(abi_pop(r['params']) > 0 for r in rows)} with ret $POP) "
+              f"-> {args.out_dir / 'abi_stubs.S'}")
+        return 0
     (args.out_dir / "imports.h").write_text(build_header(rows))
     cpp = args.out_dir / "imports.cpp"
     hand = ""
