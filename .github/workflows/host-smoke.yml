@@ -52,7 +52,7 @@ jobs:
             echo "zstd not found; installing"
             install_zstd
           fi
-          for tool in cmake python3 clang zstd; do
+          for tool in cmake python3 clang zstd ninja; do
             command -v "$tool" >/dev/null 2>&1 || { echo "missing tool: $tool" >&2; exit 1; }
           done
           cmake_ver=$(cmake --version | head -1 | awk '{print $3}')
@@ -65,18 +65,22 @@ jobs:
           python3 --version
           clang --version | head -1
           zstd --version
+          # WABT 1.0.42 headers use C11 _Atomic; MSVC cannot parse them.
+          echo "CC=clang" >> "$GITHUB_ENV"
 
       - name: Configure
         run: |
           set -euo pipefail
           # The Windows DLL has no wasm_rt_* exports, so compile the pinned
           # generated C locally there.  Linux/macOS use the prebuilt bundle.
-          extra=()
           if [ "${RUNNER_OS}" = "Windows" ]; then
-            extra=(-DWEBLOX_ENGINE_MODE=source)
+            # The DLL has no wasm_rt_* exports; compile generated C locally.
+            cmake -G Ninja -S . -B build -DCMAKE_BUILD_TYPE=Release \
+              -DWEBLOX_ENGINE_MODE=source 2>&1 | tee ci-logs/configure.log
+          else
+            cmake -G Ninja -S . -B build -DCMAKE_BUILD_TYPE=Release 2>&1 \
+              | tee ci-logs/configure.log
           fi
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release "${extra[@]}" 2>&1 \
-            | tee ci-logs/configure.log
 
       - name: Build
         run: |

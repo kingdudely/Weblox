@@ -44,6 +44,53 @@ endif()
 include(cmake/FetchAsset.cmake)
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 set(WABT_DIR "${CMAKE_CURRENT_LIST_DIR}/deps/wabt")
+
+# HTTP is optional: without libcurl those imports remain generated no-ops.
+find_package(CURL QUIET)
+set(HTTP_SOURCES "")
+set(IMPLEMENTED_FILE "${CMAKE_CURRENT_LIST_DIR}/tools/implemented.txt")
+if(CURL_FOUND)
+  list(APPEND HTTP_SOURCES src/http.c src/fetch.c src/fs.c)
+  file(READ "${IMPLEMENTED_FILE}" IMPLEMENTED_TEXT)
+  set(HTTP_IMPORTS
+    "emscripten_start_fetch\nemscripten_fetch_free\n"
+    "0x5Femscripten_fetch_get_response_headers_length\n"
+    "0x5Femscripten_fetch_get_response_headers\njs_fetch_file\n"
+    "0x5F_syscall_getegid32\n0x5F_syscall_geteuid32\n"
+    "0x5F_syscall_getgid32\n0x5F_syscall_getuid32\n")
+  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/implemented-host.txt"
+    "${IMPLEMENTED_TEXT}${HTTP_IMPORTS}")
+  set(IMPLEMENTED_FILE "${CMAKE_CURRENT_BINARY_DIR}/implemented-host.txt")
+
+  set(YYJSON_DIR "${WEBLOX_ASSET_DIR}/yyjson")
+  if(NOT EXISTS "${YYJSON_DIR}/src/yyjson.c")
+    set(yyjson_tar "${WEBLOX_ASSET_DIR}/yyjson.tar.gz")
+    file(DOWNLOAD
+      "https://github.com/ibireme/yyjson/archive/refs/tags/${PIN_YYJSON_VERSION}.tar.gz"
+      "${yyjson_tar}" EXPECTED_HASH SHA256=${PIN_YYJSON_SHA256}
+      TLS_VERIFY ON TIMEOUT 600 STATUS status)
+    list(GET status 0 code)
+    if(NOT code EQUAL 0)
+      message(FATAL_ERROR "yyjson download failed: ${status}")
+    endif()
+    file(MAKE_DIRECTORY "${YYJSON_DIR}")
+    execute_process(COMMAND "${CMAKE_COMMAND}" -E tar xzf "${yyjson_tar}"
+      WORKING_DIRECTORY "${YYJSON_DIR}" RESULT_VARIABLE rc)
+    if(NOT rc EQUAL 0)
+      message(FATAL_ERROR "yyjson extract failed (rc=${rc})")
+    endif()
+    file(GLOB yyjson_root "${YYJSON_DIR}/yyjson-*")
+    if(yyjson_root)
+      file(GLOB yyjson_children "${yyjson_root}/*")
+      file(COPY ${yyjson_children} DESTINATION "${YYJSON_DIR}")
+      file(REMOVE_RECURSE ${yyjson_root})
+    endif()
+  endif()
+  add_library(yyjson STATIC "${YYJSON_DIR}/src/yyjson.c")
+  target_include_directories(yyjson PUBLIC "${YYJSON_DIR}/src")
+else()
+  message(STATUS "libcurl not found; HTTP imports remain no-op stubs")
+endif()
 set(ENGINE_SRC "${CMAKE_BINARY_DIR}/engine")
 file(MAKE_DIRECTORY "${ENGINE_SRC}")
 
@@ -124,7 +171,7 @@ execute_process(
   COMMAND ${Python3_EXECUTABLE}
     "${CMAKE_CURRENT_LIST_DIR}/tools/gen_stubs.py"
     "${ENGINE_SRC}/WC.h"
-    "${CMAKE_CURRENT_LIST_DIR}/tools/implemented.txt"
+    "${IMPLEMENTED_FILE}"
   OUTPUT_FILE "${STUBS}"
   RESULT_VARIABLE rc)
 if(NOT rc EQUAL 0)
@@ -169,7 +216,7 @@ if(NOT SDL3_FOUND)
 endif()
 
 add_executable(weblox
-  src/main.c src/mem.c src/imports.c
+  src/main.c src/mem.c src/imports.c ${HTTP_SOURCES}
   src/window_sdl.c src/gl.c src/webgpu.c src/webtransport.c)
 target_include_directories(weblox PRIVATE
   "${ENGINE_SRC}" "${WABT_DIR}" "${CMAKE_CURRENT_LIST_DIR}/src")
@@ -177,6 +224,9 @@ target_link_libraries(weblox PRIVATE wc_stubs Threads::Threads)
 if(SDL3_FOUND)
   target_compile_definitions(weblox PRIVATE WEBLOX_HAVE_SDL3=1)
   target_link_libraries(weblox PRIVATE SDL3::SDL3)
+endif()
+if(CURL_FOUND)
+  target_link_libraries(weblox PRIVATE CURL::libcurl yyjson)
 endif()
 
 if(WEBLOX_ENGINE_MODE STREQUAL "source")
