@@ -240,7 +240,7 @@ endif()
 find_package(Threads REQUIRED)
 
 add_executable(weblox
-  src/main.c src/mem.c src/imports.c ${HTTP_SOURCES} ${FIBER_SOURCES}
+  src/main.c src/mem.c src/imports.c src/asm_const.c ${HTTP_SOURCES} ${FIBER_SOURCES}
   src/window_sdl.c src/gl.c src/webgpu.c src/webtransport.c)
 target_include_directories(weblox PRIVATE
   "${ENGINE_SRC}" "${WABT_DIR}" "${CMAKE_CURRENT_LIST_DIR}/src"

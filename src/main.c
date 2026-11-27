@@ -3,6 +3,7 @@
 
 #include "host.h"
 
+#include "asm_const.h"
 #include "window.h"
 #include "gl.h"
 #include "webgpu.h"
@@ -106,6 +107,7 @@ int main(void) {
   printf("RT_INIT\n");
   allocate_memory();
   printf("MEM=%llu\n", (unsigned long long)g_mem.size);
+  weblox_asm_const_init();
 #ifdef WEBLOX_HAVE_SDL3
   weblox_fibers_init();
 #endif
