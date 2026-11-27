@@ -52,12 +52,16 @@ set(IMPLEMENTED_FILE "${CMAKE_CURRENT_LIST_DIR}/tools/implemented.txt")
 if(CURL_FOUND)
   list(APPEND HTTP_SOURCES src/http.c src/fetch.c src/fs.c)
   file(READ "${IMPLEMENTED_FILE}" IMPLEMENTED_TEXT)
-  set(HTTP_IMPORTS
-    "emscripten_start_fetch\nemscripten_fetch_free\n"
+  string(CONCAT HTTP_IMPORTS
+    "emscripten_start_fetch\n"
+    "emscripten_fetch_free\n"
     "0x5Femscripten_fetch_get_response_headers_length\n"
-    "0x5Femscripten_fetch_get_response_headers\njs_fetch_file\n"
-    "0x5F_syscall_getegid32\n0x5F_syscall_geteuid32\n"
-    "0x5F_syscall_getgid32\n0x5F_syscall_getuid32\n")
+    "0x5Femscripten_fetch_get_response_headers\n"
+    "js_fetch_file\n"
+    "0x5F_syscall_getegid32\n"
+    "0x5F_syscall_geteuid32\n"
+    "0x5F_syscall_getgid32\n"
+    "0x5F_syscall_getuid32\n")
   file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/implemented-host.txt"
     "${IMPLEMENTED_TEXT}${HTTP_IMPORTS}")
   set(IMPLEMENTED_FILE "${CMAKE_CURRENT_BINARY_DIR}/implemented-host.txt")
