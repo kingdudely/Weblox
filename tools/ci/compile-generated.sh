@@ -68,7 +68,7 @@ if command -v ccache >/dev/null 2>&1 && [[ -z ${WC_NO_CCACHE:-} ]]; then
 fi
 CFLAGS="-w -Wno-error=incompatible-pointer-types -Wno-error=int-conversion \
   -Wno-error=pointer-sign -Wno-error=builtin-declaration-mismatch \
-  -fno-asynchronous-unwind-tables -fno-stack-protector $PIC_FLAG \
+  -fno-asynchronous-unwind-tables -fno-stack-protector -pipe $PIC_FLAG \
   -I$GEN -I$WASM2C_INCLUDE -I$SIMDE_DIR"
 
 # Every generated TU includes the same ~9 MB WC-impl.h plus WABT/SIMDE headers.
