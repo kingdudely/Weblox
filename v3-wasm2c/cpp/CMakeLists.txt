@@ -218,7 +218,10 @@ if(WEBLOX_ENGINE_MODE STREQUAL "source")
     "${ENGINE_SRC}" "${ABI_DIR}" "${SIMDE_DIR}")
   if(NOT MSVC)
     target_compile_options(wc_generated PRIVATE
-      -w -fno-stack-protector -fno-asynchronous-unwind-tables -fPIC)
+      -w -fno-stack-protector -fno-asynchronous-unwind-tables)
+    if(NOT WIN32)
+      target_compile_options(wc_generated PRIVATE -fPIC)
+    endif()
   endif()
 endif()
 
