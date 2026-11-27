@@ -98,7 +98,7 @@ jobs:
       # CTest resolves the per-OS executable path for the registered "smoke"
       # test (which prints CPP_SMOKE_OK), so no exe path is hardcoded here.
       - name: Smoke test
-        run: ctest --test-dir build/cpp -C Release --output-on-failure
+        run: ctest --test-dir build/cpp -C Release --output-on-failure -V
 
       - name: Upload logs on failure
         if: failure()

@@ -3,11 +3,13 @@ extern "C" {
 #include "WC.h"
 }
 
+#include "guest.h"
 #include "loop.h"
 #include "platform.h"
 
 #include <atomic>
 #include <chrono>
+#include <cstring>
 
 namespace {
 std::atomic<bool> g_scheduled{false};
@@ -25,9 +27,20 @@ int run(w2c_WebClient* inst, std::chrono::milliseconds budget) {
   g_scheduled.store(false, std::memory_order_release);
 
   // The generated export is `__main_argc_argv`, declared by name in WC.h.
-  // The engine's browser entry expects no host argv (it reads its config from
-  // imports), so both arguments are zero.
-  w2c_WebClient_0x5F_main_argc_argv(inst, 0, 0);
+  // Its arguments are a guest argc and a guest address of a pointer array, so
+  // both are allocated in the module's own linear memory.
+  constexpr char kArgv0[] = "/content/.keep";
+  const u32 text = w2c_WebClient_malloc(inst, sizeof(kArgv0));
+  const u32 array = w2c_WebClient_malloc(inst, 8);
+  if (text && array) {
+    if (auto* p = weblox::guest::ptr(text, sizeof(kArgv0)))
+      std::memcpy(p, kArgv0, sizeof(kArgv0));
+    weblox::guest::put_u32(array, text);
+    weblox::guest::put_u32(array + 4, 0);
+    w2c_WebClient_0x5F_main_argc_argv(inst, 1, array);
+  } else {
+    w2c_WebClient_0x5F_main_argc_argv(inst, 0, 0);
+  }
 
   const auto deadline = std::chrono::steady_clock::now() + budget;
   int turns = 0;
