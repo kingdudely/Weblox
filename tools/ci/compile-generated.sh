@@ -13,6 +13,10 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 . "$HERE/platform.sh"
 ci_init
 ci_metric platform "$PLATFORM"
+command -v zstd >/dev/null 2>&1 || {
+  echo "[gen] zstd is required to publish engine bundles" >&2
+  exit 2
+}
 
 RELEASE=${GENERATED_RELEASE:-ci-local-wasm2c-generated}
 GEN="$CI_BUILD_DIR/generated"

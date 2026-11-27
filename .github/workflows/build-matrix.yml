@@ -69,22 +69,21 @@ jobs:
 
       - name: Toolchain
         run: |
-          if ! command -v clang >/dev/null 2>&1; then
-            choco install llvm -y
-          fi
-          if ! command -v zstd >/dev/null 2>&1; then
-            if [ "${{ runner.os }}" = "Windows" ]; then choco install zstd -y
-            elif [ "${{ runner.os }}" = "macOS" ]; then brew install zstd
-            else sudo apt-get update -qq && sudo apt-get install -y -qq zstd ccache
-            fi
-          fi
-          if ! command -v ccache >/dev/null 2>&1; then
-            if [ "${{ runner.os }}" = "Windows" ]; then choco install ccache -y
-            else brew install ccache
-            fi
-          fi
+          set -e
+          install_pkg() {
+            case "${{ runner.os }}" in
+              Linux)  sudo apt-get update -qq && sudo apt-get install -y -qq "$1" ;;
+              macOS)  brew install "$1" ;;
+              Windows) choco install "$1" -y ;;
+              *) echo "unsupported runner OS: ${{ runner.os }}" >&2; exit 1 ;;
+            esac
+          }
+          command -v clang >/dev/null 2>&1 || install_pkg llvm
+          command -v zstd  >/dev/null 2>&1 || install_pkg zstd
+          command -v ccache >/dev/null 2>&1 || install_pkg ccache
           clang --version | head -1
           zstd --version | head -1
+          ccache --version | head -1
 
       - name: Prepare
         run: mkdir -p build/ci/ccache
