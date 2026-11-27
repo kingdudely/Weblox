@@ -33,15 +33,30 @@ namespace {
 
 #ifdef _WIN32
 void* g_mem_base = nullptr;  // raw VirtualAlloc base, for release
+
+// WC.h declares the module constants without __declspec(dllimport).  clang-cl
+// then treats them as ordinary externals and reads the import-table slot
+// instead of the DLL's data, producing garbage sizes.  Resolve by name.
+template <class T>
+const T& dll_constant(const char* name) {
+  HMODULE module = GetModuleHandleA("engine-windows-x64.dll");
+  FARPROC address = module ? GetProcAddress(module, name) : nullptr;
+  if (!address) {
+    std::fprintf(stderr, "missing DLL constant %s\n", name);
+    std::abort();
+  }
+  return *reinterpret_cast<const T*>(address);
+}
 #endif
 
 // WABT reserves 8 GiB when guard pages are enabled.  That reservation fails
 // on Windows runners, so set up the same 4 GiB address space directly there.
 void allocate_memory() {
-  const u64 max_pages = wasm2c_WebClient_max_env_memory;
-  const u64 page_size = wasm2c_WebClient_pagesize_env_memory;
 #ifdef _WIN32
-  const u64 initial_pages = wasm2c_WebClient_min_env_memory;
+  const u64 max_pages = dll_constant<u64>("wasm2c_WebClient_max_env_memory");
+  const u64 page_size =
+      dll_constant<u32>("wasm2c_WebClient_pagesize_env_memory");
+  const u64 initial_pages = dll_constant<u64>("wasm2c_WebClient_min_env_memory");
   const u64 reserve_bytes = max_pages * page_size;
   std::printf("WIN_RESERVE=%llu\n",
               static_cast<unsigned long long>(reserve_bytes));
@@ -66,11 +81,13 @@ void allocate_memory() {
   g_mem.max_pages = max_pages;
   g_mem.size = initial_pages * page_size;
   g_mem.page_size = static_cast<u32>(page_size);
-  g_mem.is64 = wasm2c_WebClient_is64_env_memory != 0;
+  g_mem.is64 = dll_constant<u8>("wasm2c_WebClient_is64_env_memory") != 0;
   std::printf("WIN_FIELDS\n");
   InitializeCriticalSection(&g_mem.mem_lock);
   std::printf("WIN_LOCK\n");
 #else
+  const u64 max_pages = wasm2c_WebClient_max_env_memory;
+  const u64 page_size = wasm2c_WebClient_pagesize_env_memory;
   wasm_rt_allocate_memory_shared(&g_mem, max_pages, max_pages,
                                  wasm2c_WebClient_is64_env_memory,
                                  static_cast<u32>(page_size));
