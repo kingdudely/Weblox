@@ -62,5 +62,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload ci-local-wasm2c-generated \
-            libweblox_engine_mingw.a --repo kingdudely/Weblox --clobber
+          if gh release view ci-local-wasm2c-generated >/dev/null 2>&1; then
+            gh release upload ci-local-wasm2c-generated \
+              libweblox_engine_mingw.a --clobber
+          else
+            gh release create ci-local-wasm2c-generated \
+              libweblox_engine_mingw.a \
+              --title 'wasm2c generated tree' \
+              --notes 'Windows MinGW engine library built by windows-engine.yml'
+          fi
