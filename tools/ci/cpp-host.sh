@@ -33,7 +33,7 @@ CXX=${CXX:-$(command -v clang++ >/dev/null 2>&1 && echo clang++ || echo c++)}
 "$CC" -c $CFLAGS "$CPP/stubs.c" -o "$CPP/stubs.o"
 "$CC" -c $CFLAGS "$CI_ROOT/v3-wasm2c/cpp/mem.c" -o "$CPP/mem.o"
 CPP_SRCS="host.cpp window.cpp platform.cpp net_stub.cpp net_curl.cpp \
-gpu_stub.cpp fiber_stub.cpp fiber_ucontext.cpp imports.cpp"
+gpu_stub.cpp fiber_stub.cpp fiber_ucontext.cpp fiber_win.cpp imports.cpp"
 CPP_OBJS=""
 for src in $CPP_SRCS; do
   "$CXX" -c $CXXFLAGS "$CI_ROOT/v3-wasm2c/cpp/$src" -o "$CPP/${src%.cpp}.o"

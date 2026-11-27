@@ -11,7 +11,7 @@ platform.h     std::chrono / std::thread / std::condition_variable services
 imports.cpp    real C++ implementations of core imports (console/clock/random)
 net.h          HTTP abstraction; net_curl.cpp with -DWEBLOX_USE_CURL
 gpu.h          WebGL/WebGPU abstraction; gpu_stub.cpp is the no-op default
-fiber.h        stackful fibers; fiber_ucontext.cpp with -DWEBLOX_USE_UCONTEXT
+fiber.h        stackful fibers; fiber_ucontext.cpp (POSIX) / fiber_win.cpp (Windows)
 window.h       window/input abstraction; window_sdl.cpp with -DWEBLOX_USE_SDL
 CMakeLists.txt optional local build (requires stubs.c generated from WC.h)
 ```

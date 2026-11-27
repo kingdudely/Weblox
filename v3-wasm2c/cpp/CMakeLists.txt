@@ -21,5 +21,5 @@ set_target_properties(wc_stubs PROPERTIES LINKER_LANGUAGE C)
 find_package(Threads REQUIRED)
 
 add_executable(weblox host.cpp window.cpp platform.cpp net_stub.cpp net_curl.cpp
-  gpu_stub.cpp fiber_stub.cpp fiber_ucontext.cpp imports.cpp)
+  gpu_stub.cpp fiber_stub.cpp fiber_ucontext.cpp fiber_win.cpp imports.cpp)
 target_link_libraries(weblox PRIVATE wc_stubs "${ENGINE_LIB}" Threads::Threads)
