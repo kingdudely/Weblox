@@ -245,7 +245,10 @@ add_executable(weblox
 target_include_directories(weblox PRIVATE
   "${ENGINE_SRC}" "${WABT_DIR}" "${CMAKE_CURRENT_LIST_DIR}/src"
   "${CMAKE_CURRENT_LIST_DIR}/deps/minicoro")
-target_link_libraries(weblox PRIVATE wc_stubs Threads::Threads m)
+target_link_libraries(weblox PRIVATE wc_stubs Threads::Threads)
+if(NOT WIN32)
+  target_link_libraries(weblox PRIVATE m)
+endif()
 if(SDL3_FOUND)
   target_compile_definitions(weblox PRIVATE WEBLOX_HAVE_SDL3=1)
   target_link_libraries(weblox PRIVATE ${WEBLOX_SDL3_LIB})

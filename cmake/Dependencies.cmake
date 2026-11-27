@@ -91,6 +91,8 @@ else()
   message(STATUS "SDL3 not found; building pinned SDL ${PIN_SDL3_VERSION}")
   set(SDL_SHARED OFF CACHE BOOL "" FORCE)
   set(SDL_STATIC ON CACHE BOOL "" FORCE)
+  # CI runners lack X11/Wayland dev headers; the smoke test does not window.
+  set(SDL_UNIX_CONSOLE_BUILD ON CACHE BOOL "" FORCE)
   set(SDL_TESTS OFF CACHE BOOL "" FORCE)
   set(SDL_EXAMPLES OFF CACHE BOOL "" FORCE)
   set(SDL_INSTALL OFF CACHE BOOL "" FORCE)
