@@ -3,6 +3,7 @@
 # Nothing here depends on apt/brew/choco.
 
 include(FetchContent)
+find_program(WEBLOX_CURL curl REQUIRED)
 
 # CMake's internal downloader is fragile on codeload.github.com; download and
 # verify with our own helper, then give FetchContent a local SOURCE_DIR.
@@ -11,7 +12,6 @@ function(weblox_source_dir name url sha out_var)
   set(tar "${WEBLOX_ASSET_DIR}/${name}.tar.gz")
   set(stamp "${WEBLOX_ASSET_DIR}/${name}.${sha}.stamp")
   if(NOT EXISTS "${stamp}")
-    find_program(WEBLOX_CURL curl REQUIRED)
     message(STATUS "fetch ${name}: ${url} -> ${tar}")
     execute_process(COMMAND "${WEBLOX_CURL}" -fsSL --retry 5 --retry-all-errors
       -o "${tar}" "${url}"

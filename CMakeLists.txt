@@ -70,35 +70,40 @@ if(CURL_FOUND)
     "${IMPLEMENTED_TEXT}${HTTP_IMPORTS}")
   set(IMPLEMENTED_FILE "${CMAKE_CURRENT_BINARY_DIR}/implemented-host.txt")
 
-  set(YYJSON_DIR "${WEBLOX_ASSET_DIR}/yyjson")
-  if(NOT EXISTS "${YYJSON_DIR}/src/yyjson.c")
-    set(yyjson_tar "${WEBLOX_ASSET_DIR}/yyjson.tar.gz")
-    file(DOWNLOAD
-      "https://github.com/ibireme/yyjson/archive/refs/tags/${PIN_YYJSON_VERSION}.tar.gz"
-      "${yyjson_tar}" EXPECTED_HASH SHA256=${PIN_YYJSON_SHA256}
-      TLS_VERIFY ON TIMEOUT 600 STATUS status)
-    list(GET status 0 code)
-    if(NOT code EQUAL 0)
-      message(FATAL_ERROR "yyjson download failed: ${status}")
-    endif()
-    file(MAKE_DIRECTORY "${YYJSON_DIR}")
-    execute_process(COMMAND "${CMAKE_COMMAND}" -E tar xzf "${yyjson_tar}"
-      WORKING_DIRECTORY "${YYJSON_DIR}" RESULT_VARIABLE rc)
-    if(NOT rc EQUAL 0)
-      message(FATAL_ERROR "yyjson extract failed (rc=${rc})")
-    endif()
-    file(GLOB yyjson_root "${YYJSON_DIR}/yyjson-*")
-    if(yyjson_root)
-      file(GLOB yyjson_children "${yyjson_root}/*")
-      file(COPY ${yyjson_children} DESTINATION "${YYJSON_DIR}")
-      file(REMOVE_RECURSE ${yyjson_root})
-    endif()
-  endif()
-  add_library(yyjson STATIC "${YYJSON_DIR}/src/yyjson.c")
-  target_include_directories(yyjson PUBLIC "${YYJSON_DIR}/src")
 else()
   message(STATUS "libcurl not found; HTTP imports remain no-op stubs")
 endif()
+
+# yyjson is needed by both HTTP join patching and the VFS manifest parser.
+set(YYJSON_DIR "${WEBLOX_ASSET_DIR}/yyjson")
+if(NOT EXISTS "${YYJSON_DIR}/src/yyjson.c")
+  set(yyjson_tar "${WEBLOX_ASSET_DIR}/yyjson.tar.gz")
+  execute_process(COMMAND "${WEBLOX_CURL}" -fsSL --retry 5 --retry-all-errors
+    -o "${yyjson_tar}"
+    "https://github.com/ibireme/yyjson/archive/refs/tags/${PIN_YYJSON_VERSION}.tar.gz"
+    RESULT_VARIABLE rc)
+  if(NOT rc EQUAL 0)
+    message(FATAL_ERROR "yyjson download failed (rc=${rc})")
+  endif()
+  file(SHA256 "${yyjson_tar}" have_sha)
+  if(NOT have_sha STREQUAL PIN_YYJSON_SHA256)
+    message(FATAL_ERROR "yyjson hash mismatch: ${have_sha}")
+  endif()
+  file(MAKE_DIRECTORY "${YYJSON_DIR}")
+  execute_process(COMMAND "${CMAKE_COMMAND}" -E tar xzf "${yyjson_tar}"
+    WORKING_DIRECTORY "${YYJSON_DIR}" RESULT_VARIABLE rc)
+  if(NOT rc EQUAL 0)
+    message(FATAL_ERROR "yyjson extract failed (rc=${rc})")
+  endif()
+  file(GLOB yyjson_root "${YYJSON_DIR}/yyjson-*")
+  if(yyjson_root)
+    file(GLOB yyjson_children "${yyjson_root}/*")
+    file(COPY ${yyjson_children} DESTINATION "${YYJSON_DIR}")
+    file(REMOVE_RECURSE ${yyjson_root})
+  endif()
+endif()
+add_library(yyjson STATIC "${YYJSON_DIR}/src/yyjson.c")
+target_include_directories(yyjson PUBLIC "${YYJSON_DIR}/src")
 
 # Fibers, atomics and workers need SDL3 and minicoro.
 set(FIBER_SOURCES "")
@@ -240,12 +245,14 @@ endif()
 find_package(Threads REQUIRED)
 
 add_executable(weblox
-  src/main.c src/mem.c src/imports.c src/asm_const.c ${HTTP_SOURCES} ${FIBER_SOURCES}
+  src/main.c src/mem.c src/imports.c src/asm_const.c
+  src/embind.c src/host_info.c src/prepare.c src/vfs.c
+  ${HTTP_SOURCES} ${FIBER_SOURCES}
   src/window_sdl.c src/gl.c src/webgpu.c src/webtransport.c)
 target_include_directories(weblox PRIVATE
   "${ENGINE_SRC}" "${WABT_DIR}" "${CMAKE_CURRENT_LIST_DIR}/src"
   "${CMAKE_CURRENT_LIST_DIR}/deps/minicoro")
-target_link_libraries(weblox PRIVATE wc_stubs Threads::Threads)
+target_link_libraries(weblox PRIVATE wc_stubs Threads::Threads yyjson)
 if(NOT WIN32)
   target_link_libraries(weblox PRIVATE m)
 endif()
@@ -255,7 +262,7 @@ if(SDL3_FOUND)
 endif()
 if(CURL_FOUND)
   target_compile_definitions(weblox PRIVATE WEBLOX_USE_HTTP=1)
-  target_link_libraries(weblox PRIVATE ${WEBLOX_CURL_LIB} yyjson)
+  target_link_libraries(weblox PRIVATE ${WEBLOX_CURL_LIB})
 endif()
 
 if(WEBLOX_ENGINE_MODE STREQUAL "source")

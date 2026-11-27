@@ -4,6 +4,7 @@
 #include "host.h"
 
 #include "asm_const.h"
+#include "prepare.h"
 #include "window.h"
 #include "gl.h"
 #include "webgpu.h"
@@ -127,6 +128,7 @@ int main(void) {
 #ifdef WEBLOX_HAVE_SDL3
     w2c_WebClient_0x5F_wasm_call_ctors(&inst);
     weblox_thread_maybe_init_main(&inst);
+    if (weblox_prepare(&inst) != 0) fprintf(stderr, "prepare failed\n");
     void* root = weblox_run_on_root(&inst, main_turn, &inst);
     (void)root;
     int turns = 0;
