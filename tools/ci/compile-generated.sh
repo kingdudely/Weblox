@@ -136,9 +136,15 @@ ci_metric shared_bytes "$(wc -c < "$SHARED" | tr -d ' ')"
 cp "$GEN/WC.h" "$OUT/WC.h"
 cp "$GEN/WC-impl.h" "$OUT/WC-impl.h" 2>/dev/null || true
 if command -v zstd >/dev/null 2>&1; then
-  zstd -T0 -19 -f -q "$SHARED" -o "$SHARED.zst"
-  [[ -n $IMPORT ]] && zstd -T0 -19 -f -q "$IMPORT" -o "$IMPORT.zst"
-  ci_metric zstd_bytes "$(wc -c < "$SHARED.zst" | tr -d ' ')"
+  # One tar.zst per platform so CMake FetchContent can download + extract it.
+  BUNDLE="$OUT/engine-$PLATFORM.tar.zst"
+  if [[ -n $IMPORT ]]; then
+    (cd "$OUT" && tar -cf - "$SHARED_NAME" "$(basename "$IMPORT")") \
+      | zstd -T0 -19 -q > "$BUNDLE"
+  else
+    (cd "$OUT" && tar -cf - "$SHARED_NAME") | zstd -T0 -19 -q > "$BUNDLE"
+  fi
+  ci_metric zstd_bytes "$(wc -c < "$BUNDLE" | tr -d ' ')"
 fi
 {
   echo '{'

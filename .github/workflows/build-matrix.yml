@@ -129,7 +129,7 @@ jobs:
           TAG: ${{ needs.prepare.outputs.tag }}
         run: |
           gh release upload "$TAG" \
-            "$ENGINE_DIR"/engine-*.zst \
+            "$ENGINE_DIR"/engine-*.tar.zst \
             "$ENGINE_DIR"/WC.h --repo "${{ github.repository }}" --clobber
 
   source:
