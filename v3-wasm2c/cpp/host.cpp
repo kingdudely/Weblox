@@ -56,7 +56,8 @@ void allocate_memory() {
   const u64 max_pages = dll_constant<u64>("wasm2c_WebClient_max_env_memory");
   const u64 page_size =
       dll_constant<u32>("wasm2c_WebClient_pagesize_env_memory");
-  const u64 initial_pages = dll_constant<u64>("wasm2c_WebClient_min_env_memory");
+  // Data segments live near 2 GiB, so only the initial 256 MiB is not enough.
+  const u64 initial_pages = max_pages;
   const u64 reserve_bytes = max_pages * page_size;
   std::printf("WIN_RESERVE=%llu\n",
               static_cast<unsigned long long>(reserve_bytes));
