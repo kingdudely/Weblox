@@ -22,7 +22,7 @@ ci_fetch_wabt
 if [[ ! -f $GEN/WC.h ]]; then
   echo "[gen] fetching generated C from release $RELEASE" >&2
   if command -v gh >/dev/null 2>&1; then
-    gh release download "$RELEASE" --dir "$GEN" \
+    gh release download "$RELEASE" --repo "${ENGINE_REPO:-kingdudely/Weblox}" --dir "$GEN" \
       --pattern 'WC*.c' --pattern 'WC.h' --pattern 'WC-impl.h'
   else
     API="https://api.github.com/repos/kingdudely/Weblox/releases/tags/$RELEASE"

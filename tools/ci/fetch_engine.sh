@@ -34,7 +34,10 @@ mkdir -p "$DEST"
 if command -v gh >/dev/null 2>&1; then
   gh release download "$TAG" --repo "$REPO" --dir "$DEST" \
     --pattern 'libweblox_engine.a' --pattern 'WC.h' \
-    --pattern 'manifest.json' --pattern 'env.sh' --clobber
+    --pattern 'manifest.json' --pattern 'env.sh' --clobber || {
+      echo "fetch_engine.sh: gh release download failed; check ENGINE_REPO/ENGINE_RUN_ID" >&2
+      exit 2
+    }
 else
   API="https://api.github.com/repos/$REPO/releases/tags/$TAG"
   curl -fL --retry 3 "$API" \
