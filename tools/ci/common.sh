@@ -114,12 +114,24 @@ ci_platform() {
 }
 
 ci_fetch_wabt() {
-  # Sets WASM2C, WABT_ROOT, WASM2C_INCLUDE.  A caller-provided WABT_ROOT wins.
+  # Sets WASM2C, WABT_ROOT, WASM2C_INCLUDE, WASM2C_RUNTIME_DIR.  A
+  # caller-provided WABT_ROOT wins.  Prebuilt WABT tarballs put headers in
+  # include/ and runtime sources in share/wabt/wasm2c/; a source build uses
+  # wasm2c/ for both.
+  wabt_detect_layout() {
+    if [[ -f $WABT_ROOT/include/wasm-rt.h ]]; then
+      WASM2C_INCLUDE="$WABT_ROOT/include"
+      WASM2C_RUNTIME_DIR="$WABT_ROOT/share/wabt/wasm2c"
+    else
+      WASM2C_INCLUDE="$WABT_ROOT/wasm2c"
+      WASM2C_RUNTIME_DIR="$WABT_ROOT/wasm2c"
+    fi
+  }
   if [[ -n ${WABT_ROOT:-} ]]; then
     WASM2C=${WASM2C:-"$WABT_ROOT/bin/wasm2c"}
-    WASM2C_INCLUDE="$WABT_ROOT/wasm2c"
+    wabt_detect_layout
   elif [[ -n ${WASM2C:-} && -n ${WABT_ROOT:-} ]]; then
-    WASM2C_INCLUDE="$WABT_ROOT/wasm2c"
+    wabt_detect_layout
   else
     local plat dir tarball ok=0
     plat=$(ci_platform)
@@ -149,7 +161,7 @@ ci_fetch_wabt() {
     fi
     WABT_ROOT=$root
     WASM2C="$root/bin/wasm2c"
-    WASM2C_INCLUDE="$root/wasm2c"
+    wabt_detect_layout
   fi
   [[ -x $WASM2C ]] || { echo "common.sh: wasm2c not executable at $WASM2C" >&2; return 1; }
   WASM2C_VERSION=$("$WASM2C" --version 2>/dev/null || echo unknown)

@@ -67,7 +67,7 @@ printf '%s\n' "${TRANSLATED[@]}" | xargs -P "$JOBS" -I{} sh -c '
 ' sh {}
 ci_metric compile_secs $((SECONDS - T0))
 
-for f in "$WASM2C_INCLUDE"/wasm-rt*.c; do
+for f in "$WASM2C_RUNTIME_DIR"/wasm-rt*.c; do
   [[ -f $f ]] || continue
   "$CC" -c -w -I"$WASM2C_INCLUDE" -I"$GEN" -I"$SIMDE_DIR" "$f" -o "$OBJ/rt-$(basename "$f" .c).o"
 done

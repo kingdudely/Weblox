@@ -28,7 +28,7 @@ fi
 if [[ ! -f $WABT_INCLUDE/wasm-rt.h ]]; then
   WABT_VERSION=${WABT_VERSION:-1.0.42}
   ci_fetch_wabt
-  WABT_INCLUDE="$WABT_ROOT/wasm2c"
+  WABT_INCLUDE="$WASM2C_INCLUDE"
 fi
 
 OUT="$CI_BUILD_DIR/smoke"

@@ -93,7 +93,7 @@ ci_metric compile_secs $((SECONDS - T0))
 
 # WABT runtime support belongs in the engine library, not the host.
 RUNTIME_SRCS=()
-for f in "$WASM2C_INCLUDE"/wasm-rt*.c; do
+for f in "$WASM2C_RUNTIME_DIR"/wasm-rt*.c; do
   [[ -f $f ]] && RUNTIME_SRCS+=("$f")
 done
 ci_metric runtime_sources "${#RUNTIME_SRCS[@]}"
