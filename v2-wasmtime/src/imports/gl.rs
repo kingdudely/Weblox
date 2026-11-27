@@ -143,9 +143,10 @@ fn get_string(c: &mut Caller<'_, St>, name: u32) -> i32 {
         // GLES3 core only exposes the list through glGetStringi
         let mut out = Vec::new();
         let mut count = 0i32;
-        let _ = crate::gfx::call("glGetIntegerv", &[0x821d, &mut count as *mut i32 as u64], &mut sctx);
+        // Host-side stack pointers: call_raw (no guest-offset translation).
+        let _ = crate::gfx::call_raw("glGetIntegerv", &[0x821d, &mut count as *mut i32 as u64], &mut sctx);
         for i in 0..count.max(0) as u32 {
-            let p = crate::gfx::call("glGetStringi", &[0x1f03, i as u64], &mut sctx);
+            let p = crate::gfx::call_raw("glGetStringi", &[0x1f03, i as u64], &mut sctx);
             if p != 0 {
                 let s = unsafe { std::ffi::CStr::from_ptr(p as *const _) }.to_string_lossy();
                 out.extend_from_slice(s.as_bytes());
@@ -164,16 +165,66 @@ fn get_string(c: &mut Caller<'_, St>, name: u32) -> i32 {
 pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
     let engine = l.engine().clone();
 
-    // The engine uses WebGPU here; there is no DOM canvas to hand out a WebGL
-    // context from.  Reproduce the glue's failure codes instead of a fake handle.
-    l.func_wrap("env", "emscripten_webgl_create_context", |_c: Caller<'_, St>, _t: i32, _a: i32| -> i32 { 0 })?;
-    l.func_wrap("env", "emscripten_webgl_make_context_current", |_c: Caller<'_, St>, h: i32| -> i32 {
-        if h == 0 { crate::gfx::make_current(); 0 } else { -5 }
+    // One real EGL/GLES3 context, behind Emscripten's single-context model.
+    // The handle is 1 (the glue's `f.contexts` id), never a fake cap.
+    l.func_wrap("env", "emscripten_webgl_create_context", |mut c: Caller<'_, St>, _t: i32, attrs: i32| -> i32 {
+        crate::trace::hit("webgl_create_context");
+        if let Err(e) = crate::gfx::ensure() {
+            eprintln!("[gl ] egl context: {e}");
+            return 0;
+        }
+        // WebClient.js::_s rejects explicitSwapControl (attributes byte 25);
+        // honour that decision instead of returning a context the engine
+        // cannot present through.
+        if attrs != 0 {
+            let d = c.data().mem.data();
+            if let Some(p) = d.get(attrs as usize + 25) {
+                if unsafe { *p.get() } != 0 { return 0 }
+            }
+        }
+        c.data_mut().gl_ctx = true;
+        1
     })?;
-    l.func_wrap("env", "emscripten_webgl_destroy_context", |_c: Caller<'_, St>, _h: i32| -> i32 { 0 })?;
+    l.func_wrap("env", "emscripten_webgl_make_context_current", |_c: Caller<'_, St>, h: i32| -> i32 {
+        if h == 0 || h == 1 { crate::gfx::make_current(); 0 } else { -5 }
+    })?;
+    l.func_wrap("env", "emscripten_webgl_destroy_context", |mut c: Caller<'_, St>, h: i32| -> i32 {
+        if h != 0 && h != 1 { return 0 }
+        c.data_mut().gl_ctx = false;
+        0
+    })?;
     l.func_wrap("env", "emscripten_webgl_get_context_attributes",
-        |_c: Caller<'_, St>, _h: i32, out: i32| -> i32 {
-            if out == 0 { -5 } else { -3 }
+        |mut c: Caller<'_, St>, h: i32, out: i32| -> i32 {
+            if out == 0 { return -5 }
+            if h != 1 { return -3 }
+            // Report the real EGL config, not the shape-only Deno values.
+            let alpha = crate::gfx::gl_int(0x0d55) > 0;    // GL_ALPHA_BITS
+            let depth = crate::gfx::gl_int(0x0d56) > 0;    // GL_DEPTH_BITS
+            let stencil = crate::gfx::gl_int(0x0d57) > 0;  // GL_STENCIL_BITS
+            let samples = crate::gfx::gl_int(0x80a9);      // GL_SAMPLES
+            let d = c.data().mem.data();
+            let b = out as usize;
+            let w8 = |off: usize, v: u8| {
+                if b + off < d.len() { unsafe { *d[b + off].get() = v } }
+            };
+            let w32 = |off: usize, v: u32| {
+                if b + off + 4 <= d.len() {
+                    unsafe { *(d[b + off].get() as *mut u32) = v }
+                }
+            };
+            w8(0, alpha as u8);
+            w8(1, depth as u8);
+            w8(2, stencil as u8);
+            w8(3, (samples > 1) as u8);
+            w8(4, 1); // premultipliedAlpha
+            w8(5, 0); // preserveDrawingBuffer
+            w32(8, 0); // powerPreference: default
+            w8(12, 0); // failIfMajorPerformanceCaveat
+            w32(16, 3); // majorVersion: GLES3 (WebGL2-compatible)
+            w32(20, 0); // minorVersion
+            w8(24, 1); // enableExtensionsByDefault
+            w8(33, 0); // desynchronized
+            0
         })?;
     static LAST_SIZE: std::sync::atomic::AtomicU64 =
         std::sync::atomic::AtomicU64::new(u64::MAX);
@@ -181,10 +232,11 @@ pub fn register(l: &mut Linker<St>) -> wasmtime::Result<()> {
         let (gw, gh) = crate::gfx::size();
         let cur = ((gw as u64) << 32) | gh as u64;
         let last = LAST_SIZE.load(std::sync::atomic::Ordering::Relaxed);
-        if last == u64::MAX || last == cur {
-            LAST_SIZE.store(cur, std::sync::atomic::Ordering::Relaxed);
+        if last != u64::MAX && last == cur {
             return 0;
         }
+        // First poll (or a real resize) reports the size once, as the glue's
+        // `applyPendingCanvasResize` does.
         LAST_SIZE.store(cur, std::sync::atomic::Ordering::Relaxed);
         let d = c.data().mem.data();
         if w != 0 { unsafe { *(d[w as usize].get() as *mut u32) = gw as u32 } }
