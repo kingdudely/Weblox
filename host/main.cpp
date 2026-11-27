@@ -27,6 +27,24 @@
 //   pthread_self           = 150209 -> _wasm_function_149868
 // These are global symbols in out.full.o but the linked executable makes
 // them local, so dlsym(RTLD_DEFAULT) cannot see them: call them directly.
+// Slot-9 support lives in imports.cpp only: imports.h is generated/read-only.
+namespace wb {
+bool imports_live_runtime();
+void imports_set_live_runtime_unwind(void (*fn)(void*), void* arg);
+void imports_clear_live_runtime_unwind();
+}
+
+// Defined in loop.cpp.  The bounded turn driver pumps one RNA completion and
+// drains mailbox rings around every real main_loop_iteration call (the linker
+// wraps that export in that file).  Both the normal return of
+// __main_argc_argv and the slot-9 live-runtime exit use the same driver.
+namespace weblox {
+int run_loop(host::HostState& state,
+             std::chrono::steady_clock::time_point deadline,
+             const std::function<int()>& turn, RnaBridge* bridge,
+             uint64_t& turns_out);
+}
+
 extern "C" {
 uint32_t _wasm_function_149599(void*, void*);
 uint32_t _wasm_function_149868(void*, void*);
@@ -72,6 +90,10 @@ static void main_thread_init(void* vmctx, uint32_t ptr) {
 // longjmps when its (internal) g_in_wasm flag is set, so install a temporary
 // handler here; a trapped export becomes a printed signal instead of a crash.
 namespace {
+// Not a signal: the controlled unwind emitted by slot 9
+// (emscripten_exit_with_live_runtime) when the join driver is waiting in
+// ExportTrapGuard::call.  Negative so it can never collide with SIG* values.
+constexpr int kLiveRuntimeReturn = -9;
 thread_local sigjmp_buf g_export_jmp;
 thread_local volatile sig_atomic_t g_export_active = 0;
 thread_local volatile sig_atomic_t g_export_signal = 0;
@@ -100,7 +122,8 @@ class ExportTrapGuard {
     static const int kSignals[] = {SIGSEGV, SIGFPE, SIGILL, SIGBUS};
     for (int i = 0; i < 4; ++i) sigaction(kSignals[i], &old_[i], nullptr);
   }
-  // Returns 0 on normal return, or the trapping signal number.
+  // Returns 0 on normal return, the trapping signal number, or
+  // kLiveRuntimeReturn for slot 9's live-runtime exit.
   int call(const std::function<void()>& fn) {
     g_export_signal = 0;
     if (sigsetjmp(g_export_jmp, 1) != 0) return g_export_signal;
@@ -108,6 +131,15 @@ class ExportTrapGuard {
     fn();
     g_export_active = 0;
     return 0;
+  }
+
+  // Continuation installed into imports.cpp while the driver is inside the
+  // guarded __main_argc_argv call.  It unwinds to that one frame (never a
+  // worker's, never a C++ throw) and reports "main returned, runtime alive".
+  static void live_runtime_unwind(void*) {
+    g_export_signal = kLiveRuntimeReturn;
+    g_export_active = 0;
+    siglongjmp(g_export_jmp, kLiveRuntimeReturn);
   }
 
  private:
@@ -344,15 +376,32 @@ int main(int argc, char** argv) {
       std::printf("[rna-main] __main_argc_argv argc=1 argv=%u "
                   "(argv_trap=%d)\n", argv, argv_sig);
       std::fflush(stdout);
+      // Slot 9 unwinds here instead of falling through into guest code that
+      // has no native exception handler.  Register the continuation only for
+      // the duration of this one guarded call: a worker must never jump into
+      // the main thread's sigsetjmp frame.
+      wb::imports_set_live_runtime_unwind(&ExportTrapGuard::live_runtime_unwind,
+                                          nullptr);
       const int main_sig = guard.call([&] {
         _wasm_function_147(state.vmctx, state.vmctx, 1,
                            static_cast<int32_t>(argv));
       });
-      std::printf("[rna-main] __main_argc_argv: %s\n",
-                  main_sig ? ("trapped via signal " + std::to_string(main_sig)).c_str()
-                           : "returned normally");
+      wb::imports_clear_live_runtime_unwind();
+      const bool live_runtime =
+          wb::imports_live_runtime() && main_sig == kLiveRuntimeReturn;
+      if (live_runtime) {
+        std::printf("[rna-main] __main_argc_argv: live runtime (slot 9): "
+                    "main returned, runtime alive\n");
+      } else {
+        std::printf("[rna-main] __main_argc_argv: %s\n",
+                    main_sig ? ("trapped via signal " + std::to_string(main_sig)).c_str()
+                             : "returned normally");
+      }
       std::fflush(stdout);
-      if (main_sig == 0) {
+      // A live-runtime exit is not a fatal trap: the browser host keeps its
+      // event loop running after main() unwinds.  Drive the same bounded loop
+      // here so RNA connect can fire from the engine's own turns.
+      if (main_sig == 0 || live_runtime) {
         unsigned loop_ms = 3000;
         if (const char* s = std::getenv("WC_LOOP_MS")) {
           loop_ms = static_cast<unsigned>(std::strtoul(s, nullptr, 10));
@@ -361,27 +410,13 @@ int main(int argc, char** argv) {
         const auto deadline = std::chrono::steady_clock::now() +
                               std::chrono::milliseconds(loop_ms);
         uint64_t turns = 0;
-        int iter_sig = 0;
-        while (std::chrono::steady_clock::now() < deadline && iter_sig == 0) {
-          iter_sig = guard.call([&] { _wasm_function_176(state.vmctx, state.vmctx); });
-          ++turns;
-          if (turns % 100 == 0) {
-            const auto s = bridge.stats();
-            std::printf("[rna-main] turns=%llu connects=%llu dgrams=%llu/%llu "
-                        "ring=%llu drop=%llu cb=%llu/%llu status=%lld\n",
-                        static_cast<unsigned long long>(turns),
-                        static_cast<unsigned long long>(s.connects),
-                        static_cast<unsigned long long>(s.datagrams_sent),
-                        static_cast<unsigned long long>(s.datagrams_recv),
-                        static_cast<unsigned long long>(s.ring_slots_written),
-                        static_cast<unsigned long long>(s.ring_drops),
-                        static_cast<unsigned long long>(s.callbacks_delivered),
-                        static_cast<unsigned long long>(s.callbacks_failed),
-                        static_cast<long long>(s.connect_status));
-            std::fflush(stdout);
-          }
-          std::this_thread::sleep_for(std::chrono::milliseconds(2));
-        }
+        const int iter_sig = weblox::run_loop(
+            state, deadline,
+            [&] {
+              return guard.call(
+                  [&] { _wasm_function_176(state.vmctx, state.vmctx); });
+            },
+            &bridge, turns);
         std::printf("[rna-main] loop turns=%llu iter_trap=%d\n",
                     static_cast<unsigned long long>(turns), iter_sig);
       }

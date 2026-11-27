@@ -1153,11 +1153,67 @@ extern "C" void wasm_import_008_schedule_main_loop(void* vmctx, void* caller_vmc
   wb::import_log_first(8);
 }
 
+// Slot 9 is Emscripten's "leave main(), keep the JS runtime alive" unwind.
+// A browser throws out of wasm, so the code after this import never runs;
+// native Cranelift code has no such unwind, and simply returning here lets
+// __main_argc_argv continue into an uncaught guest `throw_ref` (SIGILL).
+// Record the event honestly and transfer control back to the join driver's
+// guarded call site when it has registered one on this thread.  This is a
+// siglongjmp into the driver's own sigsetjmp frame (host/main.cpp), not a C++
+// exception and not a fabricated wasm value: the import itself stays void.
+namespace {
+std::atomic<bool> g_live_runtime{false};
+std::atomic<uint32_t> g_live_runtime_calls{0};
+std::mutex g_live_runtime_mtx;
+void (*g_live_runtime_unwind)(void*) = nullptr;
+void* g_live_runtime_unwind_arg = nullptr;
+std::thread::id g_live_runtime_owner;
+}  // namespace
+
+namespace wb {
+bool imports_live_runtime() { return g_live_runtime.load(std::memory_order_acquire); }
+uint32_t imports_live_runtime_calls() {
+  return g_live_runtime_calls.load(std::memory_order_relaxed);
+}
+// Called by the join driver immediately before the guarded __main_argc_argv
+// call.  Clearing the flag here ensures a stale event from ctors/prepare
+// cannot make a later, unrelated main call look like a live-runtime return.
+void imports_set_live_runtime_unwind(void (*fn)(void*), void* arg) {
+  std::lock_guard<std::mutex> lock(g_live_runtime_mtx);
+  g_live_runtime.store(false, std::memory_order_release);
+  g_live_runtime_unwind = fn;
+  g_live_runtime_unwind_arg = arg;
+  g_live_runtime_owner = std::this_thread::get_id();
+}
+void imports_clear_live_runtime_unwind() {
+  std::lock_guard<std::mutex> lock(g_live_runtime_mtx);
+  g_live_runtime_unwind = nullptr;
+  g_live_runtime_unwind_arg = nullptr;
+  g_live_runtime_owner = std::thread::id{};
+}
+}  // namespace wb
+
 extern "C" void wasm_import_009_emscripten_exit_with_live_runtime(void* vmctx, void* caller_vmctx) {
-  (void)vmctx;
-  (void)caller_vmctx;
   WB_TRACE_IMPORT(9);
   wb::import_log_first(9);
+  g_live_runtime.store(true, std::memory_order_release);
+  g_live_runtime_calls.fetch_add(1, std::memory_order_relaxed);
+  if (wb::trace_enabled()) {
+    std::fprintf(stderr, "[live] slot 9 vmctx=%p caller=%p main-return, keep runtime\n",
+                 vmctx, caller_vmctx);
+  }
+  void (*unwind)(void*) = nullptr;
+  void* arg = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_live_runtime_mtx);
+    // A worker calling this import must never unwind into the main thread.
+    if (std::this_thread::get_id() == g_live_runtime_owner) {
+      unwind = g_live_runtime_unwind;
+      arg = g_live_runtime_unwind_arg;
+    }
+  }
+  if (unwind) unwind(arg ? arg : vmctx);  // controlled unwind; does not return
+  // No registered continuation (ctors / probe): legacy stub behaviour.
 }
 
 extern "C" int32_t wasm_import_010_emscripten_request_pointerlock(void* vmctx, void* caller_vmctx, int32_t a0, int32_t a1) {
