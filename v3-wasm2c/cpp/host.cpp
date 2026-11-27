@@ -43,17 +43,21 @@ void allocate_memory() {
 #ifdef _WIN32
   const u64 initial_pages = wasm2c_WebClient_min_env_memory;
   const u64 reserve_bytes = max_pages * page_size;
+  std::printf("WIN_RESERVE=%llu\n",
+              static_cast<unsigned long long>(reserve_bytes));
   auto* base = static_cast<unsigned char*>(
       VirtualAlloc(nullptr, reserve_bytes, MEM_RESERVE, PAGE_NOACCESS));
   if (!base) {
     std::fprintf(stderr, "VirtualAlloc reserve failed\n");
     std::abort();
   }
+  std::printf("WIN_RESERVED\n");
   if (!VirtualAlloc(base, initial_pages * page_size, MEM_COMMIT,
                     PAGE_READWRITE)) {
     std::fprintf(stderr, "VirtualAlloc commit failed\n");
     std::abort();
   }
+  std::printf("WIN_COMMITTED\n");
   g_mem_base = base;
   g_mem.data = reinterpret_cast<decltype(g_mem.data)>(base);
   g_mem.data_end = reinterpret_cast<decltype(g_mem.data_end)>(
@@ -63,7 +67,9 @@ void allocate_memory() {
   g_mem.size = initial_pages * page_size;
   g_mem.page_size = static_cast<u32>(page_size);
   g_mem.is64 = wasm2c_WebClient_is64_env_memory != 0;
+  std::printf("WIN_FIELDS\n");
   InitializeCriticalSection(&g_mem.mem_lock);
+  std::printf("WIN_LOCK\n");
 #else
   wasm_rt_allocate_memory_shared(&g_mem, max_pages, max_pages,
                                  wasm2c_WebClient_is64_env_memory,
