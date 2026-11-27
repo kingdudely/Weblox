@@ -4755,11 +4755,24 @@ extern "C" double wasm_import_004_emscripten_get_now(void* vmctx, void* caller_v
   return wb::steady_ms();
 }
 
-// slot 5: Atomics.waitAsync -- host futex with notify hook ------------------
+// slot 5: Atomics.waitAsync -- non-blocking main-thread polling -------------
+//
+// In a browser, JSPI suspends this wasm call and immediately returns control
+// to the page's event loop; the main thread never blocks on the futex.  This
+// host has no fibre/promise pump, so blocking here (even with a 30 s hard
+// stop) stalls the very loop that drives main_loop_iteration and delivers
+// native RNA completions.  Emulate the browser's contract honestly instead:
+// report "not-equal" when the word already changed, otherwise give a notifier
+// ONE bounded short slice to land and then report "timed-out" so control
+// returns to the guest turn.  This necessarily produces far more 2
+// (timed-out) returns than a real JSPI host, and an unbounded (a3=inf) guest
+// wait now retries from the guest instead of being suspended; both are
+// documented in host/JSPI.md with the measured log evidence.
 extern "C" int32_t wasm_import_005___asyncjs__rbxFutexWaitMainJspi(
     void* vmctx, void* caller_vmctx, int32_t a1, int32_t a2, double a3) {
   WB_TRACE_IMPORT(5);
   (void)caller_vmctx;
+  (void)a3;  // no native wait may outlive one bounded slice
   if (wb::g_guest_tick) wb::g_guest_tick(vmctx);
   wb::mailbox_drain_if_pending(vmctx);
   const uint32_t addr = static_cast<uint32_t>(a1);
@@ -4770,32 +4783,30 @@ extern "C" int32_t wasm_import_005___asyncjs__rbxFutexWaitMainJspi(
   std::memcpy(&cur, word, 4);
   if (cur != expected) return 1;  // not-equal
 
+  // Bounded HOST_TRACE counter: this slot is the only place a guest can turn
+  // one timeout into an unbounded retry loop, so make that visible.
+  static std::atomic<uint32_t> s_calls{0};
+  const uint32_t call_no = ++s_calls;
+  if (wb::trace_enabled() && (call_no <= 12 || call_no % 1000 == 0)) {
+    std::fprintf(stderr, "[futex] call=%u addr=%#x exp=%#x a3=%g cur=%#x\n",
+                 call_no, addr, expected, a3, cur);
+    std::fflush(stderr);
+  }
+  wb::note_once("[futex] main-thread waitAsync polled (no JSPI fibre)");
   const auto w = wb::waiter_for(addr);
-  auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2);
-  const bool bounded = a3 > 0.0 && a3 < 1e12;
-  if (bounded) {
-    deadline = std::chrono::steady_clock::now() +
-               std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-                   std::chrono::duration<double, std::milli>(a3));
-  } else {
-    wb::note_once("[futex] unbounded wait: polling in 2 ms slices");
-  }
-  // Never spin forever if a notifier is missing: the page would keep running
-  // its event loop, this host has no fibre pump.
-  const auto hard_stop = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-  for (;;) {
+  bool woke = false;
+  {
     std::unique_lock<std::mutex> lock(w->m);
-    w->cv.wait_until(lock, std::min(deadline, hard_stop), [&] { return w->signaled; });
-    const bool woke = w->signaled;
+    // One bounded slice is enough for an already-running notifier to land;
+    // never loop, and never wait on a guest's unbounded (a3) timeout here.
+    w->cv.wait_until(lock,
+                     std::chrono::steady_clock::now() + std::chrono::milliseconds(2),
+                     [&] { return w->signaled; });
+    woke = w->signaled;
     w->signaled = false;
-    lock.unlock();
-    cur = *reinterpret_cast<const uint32_t*>(wb::mem_ptr(addr, 4));
-    if (cur != expected) return 0;  // woken
-    if (woke) return 0;             // notify without a word change
-    if (bounded && std::chrono::steady_clock::now() >= deadline) return 2;  // timed out
-    if (std::chrono::steady_clock::now() >= hard_stop) return 2;
-    deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2);
   }
+  if (woke) return 0;  // ok/woken (notify may arrive without a word change)
+  return 2;            // timed-out: hand control back to the guest turn
 }
 
 // slots 6 / 7 / 13 / 53: EM_ASM key decoding -------------------------------
