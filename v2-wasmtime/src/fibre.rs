@@ -328,10 +328,13 @@ async fn restore(store: &mut Store<St>, tok: u32) -> Result<oneshot::Sender<u32>
         }
         return Err(wasmtime::Error::msg(format!("unknown fiber token {tok:#x}")));
     };
-    // No await between the two stack writes: the guest C stack must switch
-    // atomically before any other task gets to run wasm.
-    o.set_limits.call(&mut *store, (slot.base, slot.end))?;
-    o.set_sp.call(&mut *store, (slot.sp,))?;
+    // No awaits outside these two calls: the guest C stack must switch
+    // atomically before any other task gets to run wasm. Both are plain
+    // setters, so `call_async` completes inline on this store's fiber.
+    // `func_wrap_async` imports mark the store async-required, which forbids
+    // every `TypedFunc::call` from then on - including these setters.
+    o.set_limits.call_async(&mut *store, (slot.base, slot.end)).await?;
+    o.set_sp.call_async(&mut *store, (slot.sp,)).await?;
     Ok(slot.tx)
 }
 
@@ -420,8 +423,10 @@ pub fn register(l: &mut Linker<St>) -> Result<()> {
 async fn run_entry(p: PStore, tok: u32, entry: u32, arg: u32, base: u32, limit: u32) -> Result<()> {
     let st = p.get();
     let o = ops(st)?;
-    o.set_limits.call(&mut *st, (base, limit))?;
-    o.set_sp.call(&mut *st, (base,))?;
+    // Same async-only rule as `restore`: the store has async imports, so a
+    // synchronous `call` here would abort every newly created guest fibre.
+    o.set_limits.call_async(&mut *st, (base, limit)).await?;
+    o.set_sp.call_async(&mut *st, (base,)).await?;
     let f = o.entry.clone();
     let mut out = [];
     f.call_async(&mut *st, &[
