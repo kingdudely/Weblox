@@ -155,6 +155,18 @@ endif()
 # ---------------------------------------------------------------------------
 find_package(Threads REQUIRED)
 find_package(SDL3 QUIET)
+if(NOT SDL3_FOUND)
+  # Some distros ship SDL3 headers/libs without a CMake config package.
+  find_path(SDL3_INCLUDE_DIR SDL3/SDL.h)
+  find_library(SDL3_LIBRARY NAMES SDL3)
+  if(SDL3_INCLUDE_DIR AND SDL3_LIBRARY)
+    set(SDL3_FOUND TRUE)
+    add_library(SDL3::SDL3 UNKNOWN IMPORTED)
+    set_target_properties(SDL3::SDL3 PROPERTIES
+      IMPORTED_LOCATION "${SDL3_LIBRARY}"
+      INTERFACE_INCLUDE_DIRECTORIES "${SDL3_INCLUDE_DIR}")
+  endif()
+endif()
 
 add_executable(weblox
   src/main.c src/mem.c src/imports.c
