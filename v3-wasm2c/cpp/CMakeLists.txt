@@ -184,7 +184,11 @@ add_library(wc_runtime STATIC
   "${ABI_DIR}/wasm-rt-mem-impl.c"
   "${ABI_DIR}/wasm-rt-exceptions-impl.c")
 target_include_directories(wc_runtime PUBLIC "${ABI_DIR}")
-if(NOT MSVC)
+if(MSVC)
+  # clang-cl does not define __STDC_VERSION__, so wasm-rt.h would omit the C11
+  # structs that the generated library expects.
+  target_compile_definitions(wc_runtime PRIVATE WASM_RT_C11_AVAILABLE=1)
+else()
   target_compile_options(wc_runtime PRIVATE -w -fno-asynchronous-unwind-tables)
 endif()
 
@@ -204,7 +208,7 @@ endif()
 # ---------------------------------------------------------------------------
 find_package(Threads REQUIRED)
 add_executable(weblox
-  host.cpp imports.cpp platform.cpp mem.c
+  host.cpp imports.cpp host_info.cpp platform.cpp mem.c
   window.cpp window_sdl.cpp net_stub.cpp net_curl.cpp
   gpu_stub.cpp fiber_stub.cpp fiber_ucontext.cpp fiber_win.cpp)
 target_include_directories(weblox PRIVATE

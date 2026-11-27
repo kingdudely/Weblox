@@ -6,15 +6,19 @@ This is the start of the native host. The generated engine library is
 
 ```
 host.cpp       instantiate the module, print CPP_SMOKE_OK, run a short loop
+cpp_compat.h   include before WC.h in every C++ TU (C11 struct layout)
+guest.h        bounds-checked guest memory access (no hardcoded addresses)
 mem.h/.c       C shim for guest memory (C11 _Atomic is not usable from C++)
 platform.h     std::chrono / std::thread / std::condition_variable services
-imports.cpp    real C++ implementations of core imports (console/clock/random)
+imports.cpp    core imports (console/clock/random/WASI)
+host_info.cpp  host identity, canvas, DPR and device queries
+implemented-cpp.txt  imports this host implements; all others get stubs
 window.h       window/input abstraction; window_sdl.cpp is the SDL3 opt-in
 net.h          HTTP abstraction; net_curl.cpp is the curl opt-in
 gpu.h          WebGL/WebGPU abstraction; gpu_stub.cpp is the no-op default
 fiber.h        stackful fibers; fiber_ucontext.cpp (POSIX) / fiber_win.cpp (Windows) are opt-in
 CMakeLists.txt stock CMake build (prebuilt default, source fallback)
-abi/           wasm-rt.h and wasm-rt-exceptions.h vendored from WABT 1.0.42
+abi/           WABT 1.0.42 runtime headers and sources (exact engine ABI)
 ```
 
 ## Rules
@@ -22,7 +26,8 @@ abi/           wasm-rt.h and wasm-rt-exceptions.h vendored from WABT 1.0.42
 1. Never include `WC.h` without `extern "C"` from C++.
 2. Never compile the generated `WC_*.c` as C++ — compile as C, link as C.
 3. No hardcoded guest indices, pointers or linear-memory addresses in host
-   code. Import stubs come from `gen_stubs.py` reading the generated `WC.h`.
+   code. Import stubs come from `gen_stubs.py` reading the generated `WC.h`;
+   `implemented-cpp.txt` lists the only names the host defines itself.
 4. Platform-specific code goes behind `window.h` (and future `gpu.h`,
    `net.h`, `fiber.h`) abstractions, not `#ifdef` in `host.cpp`.
 
@@ -32,11 +37,11 @@ abi/           wasm-rt.h and wasm-rt-exceptions.h vendored from WABT 1.0.42
 |---|---|
 | Window/input/audio | SDL3 (`window_sdl.cpp`) |
 | WebGL | SDL_GL + GLAD, or ANGLE if semantics diverge |
-| WebGPU | Dawn / wgpu-native behind `gpu.h` |
+| WebGPU | wgpu-native behind `gpu.h` |
 | HTTP | libcurl |
 | WebTransport | quiche |
 | JSON | nlohmann/json |
-| Fibers | Boost.Context (POSIX ucontext / Windows fibers underneath) |
+| Fibers | POSIX ucontext / Win32 fibers behind `fiber.h` |
 
 ## Build
 

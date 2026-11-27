@@ -69,28 +69,26 @@ jobs:
             exit 1
           fi
 
-          # C++17 compiler: clang on Linux/macOS, clang or MSVC on Windows.
-          # Pin clang on non-Windows; Windows keeps CMake's default (MSVC).
-          if command -v clang++ >/dev/null 2>&1; then
-            clang++ --version 2>&1 | head -1
-            if [ "$RUNNER_OS" != "Windows" ]; then
-              echo "CC=clang" >> "$GITHUB_ENV"
-              echo "CXX=clang++" >> "$GITHUB_ENV"
-            fi
-          elif command -v c++ >/dev/null 2>&1; then
-            c++ --version 2>&1 | head -1
-          elif command -v cl >/dev/null 2>&1; then
-            echo "MSVC cl.exe found on PATH"
-          else
-            echo "no C++17 compiler found on PATH" >&2
+          # The vendored WABT runtime uses C11 atomics and _Thread_local.
+          # MSVC does not provide those, so pin clang on every OS and use the
+          # Ninja generator (the Visual Studio generator would force MSVC).
+          command -v clang++ >/dev/null 2>&1 || {
+            echo "clang++ is required (MSVC cannot build the C11 runtime)" >&2
             exit 1
-          fi
+          }
+          command -v ninja >/dev/null 2>&1 || {
+            echo "ninja is required" >&2
+            exit 1
+          }
+          clang++ --version 2>&1 | head -1
+          echo "CC=clang" >> "$GITHUB_ENV"
+          echo "CXX=clang++" >> "$GITHUB_ENV"
 
       - name: Configure
         run: |
           set -euo pipefail
           mkdir -p build/cpp
-          cmake -S v3-wasm2c/cpp -B build/cpp -DCMAKE_BUILD_TYPE=Release 2>&1 | tee build/cpp/configure.log
+          cmake -G Ninja -S v3-wasm2c/cpp -B build/cpp -DCMAKE_BUILD_TYPE=Release 2>&1 | tee build/cpp/configure.log
 
       - name: Build
         run: |
