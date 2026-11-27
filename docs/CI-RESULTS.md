@@ -16,6 +16,8 @@ Fill this table from the `metrics.json` artifact of each Actions run.
 | [45944686964](https://github.com/kingdudely/Weblox/actions/runs/45944686964) | OS matrix retry | O0 | 32 | n/a | Linux 429 s, Windows ~445 s | published | — | macOS failed at dylib link (undefined imports) |
 | [46025388958](https://github.com/kingdudely/Weblox/actions/runs/46025388958) | macOS-only retry | O0 | 32 | n/a | **588 s** | `.a` 930,493,008 B + `.dylib` 830,133,728 B | — | success with `-undefined dynamic_lookup` |
 | [46027259411](https://github.com/kingdudely/Weblox/actions/runs/46027259411) | full OS matrix | O0 | 32 | n/a | Linux 504 s, Windows 438 s, macOS 1187 s | all three platforms in `ci-matrix-46027259411` | — | **success**: `.a`+`.so` (Linux), `.a`+`.dylib` (macOS), `.lib` (Windows) |
+| [46042572149](https://github.com/kingdudely/Weblox/actions/runs/46042572149) | Windows DLL | O0 | 32 | n/a | 606 s compile | `.dll` 1,065,746,944 B → `.tar.zst` 156,826,842 B | — | **success**: 57 exports from `WC.h`, import lib generated |
+| [46044752089](https://github.com/kingdudely/Weblox/actions/runs/46044752089) | full matrix, tar.zst | O0 | 32 | n/a | pending | pending | — | produces final `.tar.zst` per OS |
 
 ## Revival attempt (2026-11-27, free runners)
 
