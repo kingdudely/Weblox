@@ -53,9 +53,14 @@ const T& dll_constant(const char* name) {
 // on Windows runners, so set up the same 4 GiB address space directly there.
 void allocate_memory() {
 #ifdef _WIN32
+#ifdef WEBLOX_SOURCE_MODE
+  const u64 max_pages = wasm2c_WebClient_max_env_memory;
+  const u64 page_size = wasm2c_WebClient_pagesize_env_memory;
+#else
   const u64 max_pages = dll_constant<u64>("wasm2c_WebClient_max_env_memory");
   const u64 page_size =
       dll_constant<u32>("wasm2c_WebClient_pagesize_env_memory");
+#endif
   // Data segments live near 2 GiB, so only the initial 256 MiB is not enough.
   const u64 initial_pages = max_pages;
   const u64 reserve_bytes = max_pages * page_size;
@@ -82,7 +87,11 @@ void allocate_memory() {
   g_mem.max_pages = max_pages;
   g_mem.size = initial_pages * page_size;
   g_mem.page_size = static_cast<u32>(page_size);
+#ifdef WEBLOX_SOURCE_MODE
+  g_mem.is64 = wasm2c_WebClient_is64_env_memory != 0;
+#else
   g_mem.is64 = dll_constant<u8>("wasm2c_WebClient_is64_env_memory") != 0;
+#endif
   std::printf("WIN_FIELDS\n");
   InitializeCriticalSection(&g_mem.mem_lock);
   std::printf("WIN_LOCK\n");

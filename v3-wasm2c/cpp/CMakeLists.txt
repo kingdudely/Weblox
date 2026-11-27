@@ -257,6 +257,7 @@ if(WIN32)
 endif()
 
 if(WEBLOX_ENGINE_MODE STREQUAL "source")
+  target_compile_definitions(weblox PRIVATE WEBLOX_SOURCE_MODE=1)
   target_link_libraries(weblox PRIVATE wc_generated)
 elseif(WIN32)
   add_library(weblox_engine_lib SHARED IMPORTED)
