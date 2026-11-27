@@ -117,8 +117,11 @@ if [[ $PLAT_OS == windows ]]; then
   # No edits to generated C: derive exports from the compiled objects.
   DEF="$OUT/exports.def"
   printf 'EXPORTS\n' > "$DEF"
-  llvm-nm --defined-only "$OBJ"/*.o 2>/dev/null \
-    | awk '{print $3}' | grep -E '^(w2c_|wasm2c_)' | sort -u >> "$DEF"
+  # PE export tables cap at 65535 symbols; the module has 170853 functions.
+  # WC.h declares only the host-visible ABI (~57 names), which is what a host
+  # actually calls.  Derive exports from that header, not from every object.
+  grep -oE '\b(w2c_WebClient_[A-Za-z0-9_]+|wasm2c_WebClient_[A-Za-z0-9_]+)\b' \
+    "$GEN/WC.h" | sort -u >> "$DEF"
   IMPORT="$OUT/$IMPORT_NAME"
   # Use the clang driver so the CRT libraries are added automatically.  Host
   # imports are resolved by the executable, so force unresolved externals.
