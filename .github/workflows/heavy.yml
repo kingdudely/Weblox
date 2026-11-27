@@ -182,6 +182,7 @@ jobs:
           WC_OUTPUTS: ${{ inputs.outputs }}
           WC_JOBS: ${{ inputs.jobs }}
           CC: ${{ inputs.compiler || 'clang' }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           WASM_VERSION: ${{ inputs.wasm-version }}
           WASM_SHA256: ${{ inputs.wasm-sha256 }}
         run: |
