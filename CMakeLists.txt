@@ -22,6 +22,10 @@ set(WEBLOX_RELEASE_BASE
 
 set(WEBLOX_ENGINE_MODE "prebuilt" CACHE STRING "prebuilt shared library or generated C source")
 set_property(CACHE WEBLOX_ENGINE_MODE PROPERTY STRINGS prebuilt source)
+# A source-mode build is only a validation gate; O0 keeps it fast.  Shipped
+# bundles are built at O3 by build-engine.yml.
+set(WEBLOX_ENGINE_OPT "O0" CACHE STRING "optimization for locally compiled generated C")
+set_property(CACHE WEBLOX_ENGINE_OPT PROPERTY STRINGS O0 O1 O2 O3)
 
 if(WIN32)
   set(BUNDLE engine-windows-x64.tar.zst)
@@ -42,11 +46,11 @@ endif()
 # Engine payload.
 # ---------------------------------------------------------------------------
 include(cmake/FetchAsset.cmake)
+include(cmake/Dependencies.cmake)
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 set(WABT_DIR "${CMAKE_CURRENT_LIST_DIR}/deps/wabt")
 
-# HTTP is optional: without libcurl those imports remain generated no-ops.
-find_package(CURL QUIET)
+# HTTP uses the pinned libcurl from cmake/Dependencies.cmake.
 set(HTTP_SOURCES "")
 set(IMPLEMENTED_FILE "${CMAKE_CURRENT_LIST_DIR}/tools/implemented.txt")
 if(CURL_FOUND)
@@ -96,20 +100,7 @@ else()
   message(STATUS "libcurl not found; HTTP imports remain no-op stubs")
 endif()
 
-# Fibers, atomics and workers need SDL3 and minicoro.  Without SDL3 these
-# imports remain generated no-ops.
-find_package(SDL3 QUIET)
-if(NOT SDL3_FOUND)
-  find_path(SDL3_INCLUDE_DIR SDL3/SDL.h)
-  find_library(SDL3_LIBRARY NAMES SDL3)
-  if(SDL3_INCLUDE_DIR AND SDL3_LIBRARY)
-    set(SDL3_FOUND TRUE)
-    add_library(SDL3::SDL3 UNKNOWN IMPORTED)
-    set_target_properties(SDL3::SDL3 PROPERTIES
-      IMPORTED_LOCATION "${SDL3_LIBRARY}"
-      INTERFACE_INCLUDE_DIRECTORIES "${SDL3_INCLUDE_DIR}")
-  endif()
-endif()
+# Fibers, atomics and workers need SDL3 and minicoro.
 set(FIBER_SOURCES "")
 if(SDL3_FOUND)
   list(APPEND FIBER_SOURCES
@@ -239,7 +230,8 @@ if(WEBLOX_ENGINE_MODE STREQUAL "source")
   add_library(wc_generated STATIC ${GENERATED_C})
   target_include_directories(wc_generated PRIVATE
     "${ENGINE_SRC}" "${WABT_DIR}" "${SIMDE_DIR}")
-  target_compile_options(wc_generated PRIVATE -w -ivfsoverlay "${ATOMIC_OVERLAY}")
+  target_compile_options(wc_generated PRIVATE
+    -w "-${WEBLOX_ENGINE_OPT}" -ivfsoverlay "${ATOMIC_OVERLAY}")
 endif()
 
 # ---------------------------------------------------------------------------
@@ -256,10 +248,10 @@ target_include_directories(weblox PRIVATE
 target_link_libraries(weblox PRIVATE wc_stubs Threads::Threads m)
 if(SDL3_FOUND)
   target_compile_definitions(weblox PRIVATE WEBLOX_HAVE_SDL3=1)
-  target_link_libraries(weblox PRIVATE SDL3::SDL3)
+  target_link_libraries(weblox PRIVATE ${WEBLOX_SDL3_LIB})
 endif()
 if(CURL_FOUND)
-  target_link_libraries(weblox PRIVATE CURL::libcurl yyjson)
+  target_link_libraries(weblox PRIVATE ${WEBLOX_CURL_LIB} yyjson)
 endif()
 
 if(WEBLOX_ENGINE_MODE STREQUAL "source")

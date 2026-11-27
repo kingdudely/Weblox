@@ -21,7 +21,7 @@ permissions:
 
 concurrency:
   group: host-smoke-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   smoke:
@@ -52,7 +52,7 @@ jobs:
             echo "zstd not found; installing"
             install_zstd
           fi
-          for tool in cmake python3 clang zstd ninja; do
+          for tool in cmake python3 clang zstd ninja curl; do
             command -v "$tool" >/dev/null 2>&1 || { echo "missing tool: $tool" >&2; exit 1; }
           done
           cmake_ver=$(cmake --version | head -1 | awk '{print $3}')
@@ -60,9 +60,8 @@ jobs:
             echo "cmake >= 3.20 required, found $cmake_ver" >&2
             exit 1
           fi
-          if [ "${RUNNER_OS}" = Linux ]; then
-            sudo apt-get install -y -qq libcurl4-openssl-dev
-          fi
+          # libcurl and SDL3 are fetched and pinned by cmake/Dependencies.cmake;
+          # no distro package installation is needed here.
           mkdir -p ci-logs
           cmake --version | head -1
           python3 --version
