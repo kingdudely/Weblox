@@ -16,6 +16,11 @@ on:
         required: false
         default: O0
         type: string
+      os:
+        description: 'single runner to build (blank = all three)'
+        required: false
+        default: ''
+        type: string
       timeout-minutes:
         description: 'job timeout'
         required: false
@@ -48,7 +53,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ inputs.os && fromJSON(format('["{0}"]', inputs.os)) || fromJSON('["ubuntu-latest","macos-latest","windows-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ fromJSON(inputs.timeout-minutes || '360') }}
     defaults:

@@ -101,7 +101,11 @@ fi
 SHARED=""
 if [[ -n $SHARED_NAME ]]; then
   SHARED="$OUT/$SHARED_NAME"
-  "$CC" $SHARED_FLAG -o "$SHARED" "$OBJ"/*.o -lm -lpthread
+  # Generated objects call host imports that live in the executable.  Linux
+  # .so allows undefined symbols by default; macOS needs dynamic_lookup.
+  UNDEFINED_FLAG=""
+  [[ $PLAT_OS == macos ]] && UNDEFINED_FLAG="-Wl,-undefined,dynamic_lookup"
+  "$CC" $SHARED_FLAG $UNDEFINED_FLAG -o "$SHARED" "$OBJ"/*.o -lm -lpthread
   ci_metric shared_bytes "$(wc -c < "$SHARED" | tr -d ' ')"
 fi
 cp "$GEN/WC.h" "$OUT/WC.h"
