@@ -9,7 +9,10 @@
 HERE=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=common.sh
 . "$HERE/common.sh"
+# shellcheck source=platform.sh
+. "$HERE/platform.sh"
 ci_init
+ci_metric platform "$PLATFORM"
 
 RELEASE=${GENERATED_RELEASE:-ci-local-wasm2c-generated}
 GEN="$CI_BUILD_DIR/generated"
@@ -60,7 +63,7 @@ if command -v ccache >/dev/null 2>&1 && [[ -z ${WC_NO_CCACHE:-} ]]; then
 fi
 CFLAGS="-w -Wno-error=incompatible-pointer-types -Wno-error=int-conversion \
   -Wno-error=pointer-sign -Wno-error=builtin-declaration-mismatch \
-  -fno-asynchronous-unwind-tables -fno-stack-protector \
+  -fno-asynchronous-unwind-tables -fno-stack-protector $PIC_FLAG \
   -I$GEN -I$WASM2C_INCLUDE -I$SIMDE_DIR"
 
 TRANSLATED=()
@@ -83,12 +86,23 @@ ci_metric compile_secs $((SECONDS - T0))
 
 for f in "$WASM2C_RUNTIME_DIR"/wasm-rt*.c; do
   [[ -f $f ]] || continue
-  "$CC" -c -w -I"$WASM2C_INCLUDE" -I"$GEN" -I"$SIMDE_DIR" "$f" -o "$OBJ/rt-$(basename "$f" .c).o"
+  "$CC" -c -w $PIC_FLAG -I"$WASM2C_INCLUDE" -I"$GEN" -I"$SIMDE_DIR" "$f" -o "$OBJ/rt-$(basename "$f" .c).o"
 done
 
-LIB="$OUT/libweblox_engine.a"
-AR=${AR:-ar}
-"$AR" rcs "$LIB" "$OBJ"/*.o
+LIB="$OUT/$STATIC_NAME"
+if [[ $PLAT_OS == windows ]] && command -v llvm-lib >/dev/null 2>&1; then
+  llvm-lib /OUT:"$LIB" "$OBJ"/*.o
+else
+  AR=${AR:-ar}
+  "$AR" rcs "$LIB" "$OBJ"/*.o
+fi
+
+SHARED=""
+if [[ -n $SHARED_NAME ]]; then
+  SHARED="$OUT/$SHARED_NAME"
+  "$CC" $SHARED_FLAG -o "$SHARED" "$OBJ"/*.o -lm -lpthread
+  ci_metric shared_bytes "$(wc -c < "$SHARED" | tr -d ' ')"
+fi
 cp "$GEN/WC.h" "$OUT/WC.h"
 cp "$GEN/WC-impl.h" "$OUT/WC-impl.h" 2>/dev/null || true
 {
@@ -97,13 +111,16 @@ cp "$GEN/WC-impl.h" "$OUT/WC-impl.h" 2>/dev/null || true
   echo "  \"release\": \"$RELEASE\","
   echo "  \"generated_tus\": \"${#TRANSLATED[@]}\","
   echo "  \"compile_secs\": \"$((SECONDS - T0))\","
-  echo "  \"library\": \"libweblox_engine.a\","
+  echo "  \"platform\": \"$PLATFORM\","
+  echo "  \"library\": \"$STATIC_NAME\","
+  echo "  \"shared\": \"$SHARED_NAME\","
   echo "  \"header\": \"WC.h\""
   echo '}'
 } > "$OUT/manifest.json"
 {
   echo "ENGINE_DIR='$OUT'"
   echo "ENGINE_LIB='$LIB'"
+  echo "ENGINE_SO='$SHARED'"
   echo "GEN_INCLUDE='$OUT'"
   echo "WABT_INCLUDE='$WASM2C_INCLUDE'"
   echo "WASM_VERSION='f807b21caba84809'"

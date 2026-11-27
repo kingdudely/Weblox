@@ -25,14 +25,20 @@ override them for one-off experiments.
 | `compile-generated.sh` | compile an existing generated C tree (fallback when translation is broken) |
 | `fetch_engine.sh` | download built assets from the newest `ci-*` Release |
 | `gen_stubs.py` | generate every host import stub from a generated `WC.h` — no indices, no guest pointers |
-| `smoke.c`, `smoke.sh` | minimal example host: instantiate the module, print `SMOKE_OK` |
+| `smoke.c`, `smoke.sh` | minimal C example host: instantiate the module, print `SMOKE_OK` |
+| `cpp-host.sh` | build the C++ host skeleton in `v3-wasm2c/cpp/` against the engine library |
+| `platform.sh` | per-OS asset names, static/shared extensions, PIC flags |
 | `metrics.py` | fold metrics + `time -v` into JSON |
+| `.github/workflows/build-matrix.yml` | builds the engine library on Linux, macOS and Windows into one Release |
 
 ## Build
 
 ```sh
 gh workflow run heavy.yml -f task=wabt-wasm2c -f opt=O0 -f outputs=32
 gh run watch <run-id> --exit-status
+
+# prebuild the engine library for Linux, macOS and Windows
+gh workflow run build-matrix.yml
 ```
 
 Other useful dispatches:

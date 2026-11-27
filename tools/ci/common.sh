@@ -101,16 +101,18 @@ ci_fetch_wasm() {
 }
 
 ci_platform() {
+  # Windows runners use Git Bash, whose uname is MINGW*/MSYS*/CYGWIN*.
   local os arch
-  os=$(uname -s)
-  arch=$(uname -m)
+  os=$(uname -s 2>/dev/null || echo unknown)
+  arch=$(uname -m 2>/dev/null || echo unknown)
   case "$arch" in
     x86_64|amd64) arch=x64 ;;
     aarch64|arm64) arch=arm64 ;;
   esac
   case "$os" in
-    Linux) echo "linux-$arch" ;;
-    Darwin) echo "osx-$arch" ;;
+    Linux*) echo "linux-$arch" ;;
+    Darwin*) echo "osx-$arch" ;;
+    MINGW*|MSYS*|CYGWIN*) echo "windows-$arch" ;;
     *) echo "$os-$arch" ;;
   esac
 }
@@ -145,6 +147,8 @@ ci_fetch_wabt() {
       "wabt-$WABT_VERSION-ubuntu-22.04.tar.gz"
       "wabt-$WABT_VERSION-macos-14.tar.gz"
       "wabt-$WABT_VERSION-macos-12.tar.gz"
+      "wabt-$WABT_VERSION-macos-13.tar.gz"
+      "wabt-$WABT_VERSION-windows.tar.gz"
     )
     for tarball in "${candidates[@]}"; do
       dir="$CI_BUILD_DIR/$tarball"
@@ -163,6 +167,7 @@ ci_fetch_wabt() {
     fi
     WABT_ROOT=$root
     WASM2C="$root/bin/wasm2c"
+    [[ -x $WASM2C ]] || WASM2C="$root/bin/wasm2c.exe"
     wabt_detect_layout
   fi
   [[ -x $WASM2C ]] || { echo "common.sh: wasm2c not executable at $WASM2C" >&2; return 1; }

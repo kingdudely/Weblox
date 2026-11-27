@@ -1,0 +1,101 @@
+name: build-matrix
+
+# Prebuild the wasm2c engine library for Linux, macOS and Windows.
+# This is a pure builder: no version resolution, no host logic.
+
+on:
+  workflow_dispatch:
+    inputs:
+      generated-release:
+        description: 'Release holding generated WC*.c'
+        required: false
+        default: ci-local-wasm2c-generated
+        type: string
+      opt:
+        description: 'optimisation level'
+        required: false
+        default: O0
+        type: string
+      timeout-minutes:
+        description: 'job timeout'
+        required: false
+        default: '360'
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - name: Create release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="ci-matrix-${{ github.run_id }}"
+          gh release create "$tag" --repo "${{ github.repository }}" \
+            --title "wasm2c engine matrix ${{ github.run_id }}" \
+            --notes "Prebuilt engine libraries for Linux/macOS/Windows." \
+            --target "${{ github.sha }}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ fromJSON(inputs.timeout-minutes || '360') }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          if ! command -v clang >/dev/null 2>&1; then
+            choco install llvm -y
+          fi
+          clang --version | head -1
+
+      - name: Prepare
+        run: mkdir -p build/ci
+
+      - name: Build engine library
+        id: run
+        env:
+          GENERATED_RELEASE: ${{ inputs.generated-release }}
+          WC_OPT: ${{ inputs.opt }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -x /usr/bin/time ]; then
+            /usr/bin/time -v -o build/ci/time.txt bash tools/ci/compile-generated.sh 2>&1 | tee build/ci/run.log
+          else
+            bash tools/ci/compile-generated.sh 2>&1 | tee build/ci/run.log
+          fi
+          echo "dir=$(cat build/ci/engine_dir)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: matrix-${{ matrix.os }}-${{ github.run_id }}
+          path: |
+            build/ci/metrics.json
+            build/ci/run.log
+          if-no-files-found: warn
+
+      - name: Publish assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ENGINE_DIR: ${{ steps.run.outputs.dir }}
+        run: |
+          gh release upload "${{ needs.prepare.outputs.tag }}" \
+            "$ENGINE_DIR"/* --repo "${{ github.repository }}" --clobber
