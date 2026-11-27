@@ -31,13 +31,21 @@ the missing splitter explicitly. Do not rely on it as-is.
 
 The portable pipeline is in `tools/ci/`:
 
-- `engine.sh` — translate the pinned stock wasm with WABT 1.0.42, compile the
-  generated C, publish `libweblox_engine.a` + `WC.h` to a Release.
-- `fetch_engine.sh` — download those assets on any machine.
+- `engine.sh` — translate the pinned stock wasm with WABT 1.0.42 and compile
+  the generated C. CI publishes per-OS engine bundles plus a standalone
+  `WC.h` to the Release tagged with the pinned Roblox version.
+- `fetch_engine.sh` — download engine assets from a CI Release on any machine.
 - `gen_stubs.py` — generate all host import stubs **from `WC.h`** (no indices).
 - `smoke.c` / `smoke.sh` — instantiate the module using those stubs.
 
 `REGENERATING.md` §3's manual steps are superseded by `tools/ci/`.
+
+The portable C++ host in `cpp/` is built with stock CMake >= 3.20 and the
+`zstd` CLI; see `cpp/README.md`. At configure time it downloads the pinned
+bundle and `WC.h`, verifying SHA-256 values from `tools/ci/pins.env`. The
+default engine mode consumes the prebuilt per-OS shared library;
+`-DWEBLOX_ENGINE_MODE=source` compiles the pinned generated-C bundle locally
+as the portable fallback (slow, validated in CI).
 
 ## Known constraints
 

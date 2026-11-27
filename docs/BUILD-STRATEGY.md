@@ -7,16 +7,20 @@ with an AI or a human editor.
 pins.env (engine version + sha256)
         │
         ▼
-GitHub Actions: wasm → generated C → libweblox_engine.a + WC.h
+GitHub Actions: wasm → generated C → per-OS engine bundles + WC.h
         │
         ▼
-GitHub Release: ci-<run_id>
+Release tagged with the pinned Roblox version
         │
         ▼
-host sources in v3-wasm2c/ + WC.h → executable
+CMake >= 3.20: host sources + WC.h → executable
 ```
 
 - `tools/ci/pins.env` is the source of truth for the engine build.
+- The portable host builds with stock CMake >= 3.20 and the `zstd` CLI; see
+  `v3-wasm2c/cpp/README.md`. The default engine mode consumes the pinned
+  per-OS shared library; `-DWEBLOX_ENGINE_MODE=source` compiles the pinned
+  generated-C bundle locally as the portable fallback (slow, validated in CI).
 - `tools/ci/README.md` lists the canonical scripts and exact commands.
 - `docs/CI-RESULTS.md` records measured tool comparisons.
 - `v3-wasm2c/README.md` records what is missing from the parked wasm2c host.
