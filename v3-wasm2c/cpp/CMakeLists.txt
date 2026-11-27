@@ -239,7 +239,7 @@ target_include_directories(weblox PRIVATE
 if(WIN32)
   # Module instantiation recurses deeply; Windows' 1 MiB default stack is
   # too small (Linux/macOS runners give the main thread 8 MiB).
-  target_link_options(weblox PRIVATE "/STACK:8388608")
+  target_link_options(weblox PRIVATE "-Wl,/STACK:8388608")
   target_compile_definitions(weblox PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
   # clang from the runner image is older than the MSVC STL version gate.
   target_compile_definitions(weblox PRIVATE _ALLOW_COMPILER_AND_STL_VERSION_MISMATCH)
