@@ -48,3 +48,13 @@ The portable pipeline is in `tools/ci/`:
   translated successfully on this machine with 32 outputs.
 - `smoke.c` only proves instantiation; there is no join-capable wasm2c host
   until the missing `host/` and `impl/` sources are reconstructed.
+
+## Verified 2026-11-27
+
+- CI compiled the 32-TU generated tree with clang `-O0` in 590 s into a
+  1.11 GB `libweblox_engine.a` (run `45934107270`, Release `ci-45934107270`).
+- `tools/ci/fetch-and-smoke.sh` downloaded it, generated 277 import stubs from
+  `WC.h`, linked a 949 MB executable and instantiated the module successfully:
+  `SMOKE_OK mem=268435456`, rc=0 (run `45935598599`).
+- This proves the plain-C ABI path works end-to-end without any guest indices
+  or manual pointers. A join-capable host is still future work.

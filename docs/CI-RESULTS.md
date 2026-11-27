@@ -11,6 +11,7 @@ Fill this table from the `metrics.json` artifact of each Actions run.
 | [45927142057](https://github.com/kingdudely/Weblox/actions/runs/45927142057) | WABT wasm2c 1.0.42 | O1 | 512 | aborted after 136 s | n/a | none | 5,113,220 KB | `WABT_CATCH_BAD_ALLOC_AND_EXIT` — OOM in `WriteC` |
 | [45928461139](https://github.com/kingdudely/Weblox/actions/runs/45928461139) | WABT 1.0.36 (source build) | — | — | <1 s | n/a | none | 380,748 KB | cannot parse `exnref` type: `expected valid result type (got -0x17)` |
 | [45934107270](https://github.com/kingdudely/Weblox/actions/runs/45934107270) | generated C from Release, clang `-O0` | O0 | 32 | n/a | **590 s** | **1,114,530,586 B** `.a` | 8,685,540 KB | success: `libweblox_engine.a` + `WC.h` published to `ci-45934107270` |
+| [45935598599](https://github.com/kingdudely/Weblox/actions/runs/45935598599) | fetch + smoke link | — | 277 stubs | n/a | run 85 s | 949,585,328 B exe | 1,168,620 KB | **`SMOKE_OK mem=268435456`**, `smoke_rc=0` |
 
 ## Revival attempt (2026-11-27, free runners)
 
