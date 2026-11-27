@@ -7,7 +7,21 @@ Fill this table from the `metrics.json` artifact of each Actions run.
 | — | WABT wasm2c (`--num-outputs=512`) | O1 | — | — | — | — | — | pending first CI run |
 | — | WABT wasm2c | O0 | — | — | — | — | — | pending |
 | [45927563289](https://github.com/kingdudely/Weblox/actions/runs/45927563289) | w2c2 `bc3fd9ac` | O0 | 0 | <1 s | n/a | none | 154 MiB | **blocked**: translator has no EH support (`invalid value type` on stock module). `tools/ci/w2c2.sh`, branch `ci-w2c2` |
-| — | Cranelift object | — | — | — | — | — | — | pending; historical ~4 min |
+| [45927451165](https://github.com/kingdudely/Weblox/actions/runs/45927451165) | Cranelift `wasm2obj --all` | — | 154,550 | **100 s** (98 s codegen + 1.2 s object) | n/a | 346,096,072 B `.a` | 4,949,432 KB | status=partial: symbol-only `WC.h`, no C-ABI trampolines/VMContext. Branch `ci-cranelift` |
+| [45927142057](https://github.com/kingdudely/Weblox/actions/runs/45927142057) | WABT wasm2c 1.0.42 | O1 | 512 | aborted after 136 s | n/a | none | 5,113,220 KB | `WABT_CATCH_BAD_ALLOC_AND_EXIT` — OOM in `WriteC` |
+
+## WABT wasm2c abort investigation
+
+Probe [45927708434](https://github.com/kingdudely/Weblox/actions/runs/45927708434)
+showed the abort is independent of `--num-outputs` (1, 64 and 512 all abort at
+~12 s with 4.88 GiB peak RSS). Probe
+[45927542617](https://github.com/kingdudely/Weblox/actions/runs/45927542617)
+showed `--enable-threads` is required (shared memory) and that every
+threads-enabled attempt aborts silently. WABT 1.0.42's `wasm2c.cc` wraps
+`main` in `WABT_CATCH_BAD_ALLOC_AND_EXIT`, so the silent abort with a ~4.9 GiB
+peak is an allocation failure inside `WriteC`, not a flag or EH problem.
+Cranelift succeeds at a similar peak (4.7 GiB), so the standard runner's
+memory ceiling sits just between the two.
 
 Reference points already measured locally (do not re-measure on the dev box):
 
