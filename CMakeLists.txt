@@ -154,11 +154,18 @@ endif()
 # Host binary.
 # ---------------------------------------------------------------------------
 find_package(Threads REQUIRED)
+find_package(SDL3 QUIET)
+
 add_executable(weblox
-  src/main.c src/mem.c src/imports.c)
+  src/main.c src/mem.c src/imports.c
+  src/window_sdl.c src/gl.c src/webgpu.c src/webtransport.c)
 target_include_directories(weblox PRIVATE
   "${ENGINE_SRC}" "${WABT_DIR}" "${CMAKE_CURRENT_LIST_DIR}/src")
 target_link_libraries(weblox PRIVATE wc_stubs Threads::Threads)
+if(SDL3_FOUND)
+  target_compile_definitions(weblox PRIVATE WEBLOX_HAVE_SDL3=1)
+  target_link_libraries(weblox PRIVATE SDL3::SDL3)
+endif()
 
 if(WEBLOX_ENGINE_MODE STREQUAL "source")
   target_compile_definitions(weblox PRIVATE WEBLOX_SOURCE_MODE=1)
