@@ -15,7 +15,7 @@ Fill this table from the `metrics.json` artifact of each Actions run.
 | [45943370929](https://github.com/kingdudely/Weblox/actions/runs/45943370929) | OS matrix (e.g. generated C → clang -O0) | O0 | 32 | n/a | Linux 429 s, Windows ~445 s | Linux `.a`, Windows `.lib` | — | Linux + Windows success; macOS failed on WABT asset name |
 | [45944686964](https://github.com/kingdudely/Weblox/actions/runs/45944686964) | OS matrix retry | O0 | 32 | n/a | Linux 429 s, Windows ~445 s | published | — | macOS failed at dylib link (undefined imports) |
 | [46025388958](https://github.com/kingdudely/Weblox/actions/runs/46025388958) | macOS-only retry | O0 | 32 | n/a | **588 s** | `.a` 930,493,008 B + `.dylib` 830,133,728 B | — | success with `-undefined dynamic_lookup` |
-| [46027259411](https://github.com/kingdudely/Weblox/actions/runs/46027259411) | full OS matrix | O0 | 32 | n/a | pending | pending | — | single Release with all three platforms |
+| [46027259411](https://github.com/kingdudely/Weblox/actions/runs/46027259411) | full OS matrix | O0 | 32 | n/a | Linux 504 s, Windows 438 s, macOS 1187 s | all three platforms in `ci-matrix-46027259411` | — | **success**: `.a`+`.so` (Linux), `.a`+`.dylib` (macOS), `.lib` (Windows) |
 
 ## Revival attempt (2026-11-27, free runners)
 

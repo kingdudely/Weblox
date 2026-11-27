@@ -51,3 +51,14 @@ cmake --build v3-wasm2c/cpp/build
 
 This skeleton proves the C++ ↔ generated-C boundary works. A join-capable
 host requires filling in the abstractions above.
+
+Prebuilt engine libraries for all supported platforms are in Release
+`ci-matrix-46027259411`:
+
+- `libweblox_engine-linux-x64.a` / `.so`
+- `libweblox_engine-macos-arm64.a` / `.dylib`
+- `libweblox_engine-windows-x64.lib`
+- shared `WC.h` / `WC-impl.h`
+
+`tools/ci/fetch_engine.sh` downloads them; `env.sh` is rewritten locally so
+the paths point at the downloaded copy.
