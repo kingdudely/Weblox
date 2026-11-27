@@ -114,15 +114,28 @@ ci_fetch_wabt() {
   elif [[ -n ${WASM2C:-} && -n ${WABT_ROOT:-} ]]; then
     WASM2C_INCLUDE="$WABT_ROOT/wasm2c"
   else
-    local plat tarball dir
+    local plat dir tarball ok=0
     plat=$(ci_platform)
-    tarball="wabt-$WABT_VERSION-$plat.tar.gz"
-    dir="$CI_BUILD_DIR/$tarball"
-    if [[ ! -f $dir ]]; then
-      echo "[ci] fetching WABT $WABT_VERSION ($plat)" >&2
-      ci_download "https://github.com/WebAssembly/wabt/releases/download/$WABT_VERSION/$tarball" "$dir"
-    fi
-    local root="$CI_BUILD_DIR/wabt-$WABT_VERSION-$plat"
+    # Newer releases use linux-x64 / osx-arm64; older ones used
+    # ubuntu-20.04 / macos-12.  Try both instead of pinning one scheme.
+    local candidates=(
+      "wabt-$WABT_VERSION-$plat.tar.gz"
+      "wabt-$WABT_VERSION-ubuntu-20.04.tar.gz"
+      "wabt-$WABT_VERSION-ubuntu-22.04.tar.gz"
+      "wabt-$WABT_VERSION-macos-14.tar.gz"
+      "wabt-$WABT_VERSION-macos-12.tar.gz"
+    )
+    for tarball in "${candidates[@]}"; do
+      dir="$CI_BUILD_DIR/$tarball"
+      if [[ -f $dir ]]; then ok=1; break; fi
+      echo "[ci] fetching WABT $WABT_VERSION ($tarball)" >&2
+      if ci_download "https://github.com/WebAssembly/wabt/releases/download/$WABT_VERSION/$tarball" "$dir" 2>/dev/null; then
+        ok=1; break
+      fi
+      rm -f "$dir"
+    done
+    [[ $ok -eq 1 ]] || { echo "common.sh: no WABT $WABT_VERSION asset for $plat" >&2; return 1; }
+    local root="$CI_BUILD_DIR/wabt-$WABT_VERSION-$(basename "$dir" .tar.gz | sed "s/^wabt-$WABT_VERSION-//")"
     if [[ ! -d $root ]]; then
       mkdir -p "$root"
       tar -xzf "$dir" -C "$root" --strip-components=1
