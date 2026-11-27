@@ -11,6 +11,19 @@ Fill this table from the `metrics.json` artifact of each Actions run.
 | [45927142057](https://github.com/kingdudely/Weblox/actions/runs/45927142057) | WABT wasm2c 1.0.42 | O1 | 512 | aborted after 136 s | n/a | none | 5,113,220 KB | `WABT_CATCH_BAD_ALLOC_AND_EXIT` — OOM in `WriteC` |
 | [45928461139](https://github.com/kingdudely/Weblox/actions/runs/45928461139) | WABT 1.0.36 (source build) | — | — | <1 s | n/a | none | 380,748 KB | cannot parse `exnref` type: `expected valid result type (got -0x17)` |
 
+## Revival attempt (2026-11-27, free runners)
+
+The historical wasm2c tree was found on disk at `/home/john/w2cout/`: a
+complete WABT 1.0.42 translation of the 169,929-function stock build with all
+12 RNA imports, 32 `WC_*.c` files totalling 2.3 GB. It was never committed and
+its smoke harness used hardcoded guest indices/pointers, so it was abandoned.
+
+Translations of both `version-f807b21caba84809` (32 and 64 outputs) on
+`ubuntu-latest` abort in `WriteC` at ~4.9 GiB peak even though `/proc/meminfo`
+reports 15.6 GiB — the runner is memory-capped well below its apparent RAM.
+The generated C was therefore uploaded to Release `ci-local-wasm2c-generated`
+and compiled directly by `tools/ci/compile-generated.sh`.
+
 ## WABT wasm2c abort investigation
 
 Probe [45927708434](https://github.com/kingdudely/Weblox/actions/runs/45927708434)
