@@ -1,0 +1,98 @@
+name: host-smoke
+
+# Portability gate for the clean C11 host.  Every supported runner builds the
+# stock CMake project against the pinned Release assets and runs the smoke test.
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  push:
+    branches: [host-c]
+    paths:
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - 'deps/**'
+      - 'src/**'
+      - 'tools/**'
+      - '.github/workflows/host-smoke.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: host-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify toolchain
+        run: |
+          set -euo pipefail
+          install_zstd() {
+            case "${RUNNER_OS}" in
+              Linux)   sudo apt-get update -qq && sudo apt-get install -y -qq zstd ;;
+              macOS)   brew install zstd ;;
+              Windows) choco install zstd -y ;;
+              *) echo "unsupported runner OS: ${RUNNER_OS}" >&2; exit 1 ;;
+            esac
+          }
+          if ! command -v zstd >/dev/null 2>&1; then
+            echo "zstd not found; installing"
+            install_zstd
+          fi
+          for tool in cmake python3 clang zstd; do
+            command -v "$tool" >/dev/null 2>&1 || { echo "missing tool: $tool" >&2; exit 1; }
+          done
+          cmake_ver=$(cmake --version | head -1 | awk '{print $3}')
+          if ! printf '%s\n' "$cmake_ver" | awk -F. '{exit !($1 > 3 || ($1 == 3 && $2 >= 20))}'; then
+            echo "cmake >= 3.20 required, found $cmake_ver" >&2
+            exit 1
+          fi
+          mkdir -p ci-logs
+          cmake --version | head -1
+          python3 --version
+          clang --version | head -1
+          zstd --version
+
+      - name: Configure
+        run: |
+          set -euo pipefail
+          # The Windows DLL has no wasm_rt_* exports, so compile the pinned
+          # generated C locally there.  Linux/macOS use the prebuilt bundle.
+          extra=()
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            extra=(-DWEBLOX_ENGINE_MODE=source)
+          fi
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release "${extra[@]}" 2>&1 \
+            | tee ci-logs/configure.log
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          cmake --build build --config Release 2>&1 | tee ci-logs/build.log
+
+      - name: Test
+        run: |
+          set -euo pipefail
+          ctest --test-dir build -C Release --output-on-failure 2>&1 \
+            | tee ci-logs/test.log
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: host-smoke-logs-${{ matrix.os }}
+          path: ci-logs/
+          if-no-files-found: warn

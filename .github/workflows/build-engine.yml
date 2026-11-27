@@ -1,0 +1,241 @@
+name: build-engine
+
+# Manual builder for the prebuilt engine bundles consumed by the C host.
+# It compiles the pinned generated C (plus the vendored WABT runtime) into one
+# shared library per platform, packs it together with WC.h, and publishes the
+# bundle to the Release named in deps/pins.env.
+
+on:
+  workflow_dispatch:
+    inputs:
+      opt:
+        description: 'Optimisation level used for the generated C (e.g. O3, O0, Os)'
+        required: false
+        default: 'O3'
+        type: string
+      force:
+        description: 'Overwrite assets that already exist in the Release'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+# Two concurrent jobs uploading to one Release race on the asset endpoints.
+concurrency:
+  group: build-engine
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve Release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag=$(grep '^WASM_VERSION=' deps/pins.env | cut -d= -f2)
+          case "$tag" in
+            version-*) ;;
+            *) tag="version-$tag-RobloxWebClient" ;;
+          esac
+          if ! gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release create "$tag" --repo "${{ github.repository }}" \
+              --title "Engine $tag" \
+              --notes "Prebuilt wasm2c engine libraries for the C host." \
+              --target "${{ github.sha }}"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-x64
+          - os: macos-latest
+            platform: macos-arm64
+          - os: windows-latest
+            platform: windows-x64
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          set -euo pipefail
+          install_zstd() {
+            case "${RUNNER_OS}" in
+              Linux)   sudo apt-get update -qq && sudo apt-get install -y -qq zstd ;;
+              macOS)   brew install zstd ;;
+              Windows) choco install zstd -y ;;
+              *) echo "unsupported runner OS: ${RUNNER_OS}" >&2; exit 1 ;;
+            esac
+          }
+          if ! command -v zstd >/dev/null 2>&1; then
+            echo "zstd not found; installing"
+            install_zstd
+          fi
+          for tool in gh python3 clang zstd tar curl; do
+            command -v "$tool" >/dev/null 2>&1 || { echo "missing tool: $tool" >&2; exit 1; }
+          done
+          clang --version | head -1
+          zstd --version
+
+      - name: Fetch generated sources
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          verify() {
+            python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$1"
+          }
+          tag=$(grep '^WASM_VERSION=' deps/pins.env | cut -d= -f2)
+          gen=$PWD/build-ci/generated
+          mkdir -p "$gen"
+          if gh release download "$tag" --repo "${{ github.repository }}" \
+               --dir "$PWD/build-ci" --pattern 'generated-c.tar.zst' 2>/dev/null \
+             && [ -s "$PWD/build-ci/generated-c.tar.zst" ]; then
+            sha=$(grep '^GENERATED_C_SHA256=' deps/pins.env | cut -d= -f2)
+            [ "$(verify "$PWD/build-ci/generated-c.tar.zst")" = "$sha" ] \
+              || { echo "generated-c.tar.zst hash mismatch" >&2; exit 1; }
+            zstd -q -f -d "$PWD/build-ci/generated-c.tar.zst" \
+              -o "$PWD/build-ci/generated-c.tar"
+            tar -xf "$PWD/build-ci/generated-c.tar" -C "$gen"
+          else
+            echo "pinned generated-c bundle unavailable; using ci-local-wasm2c-generated" >&2
+            gh release download ci-local-wasm2c-generated \
+              --repo "${{ github.repository }}" --dir "$gen" \
+              --pattern 'WC*.c' --pattern 'WC.h' --pattern 'WC-impl.h'
+          fi
+          [ -f "$gen/WC.h" ] || { echo "WC.h missing from generated sources" >&2; exit 1; }
+          echo "generated translation units: $(find "$gen" -maxdepth 1 -name 'WC_*.c' | wc -l)"
+
+      - name: Compile engine library
+        env:
+          OPT: ${{ inputs.opt }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          root=$PWD
+          gen=$root/build-ci/generated
+          obj=$root/build-ci/obj
+          out=$root/build-ci/out
+          simde=$root/build-ci/simde
+          mkdir -p "$obj" "$out"
+
+          opt="-${OPT#-}"
+          cc=$(command -v clang || command -v cc)
+          [ -n "$cc" ] || { echo "clang not found" >&2; exit 1; }
+
+          # SIMDE supplies the wasm SIMD intrinsics used by the generated C.
+          if [ ! -f "$simde/simde/wasm/simd128.h" ]; then
+            mkdir -p "$simde"
+            curl -fL --retry 3 -o "$root/build-ci/simde.tar.gz" \
+              https://github.com/simd-everywhere/simde/archive/refs/tags/v0.8.2.tar.gz
+            sha=$(grep '^SIMDE_SHA256=' "$root/deps/pins.env" | cut -d= -f2)
+            got=$(python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' \
+              "$root/build-ci/simde.tar.gz")
+            [ "$got" = "$sha" ] || { echo "SIMDE hash mismatch" >&2; exit 1; }
+            tar -xzf "$root/build-ci/simde.tar.gz" -C "$simde" --strip-components=1
+          fi
+
+          flags="-w $opt -fPIC -fno-stack-protector -pipe -I$gen -I$root/deps/wabt -I$simde"
+          for f in "$gen"/WC_*.c; do
+            [ -f "$f" ] || continue
+            "$cc" $flags -c "$f" -o "$obj/$(basename "$f" .c).o"
+          done
+          # The host links the prebuilt library only, so it must carry the
+          # WABT runtime itself.
+          for f in "$root"/deps/wabt/wasm-rt-*.c; do
+            "$cc" $flags -c "$f" -o "$obj/rt-$(basename "$f" .c).o"
+          done
+
+          case "$PLATFORM" in
+            linux-x64)
+              "$cc" -shared -o "$out/engine-linux-x64.so" "$obj"/*.o -lm -lpthread
+              ;;
+            macos-arm64)
+              "$cc" -dynamiclib -Wl,-undefined,dynamic_lookup \
+                -o "$out/engine-macos-arm64.dylib" "$obj"/*.o -lm -lpthread
+              ;;
+            windows-x64)
+              # Host imports live in the executable; export only the WC.h ABI.
+              printf 'EXPORTS\n' > "$out/exports.def"
+              grep -oE '\b(w2c_WebClient_[A-Za-z0-9_]+|wasm2c_WebClient_[A-Za-z0-9_]+)\b' \
+                "$gen/WC.h" | sort -u >> "$out/exports.def"
+              "$cc" -shared -fuse-ld=lld -Wl,-FORCE -Wl,-DEF:"$out/exports.def" \
+                -Wl,-IMPLIB:"$out/engine-windows-x64.lib" \
+                -o "$out/engine-windows-x64.dll" "$obj"/*.o
+              ;;
+            *)
+              echo "unsupported platform: $PLATFORM" >&2
+              exit 1
+              ;;
+          esac
+          cp "$gen/WC.h" "$out/WC.h"
+
+      - name: Package bundle
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          cd "$PWD/build-ci/out"
+          case "$PLATFORM" in
+            linux-x64)
+              tar -cf - engine-linux-x64.so WC.h | zstd -T0 -19 -q > engine-linux-x64.tar.zst
+              ;;
+            macos-arm64)
+              tar -cf - engine-macos-arm64.dylib WC.h | zstd -T0 -19 -q > engine-macos-arm64.tar.zst
+              ;;
+            windows-x64)
+              tar -cf - engine-windows-x64.dll engine-windows-x64.lib WC.h \
+                | zstd -T0 -19 -q > engine-windows-x64.tar.zst
+              ;;
+            *)
+              echo "unsupported platform: $PLATFORM" >&2
+              exit 1
+              ;;
+          esac
+          ls -l "engine-$PLATFORM.tar.zst"
+
+      - name: Publish asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          PLATFORM: ${{ matrix.platform }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          asset="engine-$PLATFORM.tar.zst"
+          path="$PWD/build-ci/out/$asset"
+          upload_with_retry() {
+            for attempt in 1 2 3; do
+              if gh release upload "$TAG" "$path" --repo "${{ github.repository }}" --clobber; then
+                return 0
+              fi
+              echo "upload failed (attempt $attempt); retrying in 5s" >&2
+              sleep 5
+            done
+            return 1
+          }
+          existing=$(gh api "repos/${{ github.repository }}/releases/tags/$TAG" \
+            --jq '.assets[].name' 2>/dev/null || true)
+          if [ "$FORCE" = true ] || ! printf '%s\n' "$existing" | grep -qx "$asset"; then
+            upload_with_retry
+          else
+            echo "asset $asset already published; skipping"
+          fi
