@@ -54,6 +54,7 @@ CC=${CC:-${WC_CC:-}}
 if [[ -z $CC ]]; then
   CC=$(command -v clang >/dev/null 2>&1 && echo clang || echo cc)
 fi
+CC_BASE=$CC
 if command -v ccache >/dev/null 2>&1 && [[ -z ${WC_NO_CCACHE:-} ]]; then
   export CCACHE_DIR="$CI_BUILD_DIR/ccache"
   WRAP="$CI_BUILD_DIR/cc-$RANDOM"
@@ -66,6 +67,25 @@ CFLAGS="-w -Wno-error=incompatible-pointer-types -Wno-error=int-conversion \
   -fno-asynchronous-unwind-tables -fno-stack-protector $PIC_FLAG \
   -I$GEN -I$WASM2C_INCLUDE -I$SIMDE_DIR"
 
+# Every generated TU includes the same ~9 MB WC-impl.h plus WABT/SIMDE headers.
+# A precompiled header avoids re-parsing that 32 times.  clang supports
+# -include-pch; gcc falls back to a plain -include.
+PCH_FLAGS=""
+if [[ $CC_BASE == *clang* ]]; then
+  PRE="$GEN/weblox-pre.h"
+  {
+    echo '#include "wasm-rt.h"'
+    echo '#include "wasm-rt-exceptions.h"'
+    echo '#include "WC.h"'
+    echo '#include "WC-impl.h"'
+  } > "$PRE"
+  if "$CC_BASE" -x c-header $CFLAGS "$PRE" -o "$GEN/weblox-pre.h.pch" 2>/dev/null; then
+    PCH_FLAGS="-include-pch $GEN/weblox-pre.h.pch"
+    ci_metric pch 1
+  fi
+fi
+[[ -n $PCH_FLAGS ]] || ci_metric pch 0
+
 TRANSLATED=()
 while IFS= read -r f; do TRANSLATED+=("$f"); done < <(find "$GEN" -maxdepth 1 -name 'WC_*.c' -print | sort)
 ci_metric translated_tus "${#TRANSLATED[@]}"
@@ -75,11 +95,12 @@ ci_metric translated_bytes "$(cat "${TRANSLATED[@]}" | wc -c | tr -d ' ')"
 echo "[gen] compiling ${#TRANSLATED[@]} generated units with $JOBS jobs" >&2
 T0=$SECONDS
 export WC_OBJ_DIR="$OBJ" WC_CC_BIN="$CC" WC_GEN_DIR="$GEN" \
-       WC_WABT_INC="$WASM2C_INCLUDE" WC_SIMDE_INC="$SIMDE_DIR" WC_OFLAG="$OFLAG"
+       WC_WABT_INC="$WASM2C_INCLUDE" WC_SIMDE_INC="$SIMDE_DIR" WC_OFLAG="$OFLAG" \
+       WC_PCH="$PCH_FLAGS"
 printf '%s\n' "${TRANSLATED[@]}" | xargs -P "$JOBS" -I{} sh -c '
   f="$1"
   o="$WC_OBJ_DIR/$(basename "$f" .c).o"
-  [ -f "$o" ] || "$WC_CC_BIN" -c '"$WC_OFLAG $CFLAGS"' \
+  [ -f "$o" ] || "$WC_CC_BIN" -c '"$WC_OFLAG $CFLAGS $WC_PCH"' \
     -I"$WC_GEN_DIR" -I"$WC_WABT_INC" -I"$WC_SIMDE_INC" "$f" -o "$o"
 ' sh {}
 ci_metric compile_secs $((SECONDS - T0))
@@ -98,21 +119,24 @@ if [[ $PLAT_OS == windows ]]; then
   llvm-nm --defined-only "$OBJ"/*.o 2>/dev/null \
     | awk '{print $3}' | grep -E '^(w2c_|wasm2c_)' | sort -u >> "$DEF"
   IMPORT="$OUT/$IMPORT_NAME"
-  lld-link /DLL /OUT:"$SHARED" /DEF:"$DEF" /IMPLIB:"$IMPORT" "$OBJ"/*.o
+  # Git Bash rewrites /DLL and /OUT: into paths; use the - spelling.
+  lld-link -DLL -OUT:"$SHARED" -DEF:"$DEF" -IMPLIB:"$IMPORT" "$OBJ"/*.o
 else
   # Generated objects call host imports that live in the executable.  Linux
   # .so allows undefined symbols by default; macOS needs dynamic_lookup.
   UNDEFINED_FLAG=""
+  LLD_FLAG=""
   [[ $PLAT_OS == macos ]] && UNDEFINED_FLAG="-Wl,-undefined,dynamic_lookup"
-  "$CC" $SHARED_FLAG $UNDEFINED_FLAG -o "$SHARED" "$OBJ"/*.o -lm -lpthread
+  [[ $PLAT_OS == linux ]] && command -v ld.lld >/dev/null 2>&1 && LLD_FLAG="-fuse-ld=lld"
+  "$CC" $SHARED_FLAG $UNDEFINED_FLAG $LLD_FLAG -o "$SHARED" "$OBJ"/*.o -lm -lpthread
 fi
 ci_metric shared_bytes "$(wc -c < "$SHARED" | tr -d ' ')"
 
 cp "$GEN/WC.h" "$OUT/WC.h"
 cp "$GEN/WC-impl.h" "$OUT/WC-impl.h" 2>/dev/null || true
 if command -v zstd >/dev/null 2>&1; then
-  zstd -19 -f -q "$SHARED" -o "$SHARED.zst"
-  [[ -n $IMPORT ]] && zstd -19 -f -q "$IMPORT" -o "$IMPORT.zst"
+  zstd -T0 -19 -f -q "$SHARED" -o "$SHARED.zst"
+  [[ -n $IMPORT ]] && zstd -T0 -19 -f -q "$IMPORT" -o "$IMPORT.zst"
   ci_metric zstd_bytes "$(wc -c < "$SHARED.zst" | tr -d ' ')"
 fi
 {
