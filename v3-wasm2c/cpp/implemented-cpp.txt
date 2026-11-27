@@ -27,3 +27,4 @@ is_mobile_browser
 is_touch_mobile
 is_touch_screen_device
 js_web_client_page_visible
+schedule_main_loop

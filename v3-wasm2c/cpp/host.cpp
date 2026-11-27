@@ -9,10 +9,12 @@ extern "C" {
 #include "WC.h"
 }
 
+#include "loop.h"
 #include "window.h"
 
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <thread>
 
@@ -41,14 +43,21 @@ int main(int argc, char** argv) {
   std::printf("CPP_SMOKE_OK mem=%llu\n",
               static_cast<unsigned long long>(g_mem.size));
 
-  // A future host will pump SDL events + the engine loop here.  For now the
-  // skeleton proves the C++ side can own the generated instance.
-  weblox::Window window;
-  if (window.init()) {
-    using namespace std::chrono_literals;
-    std::this_thread::sleep_for(100ms);
-    window.pump();
-    window.quit();
+  // Default run is a short smoke test.  WEBLOX_RUN_MS opts into a bounded
+  // engine run so join-path experiments do not slow the CI smoke gate.
+  const char* run_ms = std::getenv("WEBLOX_RUN_MS");
+  if (run_ms && *run_ms) {
+    int turns = weblox::loop::run(&inst,
+                                  std::chrono::milliseconds(std::atoi(run_ms)));
+    std::printf("RUN_TURNS=%d\n", turns);
+  } else {
+    weblox::Window window;
+    if (window.init()) {
+      using namespace std::chrono_literals;
+      std::this_thread::sleep_for(100ms);
+      window.pump();
+      window.quit();
+    }
   }
 
   wasm2c_WebClient_free(&inst);
