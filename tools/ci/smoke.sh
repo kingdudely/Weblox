@@ -23,6 +23,14 @@ fi
 # shellcheck source=/dev/null
 . "$ENGINE_DIR/env.sh"
 
+# A downloaded library's env.sh points at the build runner's WABT tree.  Get a
+# local copy of the headers on this machine before compiling anything.
+if [[ ! -f $WABT_INCLUDE/wasm-rt.h ]]; then
+  WABT_VERSION=${WABT_VERSION:-1.0.42}
+  ci_fetch_wabt
+  WABT_INCLUDE="$WABT_ROOT/wasm2c"
+fi
+
 OUT="$CI_BUILD_DIR/smoke"
 mkdir -p "$OUT"
 CC=${CC:-cc}
