@@ -1,0 +1,200 @@
+name: heavy
+
+# Anything that translates/compiles/runs for minutes goes here, never on a
+# developer laptop.  Public repo => unlimited free standard runners
+# (4 vCPU / 16 GB RAM / 14 GB SSD, 6 h job cap).  Built libraries go to a
+# GitHub Release (2 GiB/file, no total size limit); only metrics/logs go to
+# Actions artifacts (500 MB limit).
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: 'tools/ci/<task>.sh to run'
+        required: true
+        default: wabt-wasm2c
+        type: choice
+        options:
+          - wabt-wasm2c
+          - w2c2
+          - cranelift-object
+          - wasmtime-build
+          - custom
+      script:
+        description: 'Path to script when task=custom'
+        required: false
+        default: ''
+        type: string
+      opt:
+        description: ' optimisation level for generated C'
+        required: true
+        default: O1
+        type: choice
+        options: [O0, O1, O2, O3]
+      outputs:
+        description: 'wasm2c split count'
+        required: false
+        default: '512'
+        type: string
+      ref:
+        description: 'git ref to build (branch, tag or SHA); blank = this ref'
+        required: false
+        default: ''
+        type: string
+      wasm-version:
+        description: 'pinned engine version hash'
+        required: false
+        default: 1ef59424f70d4932
+        type: string
+      wasm-sha256:
+        description: 'expected sha256 of WebClient.wasm'
+        required: false
+        default: be370a4446dcfce62635f7e6d271526b15e2099507fb7250b2d3360eacd4a61f
+        type: string
+      upload-release:
+        description: 'upload the engine library to a Release'
+        required: false
+        default: true
+        type: boolean
+      timeout-minutes:
+        description: 'job timeout (max 360)'
+        required: false
+        default: '180'
+        type: string
+
+  workflow_call:
+    inputs:
+      task:
+        description: 'tools/ci/<task>.sh to run'
+        required: false
+        default: wabt-wasm2c
+        type: string
+      script:
+        description: 'Path to script when task=custom'
+        required: false
+        default: ''
+        type: string
+      opt:
+        description: 'optimisation level'
+        required: false
+        default: O1
+        type: string
+      outputs:
+        description: 'wasm2c split count'
+        required: false
+        default: '512'
+        type: string
+      ref:
+        description: 'git ref to build'
+        required: false
+        default: ''
+        type: string
+      wasm-version:
+        description: 'pinned engine version hash'
+        required: false
+        default: 1ef59424f70d4932
+        type: string
+      wasm-sha256:
+        description: 'expected sha256 of WebClient.wasm'
+        required: false
+        default: be370a4446dcfce62635f7e6d271526b15e2099507fb7250b2d3360eacd4a61f
+        type: string
+      upload-release:
+        description: 'upload the engine library to a Release'
+        required: false
+        default: true
+        type: boolean
+      timeout-minutes:
+        description: 'job timeout'
+        required: false
+        default: '180'
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(inputs.timeout-minutes || '180') }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Toolchain
+        run: |
+          set -e
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq binutils ccache
+          echo "nproc=$(nproc)" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare
+        run: mkdir -p build/ci
+
+      - name: Run ${{ inputs.task }}
+        id: run
+        env:
+          TASK: ${{ inputs.task }}
+          SCRIPT: ${{ inputs.script }}
+          WC_OPT: ${{ inputs.opt }}
+          WC_OUTPUTS: ${{ inputs.outputs }}
+          WASM_VERSION: ${{ inputs.wasm-version }}
+          WASM_SHA256: ${{ inputs.wasm-sha256 }}
+        run: |
+          set -euo pipefail
+          if [ "$TASK" = custom ]; then
+            script="$SCRIPT"
+          else
+            script="tools/ci/$TASK.sh"
+          fi
+          [ -n "$script" ] && [ -f "$script" ] || { echo "missing script: $script" >&2; exit 2; }
+          echo "script=$script" >> "$GITHUB_OUTPUT"
+          if [ -x /usr/bin/time ]; then
+            /usr/bin/time -v -o build/ci/time.txt bash "$script" 2>&1 | tee build/ci/run.log
+          else
+            bash "$script" 2>&1 | tee build/ci/run.log
+          fi
+
+      - name: Fold metrics
+        if: always()
+        run: python3 tools/ci/metrics.py build/ci/metrics.txt build/ci/time.txt > build/ci/metrics.json
+
+      - name: Locate artifacts
+        id: artifacts
+        if: always()
+        run: |
+          if [ -f build/ci/engine_dir ]; then
+            echo "dir=$(cat build/ci/engine_dir)" >> "$GITHUB_OUTPUT"
+          else
+            echo "dir=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload metrics and logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: heavy-${{ inputs.task }}-${{ inputs.opt }}-${{ github.run_id }}
+          path: |
+            build/ci/metrics.json
+            build/ci/metrics.txt
+            build/ci/time.txt
+            build/ci/run.log
+            build/ci/engine_dir
+          if-no-files-found: warn
+
+      - name: Publish engine library
+        if: ${{ inputs.upload-release && steps.artifacts.outputs.dir != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ci-${{ github.run_id }}
+          name: CI ${{ inputs.task }} (${{ inputs.opt }}) #${{ github.run_number }}
+          generate_release_notes: false
+          files: |
+            ${{ steps.artifacts.outputs.dir }}/libweblox_engine.a
+            ${{ steps.artifacts.outputs.dir }}/WC.h
+            ${{ steps.artifacts.outputs.dir }}/manifest.json
+            ${{ steps.artifacts.outputs.dir }}/env.sh
+            build/ci/metrics.json

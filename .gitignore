@@ -14,6 +14,9 @@ build/bundle/
 *.wbn
 *.swbn
 
+# two-stage native build: translated engine C, objects and metrics
+build/ci/
+
 # rust build output
 **/target/
 
