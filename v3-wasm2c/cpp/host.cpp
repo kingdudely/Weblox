@@ -28,6 +28,9 @@ w2c_WebClient* g_wc_instance;
 int main(int argc, char** argv) {
   (void)argc;
   (void)argv;
+  // Unbuffered so a crash before CPP_SMOKE_OK still leaves a trail in CI.
+  std::setvbuf(stdout, nullptr, _IONBF, 0);
+  std::printf("CPP_BEGIN\n");
 
   wasm_rt_init();
   // The browser allocates the module maximum up front and never grows it.
