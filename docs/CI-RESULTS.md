@@ -19,7 +19,7 @@ Fill this table from the `metrics.json` artifact of each Actions run.
 | [46042572149](https://github.com/kingdudely/Weblox/actions/runs/46042572149) | Windows DLL | O0 | 32 | n/a | 606 s compile | `.dll` 1,065,746,944 B → `.tar.zst` 156,826,842 B | — | **success**: 57 exports from `WC.h`, import lib generated |
 | [46044752089](https://github.com/kingdudely/Weblox/actions/runs/46044752089) | full matrix, tar.zst | O0 | 32 | n/a | Windows 541 s, macOS 1157 s | all three `.tar.zst` bundles | — | Windows + macOS success; Linux failed in Toolchain (`brew` fallback) |
 | [46046382817](https://github.com/kingdudely/Weblox/actions/runs/46046382817) | Linux retry | O0 | 32 | n/a | 686 s | Linux `.tar.zst` | — | success after robust toolchain install |
-| Release `version-1ef59424f70d4932-RobloxWebClient` | final assets | — | — | — | — | `.so`/`.dylib`/`.dll` bundles ~137–157 MB each; source 165 MB | — | hashes pinned in `tools/ci/pins.env` |
+| Release `version-1ef59424f70d4932-RobloxWebClient` | final assets | — | — | — | — | `.so`/`.dylib`/`.dll` bundles ~137–157 MB each; source 165 MB | — | hashes pinned in `tools/ci/pins.env`; asset uploads are idempotent unless `force=true` |
 
 ## Revival attempt (2026-11-27, free runners)
 
