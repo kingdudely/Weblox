@@ -31,6 +31,10 @@ w2c_WebClient* g_wc_instance;
 
 namespace {
 
+#ifdef _WIN32
+void* g_mem_base = nullptr;  // raw VirtualAlloc base, for release
+#endif
+
 // WABT reserves 8 GiB when guard pages are enabled.  That reservation fails
 // on Windows runners, so set up the same 4 GiB address space directly there.
 void allocate_memory() {
@@ -50,6 +54,7 @@ void allocate_memory() {
     std::fprintf(stderr, "VirtualAlloc commit failed\n");
     std::abort();
   }
+  g_mem_base = base;
   g_mem.data = reinterpret_cast<decltype(g_mem.data)>(base);
   g_mem.data_end = reinterpret_cast<decltype(g_mem.data_end)>(
       base + reserve_bytes);
@@ -69,8 +74,7 @@ void allocate_memory() {
 void free_memory() {
 #ifdef _WIN32
   DeleteCriticalSection(&g_mem.mem_lock);
-  VirtualFree(const_cast<void*>(static_cast<const void*>(g_mem.data)), 0,
-              MEM_RELEASE);
+  VirtualFree(g_mem_base, 0, MEM_RELEASE);
 #else
   wasm_rt_free_memory_shared(&g_mem);
 #endif

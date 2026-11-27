@@ -157,13 +157,33 @@ endif()
 # ---------------------------------------------------------------------------
 # Import stubs: generated from WC.h, never from hardcoded indices.
 # ---------------------------------------------------------------------------
+# HTTP needs libcurl.  Keep the smoke build dependency-free: when curl is
+# absent those imports stay generated no-ops and the join path is unavailable.
+find_package(CURL QUIET)
+set(HTTP_SOURCES "")
+set(SKIP_FILE "${CMAKE_CURRENT_LIST_DIR}/implemented-cpp.txt")
+if(CURL_FOUND)
+  list(APPEND HTTP_SOURCES fetch_curl.cpp http_fetch.cpp fs_cache.cpp)
+  file(READ "${SKIP_FILE}" SKIP_TEXT)
+  file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/implemented-host.txt" "${SKIP_TEXT}")
+  file(APPEND "${CMAKE_CURRENT_BINARY_DIR}/implemented-host.txt"
+    "js_fetch_file\nemscripten_start_fetch\nemscripten_fetch_free\n"
+    "0x5Femscripten_fetch_get_response_headers\n"
+    "0x5Femscripten_fetch_get_response_headers_length\n"
+    "0x5F_syscall_getegid32\n0x5F_syscall_geteuid32\n"
+    "0x5F_syscall_getgid32\n0x5F_syscall_getuid32\n")
+  set(SKIP_FILE "${CMAKE_CURRENT_BINARY_DIR}/implemented-host.txt")
+else()
+  message(STATUS "libcurl not found; HTTP imports remain no-op stubs")
+endif()
+
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 set(STUBS "${CMAKE_CURRENT_BINARY_DIR}/stubs.c")
 execute_process(
   COMMAND ${Python3_EXECUTABLE}
     "${CMAKE_CURRENT_LIST_DIR}/../../tools/ci/gen_stubs.py"
     "${ENGINE_SRC}/WC.h"
-    "${CMAKE_CURRENT_LIST_DIR}/implemented-cpp.txt"
+    "${SKIP_FILE}"
   OUTPUT_FILE "${STUBS}"
   RESULT_VARIABLE _gen_result)
 if(NOT _gen_result EQUAL 0)
@@ -210,7 +230,8 @@ find_package(Threads REQUIRED)
 add_executable(weblox
   host.cpp imports.cpp asm_const.cpp thread_init.cpp host_info.cpp loop.cpp platform.cpp mem.c
   window.cpp window_sdl.cpp net_stub.cpp net_curl.cpp
-  gpu_stub.cpp fiber_stub.cpp fiber_ucontext.cpp fiber_win.cpp)
+  gpu_stub.cpp fiber_impl.cpp thread_host.cpp futex_host.cpp
+  mailbox.cpp deferred.cpp ${HTTP_SOURCES})
 target_include_directories(weblox PRIVATE
   "${ENGINE_SRC}" "${ABI_DIR}" "${CMAKE_CURRENT_LIST_DIR}")
 # C++ files that include WC.h include cpp_compat.h first (see the header).
@@ -221,6 +242,9 @@ if(WIN32)
 endif()
 target_link_libraries(weblox PRIVATE
   wc_stubs Threads::Threads ${CMAKE_DL_LIBS})
+if(CURL_FOUND)
+  target_link_libraries(weblox PRIVATE CURL::libcurl)
+endif()
 # The Linux .so and macOS .dylib export their own WABT runtime.  Using the
 # host's copy there would split exception/TLS state and crash on wasm throws.
 # The Windows DLL exports only WC.h names, so the host must supply its own.

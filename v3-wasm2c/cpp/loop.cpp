@@ -40,6 +40,10 @@ extern "C" void w2c_env_schedule_main_loop(struct w2c_env*) {
   g_scheduled.store(true, std::memory_order_release);
 }
 
+namespace weblox::deferred {
+int pump(w2c_WebClient* inst);
+}
+
 namespace weblox::loop {
 
 bool scheduled() { return g_scheduled.load(std::memory_order_acquire); }
@@ -78,6 +82,7 @@ int run(w2c_WebClient* inst, std::chrono::milliseconds budget) {
   // Browsers call rAF every frame whether or not the engine set the
   // schedule_main_loop flag; join work is driven from those turns.
   while (std::chrono::steady_clock::now() < deadline) {
+    weblox::deferred::pump(inst);
     guarded([&] { w2c_WebClient_main_loop_iteration(inst); });
     ++turns;
     platform::sleep_ms(1);
