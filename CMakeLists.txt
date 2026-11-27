@@ -254,6 +254,7 @@ if(SDL3_FOUND)
   target_link_libraries(weblox PRIVATE ${WEBLOX_SDL3_LIB})
 endif()
 if(CURL_FOUND)
+  target_compile_definitions(weblox PRIVATE WEBLOX_USE_HTTP=1)
   target_link_libraries(weblox PRIVATE ${WEBLOX_CURL_LIB} yyjson)
 endif()
 

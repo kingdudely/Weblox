@@ -3,9 +3,16 @@
 
 #include "host.h"
 
+#include "window.h"
+#include "gl.h"
+#include "webgpu.h"
+#include "webtransport.h"
 #ifdef WEBLOX_HAVE_SDL3
 #include "fibers.h"
 #include "deferred.h"
+#endif
+#ifdef WEBLOX_USE_HTTP
+#include "http.h"
 #endif
 
 #include <stdio.h>
@@ -102,6 +109,10 @@ int main(void) {
 #ifdef WEBLOX_HAVE_SDL3
   weblox_fibers_init();
 #endif
+  weblox_window_init(1280, 720);
+  gl_init(weblox_window_gl_loader());
+  webgpu_init();
+  wt_init();
 
   w2c_WebClient inst;
   memset(&inst, 0, sizeof inst);
@@ -118,10 +129,18 @@ int main(void) {
     (void)root;
     int turns = 0;
     for (int i = 0; i < atoi(run_ms); ++i) {
+      weblox_window_pump();
       weblox_deferred_pump(&inst);
+#ifdef WEBLOX_USE_HTTP
+      weblox_http_pump(&inst);
+#endif
+      wt_pump();
+      weblox_window_present();
       ++turns;
+      if (weblox_window_should_close()) break;
     }
     printf("RUN_TURNS=%d\n", turns);
+    weblox_window_shutdown();
 #else
     fprintf(stderr, "WEBLOX_RUN_MS needs SDL3/fiber support\n");
 #endif
