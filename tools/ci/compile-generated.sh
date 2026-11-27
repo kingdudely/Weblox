@@ -120,8 +120,11 @@ if [[ $PLAT_OS == windows ]]; then
   llvm-nm --defined-only "$OBJ"/*.o 2>/dev/null \
     | awk '{print $3}' | grep -E '^(w2c_|wasm2c_)' | sort -u >> "$DEF"
   IMPORT="$OUT/$IMPORT_NAME"
-  # Git Bash rewrites /DLL and /OUT: into paths; use the - spelling.
-  lld-link -DLL -OUT:"$SHARED" -DEF:"$DEF" -IMPLIB:"$IMPORT" "$OBJ"/*.o
+  # Use the clang driver so the CRT libraries are added automatically.  Host
+  # imports are resolved by the executable, so force unresolved externals.
+  # The - spelling avoids Git Bash rewriting /DEF: into a Windows path.
+  "$CC" -shared -fuse-ld=lld -Wl,-FORCE -Wl,-DEF:"$DEF" \
+    -Wl,-IMPLIB:"$IMPORT" -o "$SHARED" "$OBJ"/*.o
 else
   # Generated objects call host imports that live in the executable.  Linux
   # .so allows undefined symbols by default; macOS needs dynamic_lookup.
