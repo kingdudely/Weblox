@@ -718,9 +718,10 @@ fn exec(req: &Req, cookie: Option<&str>) -> std::io::Result<(u16, String, String
         eprintln!("[pep] {status} hdr={:?}", block);
         eprintln!("[pep] body[:500]={:?}", String::from_utf8_lossy(&body[..body.len().min(500)]));
     }
-    // With the native transport the reply is the route: keep it byte for byte
-    // and hand the joinScript to the UDP seam instead of patching gameFqdn.
-    if status == 200 && is_join(&req.url) && std::env::var_os("WC_RAKNET").is_some() {
+    // The join reply *is* the route: RakNet needs it for the UDP endpoint and
+    // WebTransport needs it for the peer/SNI/caps/cert hashes.  Store the
+    // original bytes before patch_join() rewrites gameFqdn below.
+    if status == 200 && is_join(&req.url) {
         store_join_script(&body);
     }
     // The crafted gameFqdn routes the WebTransport session through a proxy.
