@@ -40,7 +40,7 @@ int main(int argc, char** argv) {
   // limit and aborts; there we commit only the module's initial pages while
   // still reserving the full range.
 #ifdef _WIN32
-  const u64 pages = wasm2c_WebClient_min_env_memory;
+  const u64 pages = wasm2c_WebClient_min_env_memory / 16;
 #else
   const u64 pages = wasm2c_WebClient_max_env_memory;
 #endif
