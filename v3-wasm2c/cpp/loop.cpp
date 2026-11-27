@@ -3,6 +3,7 @@ extern "C" {
 #include "WC.h"
 }
 
+#include "fiber_root.h"
 #include "guest.h"
 #include "loop.h"
 #include "platform.h"
@@ -71,26 +72,38 @@ int run(w2c_WebClient* inst, std::chrono::milliseconds budget) {
   constexpr char kArgv0[] = "/content/.keep";
   const u32 text = w2c_WebClient_malloc(inst, sizeof(kArgv0));
   const u32 array = w2c_WebClient_malloc(inst, 8);
-  if (text && array) {
-    if (auto* p = weblox::guest::ptr(text, sizeof(kArgv0)))
-      std::memcpy(p, kArgv0, sizeof(kArgv0));
-    weblox::guest::put_u32(array, text);
-    weblox::guest::put_u32(array + 4, 0);
-    guarded([&] { w2c_WebClient_0x5F_main_argc_argv(inst, 1, array); });
-  } else {
-    guarded([&] { w2c_WebClient_0x5F_main_argc_argv(inst, 0, 0); });
-  }
-  std::fprintf(stderr, "[loop] main returned\n");
+  weblox::fibers::enable_root_mode();
+  auto main_root = weblox::fibers::run_on_root(inst, [&] {
+    if (text && array)
+      w2c_WebClient_0x5F_main_argc_argv(inst, 1, array);
+    else
+      w2c_WebClient_0x5F_main_argc_argv(inst, 0, 0);
+  });
 
   const auto deadline = std::chrono::steady_clock::now() + budget;
   int turns = 0;
+  auto pump_until_done = [&](weblox::fibers::RootHandle root) {
+    while (root && !weblox::fibers::root_done(root) &&
+           std::chrono::steady_clock::now() < deadline) {
+      weblox::deferred::pump(inst);  // includes futex wakeups
+      if (!weblox::fibers::root_done(root)) platform::sleep_ms(1);
+    }
+    if (root && weblox::fibers::root_done(root)) {
+      if (weblox::fibers::root_threw(root))
+        std::fprintf(stderr, "[loop] root ended via wasm exception\n");
+      weblox::fibers::root_free(root);
+    }
+  };
+  pump_until_done(main_root);
+
   // Browsers call rAF every frame whether or not the engine set the
   // schedule_main_loop flag; join work is driven from those turns.
   while (std::chrono::steady_clock::now() < deadline) {
-    weblox::deferred::pump(inst);
-    guarded([&] { w2c_WebClient_main_loop_iteration(inst); });
+    auto root = weblox::fibers::run_on_root(inst, [&] {
+      w2c_WebClient_main_loop_iteration(inst);
+    });
+    pump_until_done(root);
     ++turns;
-    platform::sleep_ms(1);
   }
   return turns;
 }
