@@ -16,6 +16,7 @@ extern "C" {
 #include "WC.h"
 }
 
+#include "fiber_root.h"
 #include "guest.h"
 
 #include <atomic>
@@ -23,6 +24,7 @@ extern "C" {
 #include <deque>
 #include <mutex>
 #include <utility>
+#include <vector>
 
 extern "C" {
 extern w2c_WebClient* g_wc_instance;
@@ -44,6 +46,24 @@ struct Item {
 
 std::mutex g_mutex;
 std::deque<Item> g_queue;
+
+// A deferred callback may itself hit a futex wait.  Run each turn on a root
+// fibre so that wait suspends instead of blocking the host stack.  Handles for
+// roots that parked are kept until they finish; completed ones are reclaimed
+// on the next pump.
+constexpr std::size_t kMaxPendingRoots = 64;
+thread_local std::vector<weblox::fibers::RootHandle> g_pending_roots;
+
+void sweep_roots() {
+  for (auto it = g_pending_roots.begin(); it != g_pending_roots.end();) {
+    if (weblox::fibers::root_done(*it)) {
+      weblox::fibers::root_free(*it);
+      it = g_pending_roots.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
 
 // The browser wraps every task in try/catch.  Without an unwind target,
 // wasm_rt_throw longjmps through a null pointer.
@@ -74,6 +94,11 @@ bool pop(Item& out) {
   out = g_queue.front();
   g_queue.pop_front();
   return true;
+}
+
+bool pending() {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  return !g_queue.empty();
 }
 
 int run_item(w2c_WebClient* inst) {
@@ -109,9 +134,21 @@ int detail_run_one(w2c_WebClient* inst) { return run_item(inst); }
 // Run one queued callback (or one mailbox drain) plus any futex wakeups that
 // are ready on this thread.  Returns the number of units processed.
 int pump(w2c_WebClient* inst) {
-  weblox_mailbox_init_main(inst ? inst : g_wc_instance);
+  w2c_WebClient* i = inst ? inst : g_wc_instance;
+  sweep_roots();
+  weblox_mailbox_init_main(i);
   weblox_futex_pump();
-  return run_item(inst ? inst : g_wc_instance);
+  // Already on a root fibre (e.g. re-entered from a guest mailbox await):
+  // spawning another root here would stack contexts on the same thread.
+  if (weblox::fibers::on_root()) return run_item(i);
+  if (pending() && g_pending_roots.size() < kMaxPendingRoots) {
+    auto handle = weblox::fibers::run_on_root(i, [i] { run_item(i); });
+    if (handle) {
+      g_pending_roots.push_back(handle);
+      return 1;  // the item ran (or parked) on its own fibre
+    }
+  }
+  return run_item(i);
 }
 
 }  // namespace weblox::deferred

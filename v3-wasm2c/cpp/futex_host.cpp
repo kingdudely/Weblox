@@ -154,8 +154,9 @@ u32 w2c_env_0x5F_asyncjs_0x5FrbxFutexWaitMainJspi(struct w2c_env*, u32 addr,
     }
   }
 
-  // Main-thread guest fibres suspend exactly like JSPI: park the stack and
-  // let the host event loop run until the word changes.
+  // Main-thread wasm runs on a host root fibre.  A wait there suspends
+  // exactly like JSPI: park the stack/unwind state and return to the event
+  // loop until the word changes (or the deadline is pumped).
   if (weblox_host_is_main()) {
     void* slot = weblox_fiber_park_begin();
     if (slot && index >= 0) {
@@ -163,6 +164,8 @@ u32 w2c_env_0x5F_asyncjs_0x5FrbxFutexWaitMainJspi(struct w2c_env*, u32 addr,
         std::lock_guard<std::recursive_mutex> lock(weblox::futex::g_mtx);
         weblox::futex::g_waiters[index].slot = slot;
       }
+      std::fprintf(stderr, "[futex] park addr=%x slot=%p (JSPI suspend)\n",
+                   addr, slot);
       weblox_fiber_park(slot);  // returns here only when the pump resumes us
       std::lock_guard<std::recursive_mutex> lock(weblox::futex::g_mtx);
       const bool still = weblox::futex::g_waiters[index].used;
@@ -173,11 +176,14 @@ u32 w2c_env_0x5F_asyncjs_0x5FrbxFutexWaitMainJspi(struct w2c_env*, u32 addr,
       return result;
     }
     if (slot) weblox_fiber_slot_free(slot);
+    std::fprintf(stderr,
+                 "[futex] main stack has no root fibre: falling back to a "
+                 "bounded poll; wire weblox::fibers::run_on_root\n");
   }
 
-  // No guest fibre to park (workers, or the host stack itself): block on the
-  // condvar.  The main thread uses a short poll so deferred work and mailbox
-  // messages keep flowing even if no notify arrives.
+  // No parked slot available (workers, or an unwired host stack): block on
+  // the condvar.  The main thread uses a short poll so deferred work and
+  // mailbox messages keep flowing even if no notify arrives.
   for (;;) {
     {
       std::unique_lock<std::recursive_mutex> lock(weblox::futex::g_mtx);
