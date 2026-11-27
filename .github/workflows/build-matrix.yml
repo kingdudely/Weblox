@@ -35,6 +35,12 @@ on:
 permissions:
   contents: write
 
+# Serialize runs: two concurrent jobs uploading to the same Release can race
+# on the asset endpoints (we saw a transient 404 on generated-c.tar.zst).
+concurrency:
+  group: build-matrix
+  cancel-in-progress: false
+
 jobs:
   prepare:
     runs-on: ubuntu-latest
@@ -134,12 +140,21 @@ jobs:
           TAG: ${{ needs.prepare.outputs.tag }}
           FORCE: ${{ inputs.force }}
         run: |
+          upload_with_retry() {
+            for attempt in 1 2 3; do
+              if gh release upload "$@" --repo "${{ github.repository }}" --clobber; then
+                return 0
+              fi
+              echo "upload failed (attempt $attempt); retrying in 5s" >&2
+              sleep 5
+            done
+            return 1
+          }
           existing=$(gh api "repos/${{ github.repository }}/releases/tags/$TAG" \
             --jq '.assets[].name' 2>/dev/null || true)
           asset=$(basename "$ENGINE_DIR"/engine-*.tar.zst)
           if [ "$FORCE" = true ] || ! printf '%s\n' "$existing" | grep -qx "$asset"; then
-            gh release upload "$TAG" "$ENGINE_DIR/$asset" \
-              --repo "${{ github.repository }}" --clobber
+            upload_with_retry "$TAG" "$ENGINE_DIR/$asset"
           else
             echo "asset $asset already published; skipping"
           fi
@@ -147,6 +162,9 @@ jobs:
   source:
     needs: prepare
     runs-on: ubuntu-latest
+    # The source bundle is already published; a transient upload failure must
+    # not fail the whole matrix run.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - name: Build portable source bundle
@@ -166,5 +184,14 @@ jobs:
           gh release download ci-local-wasm2c-generated --repo "${{ github.repository }}" \
             --dir gen --pattern 'WC*.c' --pattern 'WC.h' --pattern 'WC-impl.h'
           tar --zstd -cf generated-c.tar.zst -C gen .
-          gh release upload "$TAG" generated-c.tar.zst gen/WC.h \
-            --repo "${{ github.repository }}" --clobber
+          upload_with_retry() {
+            for attempt in 1 2 3; do
+              if gh release upload "$@" --repo "${{ github.repository }}" --clobber; then
+                return 0
+              fi
+              echo "upload failed (attempt $attempt); retrying in 5s" >&2
+              sleep 5
+            done
+            return 1
+          }
+          upload_with_retry "$TAG" generated-c.tar.zst gen/WC.h
