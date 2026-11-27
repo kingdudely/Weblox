@@ -66,6 +66,11 @@ on:
         required: false
         default: ubuntu-latest
         type: string
+      jobs:
+        description: 'parallel compile jobs (blank = nproc)'
+        required: false
+        default: ''
+        type: string
 
   workflow_call:
     inputs:
@@ -119,6 +124,11 @@ on:
         required: false
         default: ubuntu-latest
         type: string
+      jobs:
+        description: 'parallel compile jobs (blank = nproc)'
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: write
@@ -151,6 +161,7 @@ jobs:
           SCRIPT: ${{ inputs.script }}
           WC_OPT: ${{ inputs.opt }}
           WC_OUTPUTS: ${{ inputs.outputs }}
+          WC_JOBS: ${{ inputs.jobs }}
           WASM_VERSION: ${{ inputs.wasm-version }}
           WASM_SHA256: ${{ inputs.wasm-sha256 }}
         run: |
