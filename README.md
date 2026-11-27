@@ -25,3 +25,7 @@ instead of consuming the prebuilt shared library.
 - `deps/pins.env` — every download hash.
 - `cmake/FetchAsset.cmake` — hash-verified download/unpack.
 - `tools/gen_stubs.py` — generates no-op imports from `WC.h`.
+- `tools/make_overlay.py` — build-directory VFS overlay that replaces WABT's
+  no-op atomic wait/notify stubs. The published generated C is never edited.
+  This applies to source-mode builds; prebuilt engine bundles must be rebuilt
+  with the same overlay by CI before their atomics work.
