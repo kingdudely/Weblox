@@ -130,9 +130,9 @@ int main(void) {
     weblox_thread_maybe_init_main(&inst);
     if (weblox_prepare(&inst) != 0) fprintf(stderr, "prepare failed\n");
     void* root = weblox_run_on_root(&inst, main_turn, &inst);
-    (void)root;
     int turns = 0;
-    for (int i = 0; i < atoi(run_ms); ++i) {
+    clock_t deadline = clock() + (clock_t)atoi(run_ms) * (CLOCKS_PER_SEC / 1000);
+    while (clock() < deadline) {
       weblox_window_pump();
       weblox_deferred_pump(&inst);
 #ifdef WEBLOX_USE_HTTP
@@ -142,15 +142,31 @@ int main(void) {
       weblox_window_present();
       ++turns;
       if (weblox_window_should_close()) break;
+#ifdef WEBLOX_HAVE_SDL3
+      // main() usually exits via the engine's "live runtime" wasm exception;
+      // the browser keeps calling rAF after that, so do not stop the loop.
+      if (root && weblox_root_done(root)) {
+        weblox_root_free(root);
+        root = NULL;
+      }
+#endif
     }
     printf("RUN_TURNS=%d\n", turns);
+#ifdef WEBLOX_HAVE_SDL3
+    if (root) weblox_root_free(root);
+#endif
     weblox_window_shutdown();
 #else
     fprintf(stderr, "WEBLOX_RUN_MS needs SDL3/fiber support\n");
 #endif
   }
 
+  fprintf(stderr, "[exit] freeing instance\n");
   wasm2c_WebClient_free(&inst);
+  fprintf(stderr, "[exit] freeing memory\n");
   free_memory();
-  return 0;
+  fprintf(stderr, "[exit] done\n");
+  // Worker threads and SDL's atexit handlers can keep the process alive after
+  // the host is finished; bounded runs must always terminate.
+  _Exit(0);
 }

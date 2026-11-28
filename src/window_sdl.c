@@ -540,6 +540,9 @@ bool weblox_window_init(int width, int height) {
   if (width > 0) g_width = width;
   if (height > 0) g_height = height;
 #if defined(WEBLOX_HAVE_SDL3)
+  // Keep SIGTERM/SIGINT available to the host so bounded test runs can be
+  // killed; SDL otherwise installs graceful shutdown handlers for them.
+  SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
   if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMEPAD)) {
     fprintf(stderr, "[window] SDL_Init failed: %s\n", SDL_GetError());
     return false;

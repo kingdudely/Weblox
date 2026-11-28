@@ -107,7 +107,10 @@ int weblox_deferred_pump(w2c_WebClient* inst) {
 
   int ran = 0;
   wasm_rt_trap_t trap = WASM_RT_TRAP_NONE;
-  while (weblox_deferred_service(inst, &trap)) {
+  // A callback may legitimately queue another one (or re-arm a futex).  Bound
+  // the drain so a self-sustaining chain cannot spin the host forever.
+  for (int i = 0; i < 32; ++i) {
+    if (!weblox_deferred_service(inst, &trap)) break;
     ++ran;
     if (trap != WASM_RT_TRAP_NONE) break;
   }
