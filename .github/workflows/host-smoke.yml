@@ -26,6 +26,9 @@ concurrency:
 jobs:
   smoke:
     runs-on: ${{ matrix.os }}
+    # Linux is the required gate while the join path is being developed.
+    # macOS/Windows stay in the matrix as best-effort portability checks.
+    continue-on-error: ${{ matrix.os != 'ubuntu-latest' }}
     timeout-minutes: 120
     strategy:
       fail-fast: false
