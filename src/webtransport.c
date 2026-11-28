@@ -14,6 +14,16 @@
 //
 // Remaining TODOs are marked WT_TODO below; they are protocol details that do
 // not affect transport correctness (see docs/CI.md for the full list).
+// On Windows, winsock2.h must precede windows.h (pulled in via WC.h) or the
+// legacy winsock.h definitions collide.
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#endif
+
 #include "host.h"
 #include "guest.h"
 #include "webtransport.h"
@@ -25,9 +35,6 @@
 #include <time.h>
 
 #if defined(_WIN32)
-#define WIN32_LEAN_AND_MEAN
-#include <winsock2.h>
-#include <ws2tcpip.h>
 #define wt_strcasecmp _stricmp
 typedef int wt_ssize;
 typedef SOCKET wt_socket;
