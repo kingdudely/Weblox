@@ -74,6 +74,7 @@
 GL_FN_LIST(GL_DECLARE)
 
 static int g_ready;
+static unsigned g_loaded; /* number of resolved GLES entry points */
 static void* g_map_host;
 static u32 g_map_guest, g_map_len;
 static u32 g_str_keys[16], g_str_vals[16], g_str_n;
@@ -150,19 +151,32 @@ bool gl_init(weblox_gl_proc_fn loader) {
     return false;
   }
   /* Every entry point starts from SDL's proc loader (also covers extensions). */
-#define GL_LOAD(name) p_gl_##name = loader("gl" #name);
+#define GL_LOAD(name)                                                          \
+  p_gl_##name = loader("gl" #name);                                            \
+  if (p_gl_##name) ++g_loaded;
   GL_FN_LIST(GL_LOAD)
 #undef GL_LOAD
 #if defined(WEBLOX_HAVE_GLAD_GLES2)
-  /* Then prefer GLAD's resolved globals for the core GLES2/GLES3 set. */
+  /* Then prefer GLAD's resolved globals for the core GLES2/GLES3 set, but
+   * never replace a working SDL proc with a NULL GLAD slot. */
   if (!gladLoadGLES2Loader((GLADloadproc)loader))
     fprintf(stderr, "[gl] GLAD GLES2 loader failed; using raw procs\n");
-#define GL_USE_GLAD(name) p_gl_##name = (void*)glad_gl##name;
+#define GL_USE_GLAD(name)                                                      \
+  if (glad_gl##name) p_gl_##name = (void*)glad_gl##name;
   GL_GLAD_LIST(GL_USE_GLAD)
 #undef GL_USE_GLAD
 #endif
+  /* A context that cannot answer these core queries is not usable; report it
+   * honestly instead of handing the engine fake capabilities. */
+  if (!p_gl_GetString || !p_gl_GetIntegerv || !p_gl_CreateShader ||
+      !p_gl_CreateProgram || !p_gl_CompileShader || !p_gl_LinkProgram ||
+      !p_gl_BindFramebuffer || !p_gl_CheckFramebufferStatus) {
+    fprintf(stderr, "[gl] GLES context lacks core entry points (%u loaded)\n",
+            g_loaded);
+    return false;
+  }
   g_ready = 1;
-  fprintf(stderr, "[gl] GLES dispatch ready\n");
+  fprintf(stderr, "[gl] GLES dispatch ready (%u entry points)\n", g_loaded);
   return true;
 }
 
@@ -176,7 +190,7 @@ void gl_shutdown(void) {
   if (g_map_host && g_map_guest) gl_guest_free(g_map_guest);
   g_map_host = NULL; g_map_guest = 0; g_map_len = 0;
   for (u32 i = 0; i < g_str_n; ++i) gl_guest_free(g_str_vals[i]);
-  g_str_n = 0; g_sync_n = 0; g_ready = 0;
+  g_str_n = 0; g_sync_n = 0; g_ready = 0; g_loaded = 0;
 #define GL_CLEAR(name) p_gl_##name = NULL;
   GL_FN_LIST(GL_CLEAR)
 #undef GL_CLEAR
@@ -189,6 +203,8 @@ u32 w2c_env_emscripten_webgl_create_context(struct w2c_env* env, u32 a1, u32 a2)
     fprintf(stderr, "[gl] webgl_create_context: no GLES context\n");
     return 0;
   }
+  /* One GL context per host window: a second successful create would silently
+   * detach the dispatch table from the context the engine is drawing into. */
   return 1;
 }
 
@@ -202,16 +218,30 @@ u32 w2c_env_emscripten_webgl_get_context_attributes(struct w2c_env* env, u32 a1,
   unsigned char* b = (unsigned char*)guest_ptr(a2, 40);
   if (!b) return (u32)-5;
   memset(b, 0, 40);
-  b[0] = 1;  /* alpha */
-  b[1] = 1;  /* depth */
-  b[2] = 1;  /* stencil */
-  b[3] = 1;  /* antialias */
-  b[4] = 1;  /* premultipliedAlpha */
+  /* Query the live context instead of reporting fixed "best case" values; a
+   * mismatch makes the engine pick render paths the driver cannot support. */
+  int v = 0;
+#define GL_QUERY(name, glenum, dst)                                            \
+  if (p_gl_GetIntegerv) {                                                       \
+    GL_V(GetIntegerv, u32, int*)((u32)(glenum), &v);                            \
+    (dst) = v ? 1 : 0;                                                          \
+  }
+  GL_QUERY(alpha, 0x0C22u /* GL_ALPHA_BITS */, b[0])
+  GL_QUERY(depth, 0x0D56u /* GL_DEPTH_BITS */, b[1])
+  GL_QUERY(stencil, 0x0D57u /* GL_STENCIL_BITS */, b[2])
+  GL_QUERY(samples, 0x80A9u /* GL_SAMPLES */, b[3])
+#undef GL_QUERY
+  b[4] = 1;  /* premultipliedAlpha: SDL/Canvas default */
   b[5] = 0;  /* preserveDrawingBuffer */
   memcpy(b + 8, &(int){0}, 4);   /* powerPreference: default */
   b[12] = 0;                     /* failIfMajorPerformanceCaveat */
-  memcpy(b + 16, &(int){2}, 4); /* majorVersion: WebGL2 / GLES3 */
-  memcpy(b + 20, &(int){0}, 4); /* minorVersion */
+  if (p_gl_GetIntegerv) {
+    int major = 0, minor = 0;
+    GL_V(GetIntegerv, u32, int*)(0x821Bu /* GL_MAJOR_VERSION */, &major);
+    GL_V(GetIntegerv, u32, int*)(0x821Cu /* GL_MINOR_VERSION */, &minor);
+    memcpy(b + 16, &major, 4);
+    memcpy(b + 20, &minor, 4);
+  }
   b[24] = 1;                     /* enableExtensionsByDefault */
   b[33] = 0;                     /* desynchronized */
   return 0;
@@ -331,7 +361,7 @@ void w2c_env_glBufferSubData(struct w2c_env* env, u32 a1, u32 a2, u32 a3, u32 a4
 
 u32 w2c_env_glCheckFramebufferStatus(struct w2c_env* env, u32 a1) {
   (void)env;
-  if (!p_gl_CheckFramebufferStatus) { gl_miss("glCheckFramebufferStatus"); return 0x8CD5u; }
+  if (!p_gl_CheckFramebufferStatus) { gl_miss("glCheckFramebufferStatus"); return 0; }
   return GL_R(CheckFramebufferStatus, u32, u32)(a1);
 }
 
@@ -388,7 +418,7 @@ void w2c_env_glClearStencil(struct w2c_env* env, u32 a1) {
 
 u32 w2c_env_glClientWaitSync(struct w2c_env* env, u32 a1, u32 a2, u64 a3) {
   (void)env;
-  if (!p_gl_ClientWaitSync) { gl_miss("glClientWaitSync"); return 0x911Au; }
+  if (!p_gl_ClientWaitSync) { gl_miss("glClientWaitSync"); return 0x911Du; } /* GL_WAIT_FAILED */
   return GL_R(ClientWaitSync, u32, void*, u32, u64)(sync_get(a1), a2, a3);
 }
 
@@ -454,13 +484,13 @@ void w2c_env_glCopyTexSubImage2D(struct w2c_env* env, u32 a1, u32 a2, u32 a3, u3
 
 u32 w2c_env_glCreateProgram(struct w2c_env* env) {
   (void)env;
-  if (!p_gl_CreateProgram) { gl_miss("glCreateProgram"); static u32 next = 1000; return next++; }
+  if (!p_gl_CreateProgram) { gl_miss("glCreateProgram"); return 0; }
   return GL_R(CreateProgram, u32)( );
 }
 
 u32 w2c_env_glCreateShader(struct w2c_env* env, u32 a1) {
   (void)env;
-  if (!p_gl_CreateShader) { gl_miss("glCreateShader"); static u32 next = 1; return next++; }
+  if (!p_gl_CreateShader) { gl_miss("glCreateShader"); return 0; }
   return GL_R(CreateShader, u32, u32)(a1);
 }
 
@@ -708,7 +738,7 @@ void w2c_env_glGetActiveUniformBlockiv(struct w2c_env* env, u32 a1, u32 a2, u32 
 
 u32 w2c_env_glGetError(struct w2c_env* env) {
   (void)env;
-  if (!p_gl_GetError) { gl_miss("glGetError"); return 0; }
+  if (!p_gl_GetError) { gl_miss("glGetError"); return 0x0502u; } /* GL_INVALID_OPERATION */
   return GL_R(GetError, u32)();
 }
 
@@ -742,7 +772,7 @@ void w2c_env_glGetProgramiv(struct w2c_env* env, u32 a1, u32 a2, u32 a3) {
   int* out = (int*)guest_ptr(a3, 4);
   if (!p_gl_GetProgramiv) {
     gl_miss("glGetProgramiv");
-    if (out) *out = 1;
+    if (out) *out = 0;
     return;
   }
   if (!out) { gl_badptr(); return; }
@@ -767,7 +797,7 @@ void w2c_env_glGetShaderiv(struct w2c_env* env, u32 a1, u32 a2, u32 a3) {
   int* out = (int*)guest_ptr(a3, 4);
   if (!p_gl_GetShaderiv) {
     gl_miss("glGetShaderiv");
-    if (out) *out = 1;
+    if (out) *out = 0;
     return;
   }
   if (!out) { gl_badptr(); return; }
@@ -778,18 +808,12 @@ u32 w2c_env_glGetString(struct w2c_env* env, u32 a1) {
   (void)env;
   for (u32 i = 0; i < g_str_n; ++i)
     if (g_str_keys[i] == a1) return g_str_vals[i];
-  const char* fallback = "";
-  switch (a1) {
-    case 0x1F00u: fallback = "Weblox"; break;               /* GL_VENDOR */
-    case 0x1F01u: fallback = "SDL3 GLES"; break;            /* GL_RENDERER */
-    case 0x1F02u: fallback = "OpenGL ES 3.0"; break;        /* GL_VERSION */
-    case 0x8B8Cu: fallback = "GLSL ES 3.00"; break;         /* GL_SHADING_LANGUAGE_VERSION */
-    default: break;
-  }
-  const char* text = fallback;
-  if (p_gl_GetString) {
-    const char* driver = (const char*)GL_R(GetString, void*, u32)(a1);
-    if (driver && *driver) text = driver;
+  if (!p_gl_GetString) { gl_miss("glGetString"); return 0; }
+  const char* text = (const char*)GL_R(GetString, void*, u32)(a1);
+  if (!text || !*text) {
+    /* Never fabricate a version/renderer string: the engine parses it to pick
+     * shader features, so an invented value can select an unsupported path. */
+    return 0;
   }
   u32 guest = gl_copy_string(text);
   if (g_str_n < 16) {

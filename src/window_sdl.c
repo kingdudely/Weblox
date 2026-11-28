@@ -16,6 +16,7 @@
 #include "webgpu.h"
 
 #include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -568,6 +569,25 @@ bool weblox_window_init(int width, int height) {
     fprintf(stderr, "[window] GL loader failed\n");
     return false;
   }
+#if defined(WEBLOX_HAVE_DAWN)
+  /* WebGPU is optional: a failed adapter/device/surface only logs, it never
+   * prevents the GLES window (or the smoke test) from running. */
+  if (webgpu_init()) {
+    void* native = NULL;
+    void* display = NULL;
+    SDL_PropertiesID props = SDL_GetWindowProperties(g_window);
+#if defined(_WIN32)
+    native = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_WIN32_HWND_POINTER, NULL);
+#elif defined(__APPLE__)
+    native = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_COCOA_WINDOW_POINTER, NULL);
+#elif defined(__linux__)
+    native = (void*)(uintptr_t)SDL_GetNumberProperty(
+        props, SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0);
+    display = SDL_GetPointerProperty(props, SDL_PROP_WINDOW_X11_DISPLAY_POINTER, NULL);
+#endif
+    if (native) webgpu_create_surface(native, display);
+  }
+#endif
   g_ready = 1;
   fprintf(stderr, "[window] SDL3 GLES window %dx%d ready\n", g_width, g_height);
   return true;

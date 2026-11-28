@@ -15,8 +15,15 @@ void webgpu_shutdown(void);
 // Opaque WGPUInstance, for future surface/swap-chain integration.
 void* webgpu_instance_handle(void);
 
+// Create a WGPU surface from a native window handle.  `display` is used on
+// X11/Wayland and ignored elsewhere.  Returns false when Dawn or the platform
+// surface descriptor is unavailable; the layer stays inert in that case.
+bool webgpu_create_surface(void* native_window, void* native_display);
+void* webgpu_surface_handle(void);
+
 // Generic import entry point: arguments are raw wasm ABI values from WC.h.
-// Unimplemented operations log once with a [gpu] prefix and return 0.
+// Pointer-sized arguments are passed as (uintptr_t)args[i].  Recognised names
+// call the matching Dawn C function; unknown names log once and return 0.
 u32 webgpu_dispatch(const char* name, const u32* args, u32 argc);
 
 #endif

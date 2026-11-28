@@ -1,6 +1,7 @@
-// WebGL/GLES import layer.  SDL3 creates the context; GLAD (GLES2 profile)
-// loads and owns the function pointers when available.  A proc-address table
-// populated from SDL_GL_GetProcAddress is the fallback when GLAD is not built.
+// WebGL/GLES import layer.  SDL3 creates the context; every import dispatches
+// to a real function pointer from SDL_GL_GetProcAddress, or to GLAD's resolved
+// global when GLAD is built.  Missing entry points return an error/invalid GL
+// value instead of fabricated capabilities.
 #ifndef WEBLOX_GL_H
 #define WEBLOX_GL_H
 
