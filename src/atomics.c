@@ -217,8 +217,9 @@ u32 weblox_atomic_wait_js(wasm_rt_shared_memory_t* memory, u32 address,
   // external budget kills the process.
   if (weblox_fiber_on_main_thread() && weblox_fiber_on_host_stack()) {
     if (timeout_ns < 0) {
-      fprintf(stderr, "[futex] unparkable host wait addr=%u -> timeout\n",
-              address);
+      // The engine retries this wait in a tight loop.  Yield briefly so a
+      // worker or HTTP completion can change the word instead of spinning.
+      SDL_Delay(2);
       return 2u;
     }
     return wait_for_value(memory, address, expected, timeout_ns, 4, 1);
