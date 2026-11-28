@@ -35,9 +35,16 @@ static void main_turn(void* arg) {
 #endif
 
 static long long wall_ms(void) {
+#ifdef _WIN32
+  LARGE_INTEGER frequency, counter;
+  QueryPerformanceFrequency(&frequency);
+  QueryPerformanceCounter(&counter);
+  return (long long)(counter.QuadPart * 1000 / frequency.QuadPart);
+#else
   struct timespec ts;
   if (timespec_get(&ts, TIME_UTC) != TIME_UTC) return 0;
   return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+#endif
 }
 
 #ifdef _WIN32
