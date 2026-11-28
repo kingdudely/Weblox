@@ -8,6 +8,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 void w2c_env_emscripten_console_log(struct w2c_env* env, u32 ptr) {
   (void)env;
@@ -26,9 +29,21 @@ void w2c_env_emscripten_console_error(struct w2c_env* env, u32 ptr) {
 
 f64 w2c_env_emscripten_get_now(struct w2c_env* env) {
   (void)env;
-  static clock_t start;
-  if (!start) start = clock();
-  return (f64)(clock() - start) * 1000.0 / CLOCKS_PER_SEC;
+  // performance.now() is monotonic time since process start, not CPU time.
+  static long long start_ms;
+  long long now_ms;
+#if defined(_WIN32)
+  LARGE_INTEGER frequency, counter;
+  QueryPerformanceFrequency(&frequency);
+  QueryPerformanceCounter(&counter);
+  now_ms = (long long)(counter.QuadPart * 1000 / frequency.QuadPart);
+#else
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  now_ms = (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+#endif
+  if (!start_ms) start_ms = now_ms;
+  return (f64)(now_ms - start_ms);
 }
 
 f64 w2c_env_emscripten_date_now(struct w2c_env* env) {

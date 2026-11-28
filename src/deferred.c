@@ -23,7 +23,9 @@ typedef struct deferred_item {
 static deferred_item g_queue[DEFERRED_LIMIT];
 static unsigned g_head, g_tail;
 static SDL_Mutex* g_lock;
-static volatile int g_scheduled;
+// Browsers call rAF every frame regardless of schedule_main_loop.  Keep the
+// flag set so the guest always gets a turn.
+static volatile int g_scheduled = 1;
 
 int weblox_deferred_init(void) {
   if (!g_lock) g_lock = SDL_CreateMutex();
