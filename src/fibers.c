@@ -276,14 +276,12 @@ u32 weblox_fiber_park(void) {
   self->key = 0;
   self->result = 0;
   self->park_key = 0xF0000000u | ++g_ft.park_seq;
-  if (verbose())
-    fprintf(stderr, "[fib] park key=%u prev=%u tid=%llu\n", self->park_key,
-            self->prev_key, (unsigned long long)SDL_GetThreadID(NULL));
+  fprintf(stderr, "[fib] park key=%u prev=%u tid=%llu\n", self->park_key,
+          self->prev_key, (unsigned long long)SDL_GetThreadID(NULL));
   g_ft.next = &g_ft.host;
   mco_yield(self->co);
-  if (verbose())
-    fprintf(stderr, "[fib] resumed key=%u code=%u\n", self->park_key,
-            self->result);
+  fprintf(stderr, "[fib] resume key=%u code=%u\n", self->park_key,
+          self->result);
   return self->result;
 }
 
@@ -295,9 +293,8 @@ void weblox_fiber_resume_parked(void* handle, u32 code) {
             fiber->park_key);
     return;
   }
-  if (verbose())
-    fprintf(stderr, "[fib] resume park key=%u code=%u root=%d\n",
-            fiber->park_key, code, fiber->root ? 1 : 0);
+  fprintf(stderr, "[fib] resume park key=%u code=%u root=%d\n",
+          fiber->park_key, code, fiber->root ? 1 : 0);
   fiber->result = code;
   fiber->state = fiber->prev_state;
   fiber->key = fiber->prev_key;
@@ -437,6 +434,11 @@ int weblox_fiber_on_host_stack(void) {
   return !g_ft.initialized || !g_ft.current || g_ft.current == &g_ft.host;
 }
 
+int weblox_fiber_on_root(void) {
+  return g_ft.initialized && g_ft.current && g_ft.current != &g_ft.host &&
+         g_ft.current->root;
+}
+
 u32 weblox_fiber_current_key(void) {
   return g_ft.current ? g_ft.current->key : 0;
 }
@@ -452,6 +454,14 @@ int weblox_fiber_has_suspended_root(void) {
 }
 
 void* weblox_run_on_root(w2c_WebClient* inst, void (*fn)(void*), void* arg) {
+  // A coroutine may only yield; mco_resume from a fibre would switch stacks
+  // from a suspended stack and corrupt both.  Nested callbacks run inline on
+  // the root they are already on instead (see weblox_deferred_pump()).
+  if (!weblox_fiber_on_host_stack()) {
+    fprintf(stderr, "[fib] nested root refused on_root=%d\n",
+            weblox_fiber_on_root());
+    return NULL;
+  }
   if (!inst) inst = weblox_fiber_instance();
   if (!inst) return NULL;
   if (!g_ft.initialized) weblox_fibers_init();

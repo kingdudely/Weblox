@@ -58,6 +58,11 @@ int weblox_fiber_on_main_thread(void);
 // queued and drained here instead of resuming a coroutine from a coroutine.
 int weblox_fiber_on_host_stack(void);
 
+// True when the running stack is a host root fibre (as opposed to the native
+// host stack or a guest fibre).  Callbacks entered on a root must not nest
+// another root: mco_resume is only legal from the host stack.
+int weblox_fiber_on_root(void);
+
 // Continuation key currently filed for the running fibre (0 when running).
 u32 weblox_fiber_current_key(void);
 
@@ -69,9 +74,10 @@ void* weblox_fiber_current_handle(void);
 int weblox_fiber_has_suspended_root(void);
 
 // Run fn(arg) on a fresh root fibre.  Returns an opaque handle (NULL on
-// allocation failure) that stays valid until weblox_root_free().  The call
-// returns as soon as the root finishes or parks; use weblox_root_done() to
-// tell the two apart and weblox_deferred_pump() to drive parked roots.
+// allocation failure or when called from inside another fibre) that stays
+// valid until weblox_root_free().  The call returns as soon as the root
+// finishes or parks; use weblox_root_done() to tell the two apart and
+// weblox_deferred_pump() to drive parked roots.
 void* weblox_run_on_root(w2c_WebClient* inst, void (*fn)(void*), void* arg);
 int weblox_root_done(void* handle);
 void weblox_root_free(void* handle);

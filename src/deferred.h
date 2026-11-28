@@ -1,8 +1,9 @@
 // Deferred EM_ASYNC-style callbacks and the event-loop inversion.
 //
-// emscripten_async_call() queues a funcref index/argument pair here; a futex
-// wait services that queue inline on the waiting fiber so the guest keeps
-// making progress without spawning another root or another thread.
+// emscripten_async_call() queues a funcref index/argument pair here; the host
+// pump runs every callback and rAF turn on a root fiber so a main-thread futex
+// wait can park that stack and be resumed by weblox_atomic_pump().  Callbacks
+// already on a fiber are serviced inline; mco_resume stays on the host stack.
 #ifndef WEBLOX_DEFERRED_H
 #define WEBLOX_DEFERRED_H
 

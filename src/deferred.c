@@ -2,8 +2,11 @@
 //
 // emscripten_async_call() and a worker's mailbox notification both file work
 // here; callbacks are invoked through the instance's funcref table, never by
-// hardcoded index.  A futex wait calls weblox_deferred_service() directly so
-// the callback runs inline on the waiting fiber.
+// hardcoded index.  The host pump runs every callback and rAF turn on a root
+// fibre: a main-thread futex wait then parks that fibre and lets the host keep
+// turning the event loop until weblox_atomic_pump() resumes it.  A callback
+// already on a fibre is serviced inline, since mco_resume is only legal from
+// the native host stack.
 #include "deferred.h"
 #include "abort_debug.h"
 #include "atomics.h"
@@ -13,8 +16,11 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define DEFERRED_LIMIT 4096
+#define PUMP_LIMIT 32
+#define LIVE_ROOT_LIMIT 64
 #define MAILBOX_FN 0xFFFFFFFFu
 
 typedef struct deferred_item {
@@ -32,6 +38,22 @@ static volatile int g_scheduled = 1;
 // Running main_loop_iteration re-entrantly from a mailbox await inside
 // wasm_call_ctors hits abort_js because the engine is not initialised yet.
 static volatile int g_turns_ready;
+
+typedef enum {
+  ROOT_CALLBACK = 0,
+  ROOT_TURN = 1
+} root_kind;
+
+// A callback that parks at a futex wait is not done with its C stack.  Keep
+// its root handle (and the context passed to the root body) alive until the
+// root finishes; reap them on every pump.
+typedef struct {
+  void* handle;
+  void* arg;
+  root_kind kind;
+} live_root;
+
+static live_root g_live_roots[LIVE_ROOT_LIMIT];
 
 void weblox_deferred_enable_turns(void) { g_turns_ready = 1; }
 
@@ -67,6 +89,17 @@ static void queue_push(u32 fn, u32 arg) {
     fprintf(stderr, "[def] queue full, dropping fn=%u\n", fn);
   }
   SDL_UnlockMutex(g_lock);
+}
+
+// Peek only for logging: the pump is the sole consumer, so the head is stable
+// while it decides which root to launch.
+static int queue_peek(deferred_item* item) {
+  if (!g_lock) return 0;
+  SDL_LockMutex(g_lock);
+  int have = g_head != g_tail;
+  if (have && item) *item = g_queue[g_head];
+  SDL_UnlockMutex(g_lock);
+  return have;
 }
 
 void w2c_env_emscripten_async_call(struct w2c_env* env, u32 fn, u32 arg,
@@ -126,6 +159,112 @@ int weblox_deferred_service(w2c_WebClient* inst, wasm_rt_trap_t* trap) {
   return 1;
 }
 
+// Root body for one queued callback.  The context is heap allocated by the
+// pump so it stays valid if this callback parks and resumes on a later turn.
+typedef struct {
+  w2c_WebClient* inst;
+  u32 fn;
+} callback_ctx;
+
+static void callback_root(void* arg) {
+  callback_ctx* ctx = (callback_ctx*)arg;
+  fprintf(stderr, "[def] root fn=%u\n", ctx->fn);
+  wasm_rt_trap_t trap = WASM_RT_TRAP_NONE;
+  if (!weblox_deferred_service(ctx->inst, &trap) &&
+      trap != WASM_RT_TRAP_NONE)
+    fprintf(stderr, "[def] root fn=%u trapped: %s\n", ctx->fn,
+            wasm_rt_strerror(trap));
+}
+
+// Root body for the single rAF turn.  root_body() owns the outer WABT guard;
+// this inner guard reports the trap without letting a longjmp escape while a
+// host lock is held, and the saved runtime state restores the root's guard.
+typedef struct {
+  w2c_WebClient* inst;
+} turn_ctx;
+
+static void turn_root(void* arg) {
+  turn_ctx* ctx = (turn_ctx*)arg;
+  fprintf(stderr, "[def] root fn=main_loop_iteration\n");
+  weblox_runtime_state saved;
+  weblox_runtime_capture(&saved);
+  wasm_rt_trap_t caught = wasm_rt_impl_try();
+  if (caught == WASM_RT_TRAP_NONE) {
+    w2c_WebClient_main_loop_iteration(ctx->inst);
+  } else {
+    fprintf(stderr, "[def] main_loop_iteration trapped: %s\n",
+            wasm_rt_strerror(caught));
+  }
+  weblox_runtime_restore(&saved);
+}
+
+// True when this stack already belongs to a fibre.  Guest/root fibres may only
+// mco_yield; starting a root from one would resume a coroutine from a
+// coroutine and abandon the caller's stack.
+static int on_root(void) {
+  return weblox_fiber_on_root() || !weblox_fiber_on_host_stack();
+}
+
+static int live_root_count(void) {
+  int count = 0;
+  for (int i = 0; i < LIVE_ROOT_LIMIT; ++i)
+    if (g_live_roots[i].handle) ++count;
+  return count;
+}
+
+static void reap_roots(void) {
+  for (int i = 0; i < LIVE_ROOT_LIMIT; ++i) {
+    live_root* slot = &g_live_roots[i];
+    if (!slot->handle || !weblox_root_done(slot->handle)) continue;
+    fprintf(stderr, "[def] root done kind=%d\n", (int)slot->kind);
+    weblox_root_free(slot->handle);
+    free(slot->arg);
+    memset(slot, 0, sizeof *slot);
+  }
+}
+
+// Take ownership of arg whether or not the root could be started.  Returns 1
+// when a unit of guest work was started, 0 when the queue/registry was full or
+// a root could not be allocated.
+static int launch_root(w2c_WebClient* inst, void (*fn)(void*), void* arg,
+                       root_kind kind) {
+  if (!arg) return 0;
+  if (!weblox_fiber_on_host_stack()) {
+    fprintf(stderr, "[def] root skipped: already on fibre\n");
+    free(arg);
+    return 0;
+  }
+  int live = live_root_count();
+  if (live >= LIVE_ROOT_LIMIT) {
+    fprintf(stderr, "[def] root saturated live=%d limit=%d\n", live,
+            LIVE_ROOT_LIMIT);
+    free(arg);
+    return 0;
+  }
+  void* handle = weblox_run_on_root(inst, fn, arg);
+  if (!handle) {
+    fprintf(stderr, "[def] root create failed\n");
+    free(arg);
+    return 0;
+  }
+  if (weblox_root_done(handle)) {
+    weblox_root_free(handle);
+    free(arg);
+    return 1;
+  }
+  // The root parked: keep its stack and argument alive until it is resumed
+  // and finishes.  Capacity was checked above, so a free slot exists.
+  for (int i = 0; i < LIVE_ROOT_LIMIT; ++i) {
+    if (g_live_roots[i].handle) continue;
+    g_live_roots[i].handle = handle;
+    g_live_roots[i].arg = arg;
+    g_live_roots[i].kind = kind;
+    return 1;
+  }
+  fprintf(stderr, "[def] root registry saturated; handle leaked alive\n");
+  return 1;
+}
+
 int weblox_deferred_pump(w2c_WebClient* inst) {
   if (!inst) inst = weblox_fiber_instance();
   if (!inst) return 0;
@@ -133,32 +272,51 @@ int weblox_deferred_pump(w2c_WebClient* inst) {
   weblox_thread_maybe_init_main(inst);
   if (weblox_fiber_on_main_thread()) SDL_PumpEvents();
 
-  // A main-thread futex wait parks its fibre instead of blocking this loop.
-  // Resume any woken/expired waiters here before running the next engine turn.
+  // A main-thread futex wait parks its root instead of blocking this loop.
+  // Resume any woken/expired waiters before running the next engine turn.
   weblox_atomic_pump();
+  reap_roots();
 
   int ran = 0;
-  wasm_rt_trap_t trap = WASM_RT_TRAP_NONE;
   // A callback may legitimately queue another one (or re-arm a futex).  Bound
   // the drain so a self-sustaining chain cannot spin the host forever.
-  for (int i = 0; i < 32; ++i) {
-    if (!weblox_deferred_service(inst, &trap)) break;
-    ++ran;
-    if (trap != WASM_RT_TRAP_NONE) break;
+  for (int i = 0; i < PUMP_LIMIT; ++i) {
+    deferred_item item;
+    if (!queue_peek(&item)) break;
+    if (on_root()) {
+      // Nested pump from a callback/mailbox await: service inline on the
+      // current (parkable) root instead of nesting mco_resume.
+      fprintf(stderr, "[def] root fn=%u inline\n", item.fn);
+      wasm_rt_trap_t trap = WASM_RT_TRAP_NONE;
+      if (!weblox_deferred_service(inst, &trap)) break;
+      ++ran;
+      if (trap != WASM_RT_TRAP_NONE) break;
+    } else {
+      callback_ctx* ctx = calloc(1, sizeof *ctx);
+      if (!ctx) break;
+      ctx->inst = inst;
+      ctx->fn = item.fn;
+      if (!launch_root(inst, callback_root, ctx, ROOT_CALLBACK)) break;
+      ++ran;
+    }
   }
 
   if (g_scheduled && g_turns_ready) {
-    weblox_runtime_state saved;
-    weblox_runtime_capture(&saved);
-    wasm_rt_trap_t caught = wasm_rt_impl_try();
-    if (caught == WASM_RT_TRAP_NONE) {
-      w2c_WebClient_main_loop_iteration(inst);
-      ++ran;
+    if (on_root()) {
+      // A nested pump must not re-enter an engine turn while its caller is
+      // suspended inside one; the outer turn will schedule the next one.
     } else {
-      fprintf(stderr, "[def] main_loop_iteration trapped: %s\n",
-              wasm_rt_strerror(caught));
+      turn_ctx* ctx = calloc(1, sizeof *ctx);
+      if (ctx) {
+        ctx->inst = inst;
+        if (launch_root(inst, turn_root, ctx, ROOT_TURN)) ++ran;
+      }
     }
-    weblox_runtime_restore(&saved);
   }
+
+  // A resumed root may have made another waiter ready.  Hand it a turn now
+  // rather than waiting a whole frame, still on the host stack only.
+  weblox_atomic_pump();
+  reap_roots();
   return ran;
 }
