@@ -71,11 +71,15 @@ static int call(w2c_WebClient* inst, const char* name, weblox_arg arg) {
   return ok;
 }
 
+// Implemented in deferred.c; rAF turns must not run before page setup.
+extern void weblox_deferred_enable_turns(void);
+
 int weblox_prepare(w2c_WebClient* inst) {
   if (!inst) {
     fprintf(stderr, "[prep] no instance\n");
     return -1;
   }
+  weblox_deferred_enable_turns();
 
   char* owned_settings = NULL;
   const char* settings = settings_json(&owned_settings);

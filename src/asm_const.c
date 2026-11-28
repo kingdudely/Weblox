@@ -11,6 +11,7 @@
 
 #include "asm_const.h"
 #include "guest.h"
+#include "abort_debug.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -280,12 +281,16 @@ static double eval(u32 key, u32 sigp, u32 argbuf) {
 
 u32 w2c_env_emscripten_asm_const_int(struct w2c_env* env, u32 key, u32 sig,
                                      u32 buf) {
+  WEBLOX_IMPORT_TRACE_CALL(
+      "w2c_env_emscripten_asm_const_int", (u64)(uintptr_t)env, (u64)key, (u64)sig, (u64)buf);
   (void)env;
   return (u32)eval(key, sig, buf);
 }
 
 f64 w2c_env_emscripten_asm_const_double(struct w2c_env* env, u32 key, u32 sig,
                                         u32 buf) {
+  WEBLOX_IMPORT_TRACE_CALL(
+      "w2c_env_emscripten_asm_const_double", (u64)(uintptr_t)env, (u64)key, (u64)sig, (u64)buf);
   (void)env;
   return eval(key, sig, buf);
 }
@@ -293,11 +298,15 @@ f64 w2c_env_emscripten_asm_const_double(struct w2c_env* env, u32 key, u32 sig,
 u32 w2c_env_emscripten_asm_const_int_sync_on_main_thread(struct w2c_env* env,
                                                          u32 key, u32 sig,
                                                          u32 buf) {
+  WEBLOX_IMPORT_TRACE_CALL(
+      "w2c_env_emscripten_asm_const_int_sync_on_main_thread", (u64)(uintptr_t)env, (u64)key, (u64)sig, (u64)buf);
   return w2c_env_emscripten_asm_const_int(env, key, sig, buf);
 }
 
 void w2c_env_emscripten_asm_const_async_on_main_thread(struct w2c_env* env,
                                                        u32 key, u32 sig,
                                                        u32 buf) {
+  WEBLOX_IMPORT_TRACE_CALL(
+      "w2c_env_emscripten_asm_const_async_on_main_thread", (u64)(uintptr_t)env, (u64)key, (u64)sig, (u64)buf);
   (void)w2c_env_emscripten_asm_const_int(env, key, sig, buf);
 }

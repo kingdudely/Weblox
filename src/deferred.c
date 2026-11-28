@@ -5,6 +5,7 @@
 // hardcoded index.  A futex wait calls weblox_deferred_service() directly so
 // the callback runs inline on the waiting fiber.
 #include "deferred.h"
+#include "abort_debug.h"
 #include "fibers.h"
 
 #include <SDL3/SDL.h>
@@ -26,6 +27,27 @@ static SDL_Mutex* g_lock;
 // Browsers call rAF every frame regardless of schedule_main_loop.  Keep the
 // flag set so the guest always gets a turn.
 static volatile int g_scheduled = 1;
+// The browser only starts rAF turns after the page has configured the client.
+// Running main_loop_iteration re-entrantly from a mailbox await inside
+// wasm_call_ctors hits abort_js because the engine is not initialised yet.
+static volatile int g_turns_ready;
+
+void weblox_deferred_enable_turns(void) { g_turns_ready = 1; }
+
+int weblox_deferred_turns_enabled(void) { return g_turns_ready != 0; }
+
+// Emscripten leaves holes in the indirect function table for lazily
+// initialised functions.  The proven C++ host fills them with the first
+// populated funcref before the static constructors run; otherwise an early
+// call_indirect traps in initialize().
+void weblox_deferred_fill_funcrefs(w2c_WebClient* inst) {
+  if (!inst) return;
+  wasm_rt_funcref_table_t* table = &inst->w2c_0x5F_indirect_function_table;
+  if (!table->data || table->size <= 1 || !table->data[1].func) return;
+  const wasm_rt_funcref_t fill = table->data[1];
+  for (u64 i = 0; i < table->size; ++i)
+    if (!table->data[i].func) table->data[i] = fill;
+}
 
 int weblox_deferred_init(void) {
   if (!g_lock) g_lock = SDL_CreateMutex();
@@ -48,12 +70,15 @@ static void queue_push(u32 fn, u32 arg) {
 
 void w2c_env_emscripten_async_call(struct w2c_env* env, u32 fn, u32 arg,
                                    u32 timeout_ms) {
+  WEBLOX_IMPORT_TRACE_CALL(
+      "w2c_env_emscripten_async_call", (u64)(uintptr_t)env, (u64)fn, (u64)arg, (u64)timeout_ms);
   (void)env;
   (void)timeout_ms;
   queue_push(fn, arg);
 }
 
 void w2c_env_schedule_main_loop(struct w2c_env* env) {
+  WEBLOX_IMPORT_TRACE_CALL("w2c_env_schedule_main_loop", (u64)(uintptr_t)env);
   (void)env;
   g_scheduled = 1;
 }
@@ -117,7 +142,7 @@ int weblox_deferred_pump(w2c_WebClient* inst) {
     if (trap != WASM_RT_TRAP_NONE) break;
   }
 
-  if (g_scheduled) {
+  if (g_scheduled && g_turns_ready) {
     weblox_runtime_state saved;
     weblox_runtime_capture(&saved);
     wasm_rt_trap_t caught = wasm_rt_impl_try();

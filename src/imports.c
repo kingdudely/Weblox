@@ -3,7 +3,14 @@
 // tools/implemented.txt so there is exactly one definition of each.
 
 #include "host.h"
+#include "abort_debug.h"
 #include "guest.h"
+
+#ifdef WEBLOX_IMPORT_TRACE
+// Single definition of the ring buffer; every other translation unit only
+// calls the header's macro.
+#include "abort_debug.c"
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,21 +20,25 @@
 #endif
 
 void w2c_env_emscripten_console_log(struct w2c_env* env, u32 ptr) {
+  WEBLOX_IMPORT_TRACE_CALL("w2c_env_emscripten_console_log", (u64)(uintptr_t)env, (u64)ptr);
   (void)env;
   fprintf(stderr, "[log ] %s\n", guest_str(ptr));
 }
 
 void w2c_env_emscripten_console_warn(struct w2c_env* env, u32 ptr) {
+  WEBLOX_IMPORT_TRACE_CALL("w2c_env_emscripten_console_warn", (u64)(uintptr_t)env, (u64)ptr);
   (void)env;
   fprintf(stderr, "[warn] %s\n", guest_str(ptr));
 }
 
 void w2c_env_emscripten_console_error(struct w2c_env* env, u32 ptr) {
+  WEBLOX_IMPORT_TRACE_CALL("w2c_env_emscripten_console_error", (u64)(uintptr_t)env, (u64)ptr);
   (void)env;
   fprintf(stderr, "[err ] %s\n", guest_str(ptr));
 }
 
 f64 w2c_env_emscripten_get_now(struct w2c_env* env) {
+  WEBLOX_IMPORT_TRACE_CALL("w2c_env_emscripten_get_now", (u64)(uintptr_t)env);
   (void)env;
   // performance.now() is monotonic time since process start, not CPU time.
   static long long start_ms;
@@ -47,12 +58,15 @@ f64 w2c_env_emscripten_get_now(struct w2c_env* env) {
 }
 
 f64 w2c_env_emscripten_date_now(struct w2c_env* env) {
+  WEBLOX_IMPORT_TRACE_CALL("w2c_env_emscripten_date_now", (u64)(uintptr_t)env);
   (void)env;
   return (f64)time(NULL) * 1000.0;
 }
 
 u32 w2c_wasi__snapshot__preview1_random_get(
     struct w2c_wasi__snapshot__preview1* env, u32 ptr, u32 len) {
+  WEBLOX_IMPORT_TRACE_CALL(
+      "w2c_wasi__snapshot__preview1_random_get", (u64)(uintptr_t)env, (u64)ptr, (u64)len);
   (void)env;
   unsigned char* base = (unsigned char*)weblox_mem_base();
   if (!base || (u64)ptr + len > weblox_mem_size()) return 1;
@@ -62,6 +76,8 @@ u32 w2c_wasi__snapshot__preview1_random_get(
 
 u32 w2c_wasi__snapshot__preview1_environ_sizes_get(
     struct w2c_wasi__snapshot__preview1* env, u32 count_ptr, u32 size_ptr) {
+  WEBLOX_IMPORT_TRACE_CALL(
+      "w2c_wasi__snapshot__preview1_environ_sizes_get", (u64)(uintptr_t)env, (u64)count_ptr, (u64)size_ptr);
   (void)env;
   guest_put_u32(count_ptr, 0);
   guest_put_u32(size_ptr, 0);
@@ -70,6 +86,8 @@ u32 w2c_wasi__snapshot__preview1_environ_sizes_get(
 
 u32 w2c_wasi__snapshot__preview1_environ_get(
     struct w2c_wasi__snapshot__preview1* env, u32 environ_ptr, u32 buf_ptr) {
+  WEBLOX_IMPORT_TRACE_CALL(
+      "w2c_wasi__snapshot__preview1_environ_get", (u64)(uintptr_t)env, (u64)environ_ptr, (u64)buf_ptr);
   (void)env; (void)environ_ptr; (void)buf_ptr;
   return 0;
 }
@@ -77,6 +95,8 @@ u32 w2c_wasi__snapshot__preview1_environ_get(
 u32 w2c_wasi__snapshot__preview1_clock_time_get(
     struct w2c_wasi__snapshot__preview1* env, u32 clock_id, u64 precision,
     u32 out_ptr) {
+  WEBLOX_IMPORT_TRACE_CALL(
+      "w2c_wasi__snapshot__preview1_clock_time_get", (u64)(uintptr_t)env, (u64)clock_id, (u64)precision, (u64)out_ptr);
   (void)env; (void)precision;
   u64 ns;
   if (clock_id == 0) {
@@ -90,6 +110,8 @@ u32 w2c_wasi__snapshot__preview1_clock_time_get(
 
 void w2c_wasi__snapshot__preview1_proc_exit(
     struct w2c_wasi__snapshot__preview1* env, u32 code) {
+  WEBLOX_IMPORT_TRACE_CALL(
+      "w2c_wasi__snapshot__preview1_proc_exit", (u64)(uintptr_t)env, (u64)code);
   (void)env;
   exit((int)code);
 }

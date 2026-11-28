@@ -8,6 +8,7 @@
  * capability and crash imports that otherwise resolve to no-op stubs.
  */
 #include "host.h"
+#include "abort_debug.h"
 #include "guest.h"
 
 #include <stdio.h>
@@ -83,6 +84,7 @@ static int info_int(const char* key) {
 }
 
 u32 w2c_env_read_host_info_int(struct w2c_env* env, u32 key_ptr) {
+  WEBLOX_IMPORT_TRACE_CALL("w2c_env_read_host_info_int", (u64)(uintptr_t)env, (u64)key_ptr);
   (void)env;
   const char* key = guest_str(key_ptr);
   int value = info_int(key);
@@ -92,6 +94,8 @@ u32 w2c_env_read_host_info_int(struct w2c_env* env, u32 key_ptr) {
 
 void w2c_env_read_host_info_string(struct w2c_env* env, u32 key_ptr,
                                    u32 out_ptr, u32 capacity) {
+  WEBLOX_IMPORT_TRACE_CALL(
+      "w2c_env_read_host_info_string", (u64)(uintptr_t)env, (u64)key_ptr, (u64)out_ptr, (u64)capacity);
   (void)env;
   const char* key = guest_str(key_ptr);
   const char* value = info_string(key);
@@ -106,16 +110,19 @@ void w2c_env_read_host_info_string(struct w2c_env* env, u32 key_ptr,
 }
 
 u32 w2c_env_get_hardware_concurrency(struct w2c_env* env) {
+  WEBLOX_IMPORT_TRACE_CALL("w2c_env_get_hardware_concurrency", (u64)(uintptr_t)env);
   (void)env;
   return (u32)cpu_count();
 }
 
 u32 w2c_env_emscripten_num_logical_cores(struct w2c_env* env) {
+  WEBLOX_IMPORT_TRACE_CALL("w2c_env_emscripten_num_logical_cores", (u64)(uintptr_t)env);
   (void)env;
   return (u32)cpu_count();
 }
 
 u32 w2c_env_emscripten_get_heap_max(struct w2c_env* env) {
+  WEBLOX_IMPORT_TRACE_CALL("w2c_env_emscripten_get_heap_max", (u64)(uintptr_t)env);
   (void)env;
   // 4 GiB does not fit in the u32 return type; callers use it as a bound.
   return 0xFFFFFFFFu;
@@ -125,6 +132,7 @@ u32 w2c_env_emscripten_get_heap_max(struct w2c_env* env) {
  * dlmalloc's own grow check overflows at 65536 pages and calls this on every
  * sbrk, so answering 1 for any address inside the reservation is required. */
 u32 w2c_env_emscripten_resize_heap(struct w2c_env* env, u32 want) {
+  WEBLOX_IMPORT_TRACE_CALL("w2c_env_emscripten_resize_heap", (u64)(uintptr_t)env, (u64)want);
   (void)env;
   int ok = (u64)want <= g_mem.size;
   if (!ok) fprintf(stderr, "[host] resize_heap(%u) denied\n", want);
@@ -132,37 +140,45 @@ u32 w2c_env_emscripten_resize_heap(struct w2c_env* env, u32 want) {
 }
 
 u32 w2c_env_is_mobile_browser(struct w2c_env* env) {
+  WEBLOX_IMPORT_TRACE_CALL("w2c_env_is_mobile_browser", (u64)(uintptr_t)env);
   (void)env;
   return 0;
 }
 
 u32 w2c_env_is_touch_mobile(struct w2c_env* env) {
+  WEBLOX_IMPORT_TRACE_CALL("w2c_env_is_touch_mobile", (u64)(uintptr_t)env);
   (void)env;
   return 0;
 }
 
 u32 w2c_env_is_touch_screen_device(struct w2c_env* env) {
+  WEBLOX_IMPORT_TRACE_CALL("w2c_env_is_touch_screen_device", (u64)(uintptr_t)env);
   (void)env;
   return 0;
 }
 
 u32 w2c_env_is_mouse_sourced_event(struct w2c_env* env) {
+  WEBLOX_IMPORT_TRACE_CALL("w2c_env_is_mouse_sourced_event", (u64)(uintptr_t)env);
   (void)env;
   return 0;
 }
 
 u32 w2c_env_js_web_client_page_visible(struct w2c_env* env) {
+  WEBLOX_IMPORT_TRACE_CALL("w2c_env_js_web_client_page_visible", (u64)(uintptr_t)env);
   (void)env;
   return 1;
 }
 
 u32 w2c_env_js_keyboard_layout_status(struct w2c_env* env) {
+  WEBLOX_IMPORT_TRACE_CALL("w2c_env_js_keyboard_layout_status", (u64)(uintptr_t)env);
   (void)env;
   return 1; /* layout ready, matching v2-wasmtime's input import */
 }
 
 void w2c_env_js_copy_keyboard_layout_key(struct w2c_env* env, u32 from,
                                          u32 to, u32 count) {
+  WEBLOX_IMPORT_TRACE_CALL(
+      "w2c_env_js_copy_keyboard_layout_key", (u64)(uintptr_t)env, (u64)from, (u64)to, (u64)count);
   (void)env;
   (void)from;
   (void)to;
@@ -170,27 +186,34 @@ void w2c_env_js_copy_keyboard_layout_key(struct w2c_env* env, u32 from,
 }
 
 void w2c_env_js_request_keyboard_layout(struct w2c_env* env) {
+  WEBLOX_IMPORT_TRACE_CALL("w2c_env_js_request_keyboard_layout", (u64)(uintptr_t)env);
   (void)env;
   fprintf(stderr, "[host] keyboard layout request (US layout assumed)\n");
 }
 
 void w2c_env_install_pointer_source_tracking(struct w2c_env* env) {
+  WEBLOX_IMPORT_TRACE_CALL("w2c_env_install_pointer_source_tracking", (u64)(uintptr_t)env);
   (void)env;
 }
 
 void w2c_env_preallocate_emscripten_key_event_buffer(struct w2c_env* env,
                                                      u32 count) {
+  WEBLOX_IMPORT_TRACE_CALL(
+      "w2c_env_preallocate_emscripten_key_event_buffer", (u64)(uintptr_t)env, (u64)count);
   (void)env;
   (void)count;
 }
 
 void w2c_env_shift_canvas(struct w2c_env* env, f32 offset) {
+  WEBLOX_IMPORT_TRACE_CALL("w2c_env_shift_canvas", (u64)(uintptr_t)env, (u64)offset);
   (void)env;
   (void)offset;
 }
 
 void w2c_env_report_crash(struct w2c_env* env, u32 a, u32 b, u32 c, u32 d,
                           u32 e) {
+  WEBLOX_IMPORT_TRACE_CALL(
+      "w2c_env_report_crash", (u64)(uintptr_t)env, (u64)a, (u64)b, (u64)c, (u64)d, (u64)e);
   (void)env;
   (void)c;
   (void)e;
@@ -200,6 +223,8 @@ void w2c_env_report_crash(struct w2c_env* env, u32 a, u32 b, u32 c, u32 d,
 
 void w2c_env_set_crash_attribute(struct w2c_env* env, u32 key_ptr,
                                  u32 value_ptr) {
+  WEBLOX_IMPORT_TRACE_CALL(
+      "w2c_env_set_crash_attribute", (u64)(uintptr_t)env, (u64)key_ptr, (u64)value_ptr);
   (void)env;
   fprintf(stderr, "[host] crash attribute %s=%s\n", guest_str(key_ptr),
           guest_str(value_ptr));

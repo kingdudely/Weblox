@@ -1,9 +1,11 @@
 // Emscripten worker threads: one wasm2c instance per pthread, sharing g_mem.
 //
 // TLS/table/globals are per worker just as they are per Web Worker in the
-// browser.  No guest offsets are poked here: the stack window comes from the
-// instance's own exports and thread setup goes through its own imports.
+// browser.  The only guest fields read are the pthread struct's stack top,
+// stack size and "started" flag; all wasm work still goes through generated
+// exports and imports.
 #include "deferred.h"
+#include "abort_debug.h"
 #include "fibers.h"
 #include "guest.h"
 
@@ -18,6 +20,13 @@ typedef struct worker {
   u32 start;
   u32 arg;
 } worker;
+
+static u32 read_guest_u32(u32 address) {
+  unsigned char* p = guest_ptr(address, 4);
+  u32 value = 0;
+  if (p) memcpy(&value, p, 4);
+  return value;
+}
 
 static u32 g_pending_main_ptr;
 static int g_pending_main_init;
@@ -58,17 +67,22 @@ static int SDLCALL worker_main(void* param) {
   wasm_rt_init_thread();
   wasm2c_WebClient_instantiate(&w->inst, &g_env, &g_wasi);
 
-  // The instance arrives with its own shadow-stack window; keep it.  No
-  // hardcoded guest pointers like pthread_ptr+48/52/112 are involved.
-  w2c_WebClient_set_stack_ptr(&w->inst,
-                              w2c_WebClient_get_stack_ptr(&w->inst));
-  fprintf(stderr, "[thread] worker ptr=%u start=%u\n", w->pthread_ptr,
-          w->start);
+  // Offsets are relative to the guest pthread struct passed to the import,
+  // exactly as in v3-wasm2c/thread.c and cpp/thread_host.cpp.
+  const u32 top = read_guest_u32(w->pthread_ptr + 48);
+  const u32 bottom = read_guest_u32(w->pthread_ptr + 52);
+  if (top && top > bottom) {
+    w2c_WebClient_set_stack_limits(&w->inst, top, top - bottom);
+    w2c_WebClient_set_stack_ptr(&w->inst, top);
+  }
+  guest_put_u32(w->pthread_ptr + 112, 1);  // pthread "started" flag
+  fprintf(stderr, "[thread] worker ptr=%u start=%u stack=%x..%x\n",
+          w->pthread_ptr, w->start, top, bottom);
 
   {
     weblox_runtime_state saved;
     weblox_runtime_capture(&saved);
-    w2c_WebClient_0x5Femscripten_thread_init(&w->inst, w->pthread_ptr, 0u, 0u,
+    w2c_WebClient_0x5Femscripten_thread_init(&w->inst, w->pthread_ptr, 0u, 1u,
                                               1u, 0u, 0u);
     w2c_WebClient_0x5Femscripten_tls_init(&w->inst);
     weblox_runtime_restore(&saved);
@@ -90,6 +104,7 @@ static int SDLCALL worker_main(void* param) {
     fprintf(stderr, "[thread] bad start index %u\n", w->start);
   }
 
+  wasm2c_WebClient_free(&w->inst);
   wasm_rt_free_thread();
   free(w);
   return 0;
@@ -97,6 +112,8 @@ static int SDLCALL worker_main(void* param) {
 
 u32 w2c_env_0x5F_pthread_create_js(struct w2c_env* env, u32 pthread_ptr,
                                    u32 attr, u32 start, u32 arg) {
+  WEBLOX_IMPORT_TRACE_CALL(
+      "w2c_env_0x5F_pthread_create_js", (u64)(uintptr_t)env, (u64)pthread_ptr, (u64)attr, (u64)start, (u64)arg);
   (void)env;
   (void)attr;
   worker* w = calloc(1, sizeof *w);
@@ -115,16 +132,32 @@ u32 w2c_env_0x5F_pthread_create_js(struct w2c_env* env, u32 pthread_ptr,
 }
 
 void w2c_env_0x5Femscripten_init_main_thread_js(struct w2c_env* env, u32 ptr) {
+  WEBLOX_IMPORT_TRACE_CALL(
+      "w2c_env_0x5Femscripten_init_main_thread_js", (u64)(uintptr_t)env, (u64)ptr);
   (void)env;
   weblox_mailbox_set_main(ptr);
-  // The generated struct w2c_env is opaque in this ABI and this import runs
-  // during instantiate, before main.c publishes weblox_instance.  Defer the
-  // exports until a host call supplies the instance.
+  // The browser installs the main thread before the module's static
+  // constructors run.  By the time this import fires wasm_call_ctors has a
+  // live instance (host.cpp publishes it right after instantiate), so perform
+  // thread_init/tls_init right here: TLS-backed globals are invalid until
+  // then and the engine aborts inside initialize() otherwise.  Keep the
+  // deferred path only for hosts that call the import from instantiate().
+  if (weblox_instance) {
+    extern void weblox_deferred_fill_funcrefs(w2c_WebClient*);
+    weblox_deferred_fill_funcrefs(weblox_instance);
+    g_pending_main_ptr = ptr;
+    guarded_call(weblox_instance, thread_init_fn);
+    guarded_call(weblox_instance, tls_init_fn);
+    fprintf(stderr, "[thread] main init inline ptr=%u inst=%p\n", ptr,
+            (void*)weblox_instance);
+    return;
+  }
   g_pending_main_ptr = ptr;
   g_pending_main_init = 1;
 }
 
 void w2c_env_0x5Femscripten_thread_cleanup(struct w2c_env* env, u32 ptr) {
+  WEBLOX_IMPORT_TRACE_CALL("w2c_env_0x5Femscripten_thread_cleanup", (u64)(uintptr_t)env, (u64)ptr);
   (void)env;
   fprintf(stderr, "[thread] cleanup ptr=%u\n", ptr);
   weblox_mailbox_signal(ptr);

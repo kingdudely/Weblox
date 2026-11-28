@@ -36,10 +36,14 @@
 
 #define WEBLOX_MAX_ASSET (256u << 20)
 
-static const char* meta_path(void) {
-  const char* e = getenv("WC_META");
-  return (e && *e) ? e : "data/meta.json";
-}
+// The official asset list lives in v3-wasm2c/data/meta.json when the host is
+// launched from the repository root; WasmPlayer.js registers every asset in
+// it.  Trying the same candidates as the proven C++/Rust hosts is essential:
+// the four-entry fallback makes the engine throw inside initialize().
+static const char* const kMetaCandidates[] = {
+    "data/meta.json",
+    "v3-wasm2c/data/meta.json",
+};
 
 static const char* content_root(void) {
   const char* e = getenv("WC_CONTENT");
@@ -118,14 +122,28 @@ static int register_metadata(w2c_WebClient* inst) {
     enum { CAP = 32 * 1024 * 1024 };
     char* buf = (char*)malloc(CAP);
     if (buf) {
-      const char* path = meta_path();
-      long n = weblox_fs_read_file(path, buf, CAP - 1);
-      if (n > 0) {
+      const char* custom = getenv("WC_META");
+      int found = 0;
+      if (custom && *custom) {
+        long n = weblox_fs_read_file(custom, buf, CAP - 1);
+        if (n > 0) {
+          buf[n] = 0;
+          parse_manifest(inst, buf, (size_t)n, &count);
+          found = 1;
+        }
+      }
+      for (size_t i = 0; !found && i < sizeof kMetaCandidates / sizeof *kMetaCandidates;
+           ++i) {
+        const char* path = kMetaCandidates[i];
+        long n = weblox_fs_read_file(path, buf, CAP - 1);
+        if (n <= 0) continue;
         buf[n] = 0;
         parse_manifest(inst, buf, (size_t)n, &count);
-      } else {
-        fprintf(stderr, "[vfs] no asset metadata at %s; using manifest\n", path);
+        fprintf(stderr, "[vfs] meta=%s\n", path);
+        found = 1;
       }
+      if (!found)
+        fprintf(stderr, "[vfs] no asset metadata found; using manifest\n");
       free(buf);
     }
   }

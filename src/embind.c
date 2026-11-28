@@ -10,6 +10,7 @@
  */
 #include "embind.h"
 #include "guest.h"
+#include "abort_debug.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -111,6 +112,8 @@ void w2c_env_0x5Fembind_register_function(struct w2c_env* env, u32 name_ptr,
                                           u32 argc, u32 types_ptr,
                                           u32 sig_ptr, u32 invoker, u32 id,
                                           u32 a, u32 b) {
+  WEBLOX_IMPORT_TRACE_CALL(
+      "w2c_env_0x5Fembind_register_function", (u64)(uintptr_t)env, (u64)name_ptr, (u64)argc, (u64)types_ptr, (u64)sig_ptr, (u64)invoker, (u64)id, (u64)a, (u64)b);
   (void)env;
   (void)types_ptr;
   (void)a;
@@ -119,6 +122,8 @@ void w2c_env_0x5Fembind_register_function(struct w2c_env* env, u32 name_ptr,
 }
 
 void w2c_env_0x5Fembind_register_void(struct w2c_env* env, u32 id, u32 name) {
+  WEBLOX_IMPORT_TRACE_CALL(
+      "w2c_env_0x5Fembind_register_void", (u64)(uintptr_t)env, (u64)id, (u64)name);
   (void)env;
   add_type(id, "void");
   if (verbose()) fprintf(stderr, "[embind] type %u=void (%s)\n", id, guest_str(name));
@@ -126,6 +131,8 @@ void w2c_env_0x5Fembind_register_void(struct w2c_env* env, u32 id, u32 name) {
 
 void w2c_env_0x5Fembind_register_bool(struct w2c_env* env, u32 id, u32 name,
                                       u32 size, u32 true_value) {
+  WEBLOX_IMPORT_TRACE_CALL(
+      "w2c_env_0x5Fembind_register_bool", (u64)(uintptr_t)env, (u64)id, (u64)name, (u64)size, (u64)true_value);
   (void)env;
   (void)size;
   (void)true_value;
@@ -135,6 +142,8 @@ void w2c_env_0x5Fembind_register_bool(struct w2c_env* env, u32 id, u32 name,
 
 void w2c_env_0x5Fembind_register_integer(struct w2c_env* env, u32 id, u32 name,
                                          u32 size, u32 low, u32 high) {
+  WEBLOX_IMPORT_TRACE_CALL(
+      "w2c_env_0x5Fembind_register_integer", (u64)(uintptr_t)env, (u64)id, (u64)name, (u64)size, (u64)low, (u64)high);
   (void)env;
   (void)low;
   (void)high;
@@ -146,6 +155,8 @@ void w2c_env_0x5Fembind_register_integer(struct w2c_env* env, u32 id, u32 name,
 
 void w2c_env_0x5Fembind_register_bigint(struct w2c_env* env, u32 id, u32 name,
                                         u32 size, u64 low, u64 high) {
+  WEBLOX_IMPORT_TRACE_CALL(
+      "w2c_env_0x5Fembind_register_bigint", (u64)(uintptr_t)env, (u64)id, (u64)name, (u64)size, (u64)low, (u64)high);
   (void)env;
   (void)low;
   (void)high;
@@ -155,6 +166,8 @@ void w2c_env_0x5Fembind_register_bigint(struct w2c_env* env, u32 id, u32 name,
 
 void w2c_env_0x5Fembind_register_float(struct w2c_env* env, u32 id, u32 name,
                                        u32 size) {
+  WEBLOX_IMPORT_TRACE_CALL(
+      "w2c_env_0x5Fembind_register_float", (u64)(uintptr_t)env, (u64)id, (u64)name, (u64)size);
   (void)env;
   add_type(id, size == 8 ? "f64" : "f32");
   if (verbose())
@@ -164,6 +177,8 @@ void w2c_env_0x5Fembind_register_float(struct w2c_env* env, u32 id, u32 name,
 
 void w2c_env_0x5Fembind_register_std_string(struct w2c_env* env, u32 id,
                                             u32 name) {
+  WEBLOX_IMPORT_TRACE_CALL(
+      "w2c_env_0x5Fembind_register_std_string", (u64)(uintptr_t)env, (u64)id, (u64)name);
   (void)env;
   add_type(id, "str");
   if (verbose()) fprintf(stderr, "[embind] type %u=str (%s)\n", id, guest_str(name));
@@ -171,6 +186,8 @@ void w2c_env_0x5Fembind_register_std_string(struct w2c_env* env, u32 id,
 
 void w2c_env_0x5Fembind_register_std_wstring(struct w2c_env* env, u32 id,
                                              u32 name, u32 size) {
+  WEBLOX_IMPORT_TRACE_CALL(
+      "w2c_env_0x5Fembind_register_std_wstring", (u64)(uintptr_t)env, (u64)id, (u64)name, (u64)size);
   (void)env;
   (void)size;
   add_type(id, "wstr");
@@ -178,6 +195,7 @@ void w2c_env_0x5Fembind_register_std_wstring(struct w2c_env* env, u32 id,
 }
 
 void w2c_env_0x5Fembind_register_emval(struct w2c_env* env, u32 id) {
+  WEBLOX_IMPORT_TRACE_CALL("w2c_env_0x5Fembind_register_emval", (u64)(uintptr_t)env, (u64)id);
   (void)env;
   add_type(id, "emval");
   if (verbose()) fprintf(stderr, "[embind] type %u=emval\n", id);
@@ -185,6 +203,8 @@ void w2c_env_0x5Fembind_register_emval(struct w2c_env* env, u32 id) {
 
 void w2c_env_0x5Fembind_register_memory_view(struct w2c_env* env, u32 id,
                                              u32 kind, u32 name) {
+  WEBLOX_IMPORT_TRACE_CALL(
+      "w2c_env_0x5Fembind_register_memory_view", (u64)(uintptr_t)env, (u64)id, (u64)kind, (u64)name);
   (void)env;
   (void)kind;
   add_type(id, "memory_view");
