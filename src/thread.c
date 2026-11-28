@@ -61,9 +61,25 @@ void weblox_thread_maybe_init_main(w2c_WebClient* inst) {
           (void*)inst);
 }
 
+// The worker's wasm entry runs on its own root fibre.  That gives this thread
+// its own continuation registry: create/transfer keys filed by the entry and
+// by any fibre it creates resolve here and never in the main thread's table.
+static void worker_entry_fn(void* arg) {
+  worker* w = (worker*)arg;
+  wasm_rt_funcref_table_t* table = &w->inst.w2c_0x5F_indirect_function_table;
+  if (w->start < table->size && table->data[w->start].func) {
+    wasm_rt_funcref_t* entry = &table->data[w->start];
+    fprintf(stderr, "[thread] start root ptr=%u start=%u key=%u\n",
+            w->pthread_ptr, w->start, weblox_fiber_current_key());
+    ((void (*)(void*, u32))entry->func)(entry->module_instance, w->arg);
+  } else {
+    fprintf(stderr, "[thread] bad start index %u\n", w->start);
+  }
+}
+
 static int SDLCALL worker_main(void* param) {
   worker* w = (worker*)param;
-  weblox_fiber_set_instance(&w->inst);
+  weblox_fiber_init_worker(&w->inst);
   wasm_rt_init_thread();
   wasm2c_WebClient_instantiate(&w->inst, &g_env, &g_wasi);
 
@@ -88,20 +104,17 @@ static int SDLCALL worker_main(void* param) {
     weblox_runtime_restore(&saved);
   }
 
-  wasm_rt_funcref_table_t* table = &w->inst.w2c_0x5F_indirect_function_table;
-  if (w->start < table->size && table->data[w->start].func) {
-    wasm_rt_funcref_t* entry = &table->data[w->start];
-    weblox_runtime_state saved;
-    weblox_runtime_capture(&saved);
-    wasm_rt_trap_t trap = wasm_rt_impl_try();
-    if (trap == WASM_RT_TRAP_NONE)
-      ((void (*)(void*, u32))entry->func)(entry->module_instance, w->arg);
-    else
-      fprintf(stderr, "[thread] start trapped: %s\n",
-              wasm_rt_strerror(trap));
-    weblox_runtime_restore(&saved);
+  void* root = weblox_run_on_root(&w->inst, worker_entry_fn, w);
+  if (!root) {
+    fprintf(stderr, "[thread] start root failed ptr=%u start=%u\n",
+            w->pthread_ptr, w->start);
+  } else if (weblox_root_done(root)) {
+    weblox_root_free(root);
   } else {
-    fprintf(stderr, "[thread] bad start index %u\n", w->start);
+    // A worker has no host rAF pump.  Never destroy a suspended coroutine:
+    // leaving it parked is safer than resuming into freed stack memory.
+    fprintf(stderr, "[thread] start root parked ptr=%u start=%u\n",
+            w->pthread_ptr, w->start);
   }
 
   wasm2c_WebClient_free(&w->inst);

@@ -6,6 +6,7 @@
 // the callback runs inline on the waiting fiber.
 #include "deferred.h"
 #include "abort_debug.h"
+#include "atomics.h"
 #include "fibers.h"
 
 #include <SDL3/SDL.h>
@@ -131,6 +132,10 @@ int weblox_deferred_pump(w2c_WebClient* inst) {
   weblox_fiber_set_instance(inst);
   weblox_thread_maybe_init_main(inst);
   if (weblox_fiber_on_main_thread()) SDL_PumpEvents();
+
+  // A main-thread futex wait parks its fibre instead of blocking this loop.
+  // Resume any woken/expired waiters here before running the next engine turn.
+  weblox_atomic_pump();
 
   int ran = 0;
   wasm_rt_trap_t trap = WASM_RT_TRAP_NONE;

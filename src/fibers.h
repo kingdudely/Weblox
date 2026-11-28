@@ -40,6 +40,10 @@ void weblox_runtime_restore(const weblox_runtime_state* state);
 // modules, so main.c only needs this one init call.
 void weblox_fibers_init(void);
 
+// Set up this (worker) thread's fibre registry.  The main thread id is shared
+// with the main registry so a worker never mistakes itself for the UI thread.
+void weblox_fiber_init_worker(w2c_WebClient* inst);
+
 // Which instance the imports on the current thread belong to.  Worker threads
 // set this in their own TLS before instantiating; the host uses weblox_instance.
 void weblox_fiber_set_instance(w2c_WebClient* inst);
@@ -48,6 +52,17 @@ w2c_WebClient* weblox_fiber_instance(void);
 // True on the thread that called weblox_fibers_init().  Main-thread waits pump
 // SDL events and run deferred callbacks inline; workers just block.
 int weblox_fiber_on_main_thread(void);
+
+// True while no guest/root fiber owns this thread's stack, i.e. mco_resume is
+// safe.  Fibres must only mco_yield, so a wake-up from inside a callback is
+// queued and drained here instead of resuming a coroutine from a coroutine.
+int weblox_fiber_on_host_stack(void);
+
+// Continuation key currently filed for the running fibre (0 when running).
+u32 weblox_fiber_current_key(void);
+
+// Opaque handle for the running fibre, used by the futex park/ready queue.
+void* weblox_fiber_current_handle(void);
 
 // Non-zero while at least one host root fibre is suspended at a futex/transfer.
 // The pump uses this to avoid launching a new root while another is suspended.
@@ -60,5 +75,15 @@ int weblox_fiber_has_suspended_root(void);
 void* weblox_run_on_root(w2c_WebClient* inst, void (*fn)(void*), void* arg);
 int weblox_root_done(void* handle);
 void weblox_root_free(void* handle);
+
+// Park the calling fibre and hand control to the host event loop.  The return
+// value is the code installed by weblox_fiber_resume_parked().  Returns 0 with
+// no switch when called from the native host stack (nothing to suspend).
+u32 weblox_fiber_park(void);
+
+// Resume a fibre parked by weblox_fiber_park() with a JS Atomics.wait result.
+// Must be called from the host stack.  The fibre's runtime state and guest
+// shadow-stack window are restored by the normal dispatch path.
+void weblox_fiber_resume_parked(void* handle, u32 code);
 
 #endif

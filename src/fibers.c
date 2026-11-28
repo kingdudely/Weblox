@@ -31,6 +31,7 @@ typedef enum {
   FSTATE_RUNNING,
   FSTATE_WAIT_CREATE,
   FSTATE_WAIT_TRANSFER,
+  FSTATE_PARKED, /* parked by an async futex wait, not a fibre transfer */
   FSTATE_DEAD
 } fstate;
 
@@ -54,6 +55,9 @@ typedef struct weblox_fiber {
 
   u32 create_resumption;        /* key of the creator of a guest fiber */
   struct weblox_fiber* creator_fiber; /* stack that called create (may be host) */
+  fstate prev_state;            /* state before a futex park */
+  u32 prev_key;                 /* continuation before a futex park */
+  u32 park_key;                 /* synthetic id used in park logs */
   u32 entry, arg;               /* fiber_entry arguments */
   void (*fn)(void*);            /* root body */
   void* fn_arg;
@@ -69,14 +73,20 @@ typedef struct fiber_thread {
   weblox_fiber host;            /* represents the native host stack */
   weblox_fiber* current;        /* NULL-safe: always set to host on host stack */
   weblox_fiber* next;           /* fiber chosen by the currently yielding one */
-  weblox_fiber* list;
+  weblox_fiber* list;           /* this thread's whole continuation registry */
+  weblox_fiber* root;           /* root this thread is currently driving */
   w2c_WebClient* inst;
   SDL_ThreadID main_thread;
   int initialized;
   int root_mode;
+  u32 park_seq;
 } fiber_thread;
 
 static _Thread_local fiber_thread g_ft;
+// Set once by the main thread; worker TLS copies it so on_main_thread() stays
+// false for them even when they have to initialise their own fibre registry.
+static SDL_ThreadID g_process_main_thread;
+static int g_process_main_set;
 
 static int verbose(void) {
   static int cached = -1;
@@ -132,16 +142,22 @@ static void capture_guest(weblox_fiber* fiber) {
 
 static void restore_guest(const weblox_fiber* fiber) {
   if (!fiber || !fiber->inst) return;
+  // The host stack has no saved window until it leaves for a fibre.  Before
+  // that the fresh instance's own shadow-stack limits must be left alone.
+  if (!fiber->guest.base && !fiber->guest.end) return;
   w2c_WebClient_set_stack_limits(fiber->inst, fiber->guest.base,
                                 fiber->guest.end);
   w2c_WebClient_set_stack_ptr(fiber->inst, fiber->guest.sp);
 }
 
+// Keys live in this thread's registry only: a worker must never resolve a
+// continuation created by the main thread (or by another worker).
 static weblox_fiber* lookup(u32 key) {
   if (!key) return NULL;
   for (weblox_fiber* f = g_ft.list; f; f = f->next)
     if (f->used && f->state != FSTATE_RUNNING && f->state != FSTATE_FREE &&
-        f->key == key)
+        f->state != FSTATE_PARKED && f->key == key &&
+        (!f->inst || !g_ft.inst || f->inst == g_ft.inst))
       return f;
   return NULL;
 }
@@ -216,6 +232,9 @@ static u32 switch_away(weblox_fiber* target, u32 key, fstate state,
   capture_guest(self);
   self->key = key;
   self->state = state;
+  if (verbose())
+    fprintf(stderr, "[fib] switch key=%u -> key=%u state=%d co=%d\n", key,
+            target ? target->key : 0, (int)state, self->co ? 1 : 0);
   if (target) {
     target->result = incoming;
     target->state = FSTATE_RUNNING;
@@ -239,6 +258,50 @@ static u32 switch_away(weblox_fiber* target, u32 key, fstate state,
     wasm_rt_trap(trap);
   }
   return self->result;
+}
+
+// Suspend the calling fibre at an async futex wait.  Unlike a fibre transfer
+// there is no destination to resume now: we hand control straight back to the
+// host event loop, which keeps turning rAF while the guest stack stays parked.
+// The fibre's transfer continuation is preserved so a later transfer can still
+// find it once the wait has been resumed.
+u32 weblox_fiber_park(void) {
+  weblox_fiber* self = g_ft.current ? g_ft.current : &g_ft.host;
+  if (!self->co) return 0;  // native host stack: nothing to suspend
+  weblox_runtime_capture(&self->rt);
+  capture_guest(self);
+  self->prev_state = self->state;
+  self->prev_key = self->key;
+  self->state = FSTATE_PARKED;
+  self->key = 0;
+  self->result = 0;
+  self->park_key = 0xF0000000u | ++g_ft.park_seq;
+  if (verbose())
+    fprintf(stderr, "[fib] park key=%u prev=%u tid=%llu\n", self->park_key,
+            self->prev_key, (unsigned long long)SDL_GetThreadID(NULL));
+  g_ft.next = &g_ft.host;
+  mco_yield(self->co);
+  if (verbose())
+    fprintf(stderr, "[fib] resumed key=%u code=%u\n", self->park_key,
+            self->result);
+  return self->result;
+}
+
+void weblox_fiber_resume_parked(void* handle, u32 code) {
+  weblox_fiber* fiber = (weblox_fiber*)handle;
+  if (!fiber || !fiber->co || fiber->state != FSTATE_PARKED) return;
+  if (!weblox_fiber_on_host_stack()) {
+    fprintf(stderr, "[fib] deferred park resume key=%u (called from fibre)\n",
+            fiber->park_key);
+    return;
+  }
+  if (verbose())
+    fprintf(stderr, "[fib] resume park key=%u code=%u root=%d\n",
+            fiber->park_key, code, fiber->root ? 1 : 0);
+  fiber->result = code;
+  fiber->state = fiber->prev_state;
+  fiber->key = fiber->prev_key;
+  host_dispatch(fiber);
 }
 
 static void report_trap(weblox_fiber* fiber, wasm_rt_trap_t trap) {
@@ -314,19 +377,47 @@ static void root_body(mco_coro* co) {
   mco_yield(co);
 }
 
-void weblox_fibers_init(void) {
-  if (g_ft.initialized) return;
+static void init_thread(w2c_WebClient* inst, SDL_ThreadID main_tid) {
   memset(&g_ft, 0, sizeof g_ft);
   g_ft.initialized = 1;
   g_ft.current = &g_ft.host;
-  g_ft.host.inst = weblox_instance;
-  g_ft.main_thread = SDL_GetThreadID(NULL);
+  g_ft.main_thread = main_tid;
+  g_ft.inst = inst;
+  // The host stack is a first-class continuation in the registry: the engine
+  // creates a fibre by filing a key for its creator and transferring to it.
+  // On a worker the creator is this native stack unless we run the entry on a
+  // root fibre, so leaving the host out of the registry lost that key.
+  g_ft.host.inst = inst;
+  g_ft.host.used = 1;
+  g_ft.host.state = FSTATE_RUNNING;
+  g_ft.host.rt = fresh_runtime();
+  g_ft.list = &g_ft.host;
   if (!SDL_WasInit(SDL_INIT_EVENTS)) SDL_InitSubSystem(SDL_INIT_EVENTS);
   weblox_atomic_init();
   weblox_deferred_init();
   weblox_mailbox_init();
-  fprintf(stderr, "[fib] init main_tid=%llu\n",
-          (unsigned long long)g_ft.main_thread);
+  fprintf(stderr, "[fib] init main_tid=%llu tid=%llu\n",
+          (unsigned long long)main_tid,
+          (unsigned long long)SDL_GetThreadID(NULL));
+}
+
+void weblox_fibers_init(void) {
+  if (g_ft.initialized) return;
+  SDL_ThreadID tid = SDL_GetThreadID(NULL);
+  if (!g_process_main_set) {
+    g_process_main_thread = tid;
+    g_process_main_set = 1;
+  }
+  init_thread(weblox_instance, tid);
+}
+
+void weblox_fiber_init_worker(w2c_WebClient* inst) {
+  if (g_ft.initialized) {
+    weblox_fiber_set_instance(inst);
+    return;
+  }
+  init_thread(inst,
+              g_process_main_set ? g_process_main_thread : SDL_GetThreadID(NULL));
 }
 
 void weblox_fiber_set_instance(w2c_WebClient* inst) {
@@ -340,6 +431,18 @@ w2c_WebClient* weblox_fiber_instance(void) {
 
 int weblox_fiber_on_main_thread(void) {
   return g_ft.initialized && SDL_GetThreadID(NULL) == g_ft.main_thread;
+}
+
+int weblox_fiber_on_host_stack(void) {
+  return !g_ft.initialized || !g_ft.current || g_ft.current == &g_ft.host;
+}
+
+u32 weblox_fiber_current_key(void) {
+  return g_ft.current ? g_ft.current->key : 0;
+}
+
+void* weblox_fiber_current_handle(void) {
+  return g_ft.current ? (void*)g_ft.current : (void*)&g_ft.host;
 }
 
 int weblox_fiber_has_suspended_root(void) {
@@ -360,6 +463,7 @@ void* weblox_run_on_root(w2c_WebClient* inst, void (*fn)(void*), void* arg) {
   if (!root) return NULL;
   root->root = 1;
   root->inst = inst;
+  g_ft.root = root;
   root->fn = fn;
   root->fn_arg = arg;
   root->guest.sp = w2c_WebClient_get_stack_ptr(inst);
@@ -389,6 +493,7 @@ void weblox_root_free(void* handle) {
     mco_destroy(root->co);
     root->co = NULL;
   }
+  if (g_ft.root == root) g_ft.root = NULL;
   root->used = 0;
   free(root);
 }
@@ -446,18 +551,32 @@ u32 w2c_env_0x5F_asyncjs_0x5Fcreate_suspended_fiber_js(
 u32 w2c_env_0x5F_asyncjs_0x5Ffiber_transfer_js(struct w2c_env* env, u32 from,
                                                 u32 to) {
   (void)env;
-  if (from == to) return 0;      // JS's undefined coerces to zero.
   if (!g_ft.initialized) weblox_fibers_init();
-  weblox_fiber* target = lookup(to);
+  if (from == to) return 0;      // JS's undefined coerces to zero.
+  weblox_fiber* self = g_ft.current ? g_ft.current : &g_ft.host;
+  // Zero means "the current root's continuation" in the browser glue.  The
+  // creator chain is the root on both the main thread and a worker.
+  u32 dest = to;
+  if (!dest) {
+    for (weblox_fiber* c = self->creator_fiber; c && c != self;
+         c = c->creator_fiber)
+      if (c->key) { dest = c->key; break; }
+    if (!dest && g_ft.root && g_ft.root != self && g_ft.root->key)
+      dest = g_ft.root->key;
+    if (!dest && &g_ft.host != self && g_ft.host.key) dest = g_ft.host.key;
+  }
+  weblox_fiber* target = lookup(dest);
   if (!target) {
-    fprintf(stderr, "[fib] unknown destination continuation %u\n", to);
+    fprintf(stderr, "[fib] unknown destination continuation %u (to=%u from=%u "
+                    "self=%u inst=%p)\n",
+            dest, to, from, self->key, (void*)g_ft.inst);
     wasm_rt_trap(WASM_RT_TRAP_UNREACHABLE);
   }
   if (lookup(from)) {
     fprintf(stderr, "[fib] duplicate source continuation %u\n", from);
     wasm_rt_trap(WASM_RT_TRAP_UNREACHABLE);
   }
-  if (verbose()) fprintf(stderr, "[fib] transfer %u -> %u\n", from, to);
+  if (verbose()) fprintf(stderr, "[fib] transfer %u -> %u\n", from, dest);
   return switch_away(target, from, FSTATE_WAIT_TRANSFER, from);
 }
 

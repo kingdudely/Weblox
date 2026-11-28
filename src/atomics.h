@@ -22,6 +22,11 @@ u32 weblox_atomic_notify(wasm_rt_shared_memory_t* memory, u32 address,
 u32 weblox_atomic_wait_js(wasm_rt_shared_memory_t* memory, u32 address,
                           u32 expected, s64 timeout_ns);
 
+// Host-pump entry: resume parked main-thread waiters whose notify arrived,
+// whose deadline expired, or whose guest word changed.  Must be called from
+// the host stack; safe to call from any thread (no-ops off the main thread).
+void weblox_atomic_pump(void);
+
 int weblox_atomic_init(void);   // idempotent; returns 1 on success
 void weblox_atomic_free(void);  // safe to call more than once
 
