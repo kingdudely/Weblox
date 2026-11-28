@@ -42,6 +42,26 @@ static int read_local(const char* path, u32 dst, u32 want) {
 static int fetch_remote(const char* url, const char* cache, u32 dst, u32 want) {
   char* bytes = NULL;
   size_t len = 0;
+  // The engine joins a base URL ending in '/' with a path beginning in '/'.
+  // Roblox's CDN rejects the resulting double slash, so collapse it.
+  const char* scheme = strstr(url, "://");
+  char normalized[2048];
+  if (scheme) {
+    size_t prefix = (size_t)(scheme + 3 - url);
+    if (prefix >= sizeof normalized) return -1;
+    memcpy(normalized, url, prefix);
+    size_t out = prefix;
+    const char* p = scheme + 3;
+    int last_slash = 0;
+    while (*p && out + 1 < sizeof normalized) {
+      if (*p == '/' && last_slash) { ++p; continue; }
+      normalized[out++] = *p;
+      last_slash = (*p == '/');
+      ++p;
+    }
+    normalized[out] = 0;
+    url = normalized;
+  }
   if (weblox_http_get(url, MAX_FETCH, &bytes, &len) != 0) return -1;
   if (want && len != want) { free(bytes); return -1; }
   unsigned char* out = guest_ptr(dst, len);
