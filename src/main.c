@@ -34,6 +34,12 @@ static void main_turn(void* arg) {
 }
 #endif
 
+static long long wall_ms(void) {
+  struct timespec ts;
+  if (timespec_get(&ts, TIME_UTC) != TIME_UTC) return 0;
+  return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
 #ifdef _WIN32
 // WC.h declares these module constants without __declspec(dllimport), so
 // clang-cl reads the import table instead of the DLL's data.  Resolve by name.
@@ -131,8 +137,8 @@ int main(void) {
     if (weblox_prepare(&inst) != 0) fprintf(stderr, "prepare failed\n");
     void* root = weblox_run_on_root(&inst, main_turn, &inst);
     int turns = 0;
-    clock_t deadline = clock() + (clock_t)atoi(run_ms) * (CLOCKS_PER_SEC / 1000);
-    while (clock() < deadline) {
+    long long deadline = wall_ms() + atoi(run_ms);
+    while (wall_ms() < deadline) {
       weblox_window_pump();
       weblox_deferred_pump(&inst);
 #ifdef WEBLOX_USE_HTTP
@@ -169,4 +175,5 @@ int main(void) {
   // Worker threads and SDL's atexit handlers can keep the process alive after
   // the host is finished; bounded runs must always terminate.
   _Exit(0);
+  abort();  // unreachable, keeps compilers honest
 }
